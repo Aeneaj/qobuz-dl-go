@@ -65,7 +65,7 @@ qobuz-dl [options] <command> [args]
 
 | Command | Description |
 |---|---|
-| `dl <URL...>` | Download one or more URLs (album, track, artist, label, playlist) |
+| `dl <URL...>` | Download one or more URLs (album, track, artist, label, playlist, Last.fm) |
 | `lucky <query>` | Search and download the top N results |
 | `oauth [code\|url]` | Log in via OAuth |
 | `fun` | Interactive search and download mode |
@@ -85,6 +85,12 @@ qobuz-dl [options] <command> [args]
 # Download to a specific directory
 ./qobuz-dl -d ~/Music dl https://www.qobuz.com/album/...
 
+# Download your Last.fm loved tracks (searches each on Qobuz)
+./qobuz-dl dl https://www.last.fm/user/yourusername/loved
+
+# Download your Last.fm recent tracks
+./qobuz-dl dl https://www.last.fm/user/yourusername/library
+
 # Search and download top 3 albums by an artist
 ./qobuz-dl lucky --lucky-n 3 "Radiohead"
 
@@ -94,6 +100,17 @@ qobuz-dl [options] <command> [args]
 # Interactive mode
 ./qobuz-dl fun
 ```
+
+### Last.fm playlists
+
+Pass a Last.fm user playlist URL to `dl` and qobuz-dl will fetch the track list and search each song on Qobuz automatically:
+
+| URL | What it downloads |
+|---|---|
+| `https://www.last.fm/user/{user}/loved` | Your loved tracks |
+| `https://www.last.fm/user/{user}/library` | Your recent tracks |
+
+No Last.fm API key is required. Tracks are saved to `<download-dir>/Last.fm - {user} - {type}/`. Tracks not found on Qobuz are skipped and counted in the final summary.
 
 ### Options
 
