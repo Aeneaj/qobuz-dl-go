@@ -1,0 +1,26 @@
+# Compiled binaries (root-level only, not cmd/qobuz-dl/ directory)
+/qobuz-dl
+/qobuz-dl.exe
+
+# Downloaded music
+Qobuz Downloads/
+
+# Test coverage
+coverage.out
+*.out
+
+# IDE and editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code internal files
+.claude/
+
+# Go build cache artifacts
+dist/
