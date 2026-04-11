@@ -49,5 +49,7 @@ go build -o qobuz-dl ./cmd/qobuz-dl/
       `--no-db` bypass; `--purge` borra el archivo; se carga al arrancar en un map[string]struct{}
 - [x] Descargas concurrentes por track — semáforo + WaitGroup, flag `--workers N` (default 3)
 - [ ] Tests de integración con servidor mock completo para downloader
-- [ ] Soporte last.fm playlists (estaba en el Python original)
+- [x] Soporte last.fm playlists — `internal/downloader/lastfm.go`
+      XSPF API 1.0 (sin API key); soporta `/user/{user}/loved` y `/user/{user}/library`;
+      busca cada track en Qobuz y descarga el primer resultado
 - [ ] Modo interactivo mejorado (curses / bubbletea)
