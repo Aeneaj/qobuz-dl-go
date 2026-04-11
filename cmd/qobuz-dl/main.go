@@ -14,10 +14,13 @@ import (
 	"github.com/Aeneaj/qobuz-dl-go/internal/downloader"
 )
 
+// version is set at build time via -ldflags "-X main.version=v1.x.x".
+var version = "dev"
+
 const usage = `Usage: qobuz-dl [options] <command> [args]
 
 Commands:
-  dl  <URL...>       Download by URL (album/track/artist/label/playlist)
+  dl  <URL...>       Download by URL (album/track/artist/label/playlist/last.fm)
   lucky <query>      Download first N search results
   oauth [code|url]   Login via OAuth (recommended)
   fun                Interactive search and download mode
@@ -26,6 +29,7 @@ Options:
   -r, --reset        Reconfigure credentials (prompts for user_id + token)
   -s, --show-config  Show config file path and contents
   -p, --purge        Delete the downloads database
+  -v, --version      Print version and exit
   -d <dir>           Download directory
   -q <quality>       Quality: 5=MP3, 6=LOSSLESS, 7=24B<96k, 27=24B>96k
   --embed-art        Embed cover art in files
@@ -53,6 +57,8 @@ func main() {
 	showCfgLong := fs.Bool("show-config", false, "")
 	purge := fs.Bool("p", false, "")
 	purgeLong := fs.Bool("purge", false, "")
+	showVer := fs.Bool("v", false, "")
+	showVerLong := fs.Bool("version", false, "")
 
 	dir := fs.String("d", "", "download directory")
 	quality := fs.Int("q", 0, "quality")
@@ -75,6 +81,11 @@ func main() {
 	doReset := *reset || *resetLong
 	doShow := *showCfg || *showCfgLong
 	doPurge := *purge || *purgeLong
+
+	if *showVer || *showVerLong {
+		fmt.Println("qobuz-dl", version)
+		return
+	}
 
 	if doReset {
 		if err := config.Reset(); err != nil {
