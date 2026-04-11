@@ -52,4 +52,6 @@ go build -o qobuz-dl ./cmd/qobuz-dl/
 - [x] Soporte last.fm playlists — `internal/downloader/lastfm.go`
       XSPF API 1.0 (sin API key); soporta `/user/{user}/loved` y `/user/{user}/library`;
       busca cada track en Qobuz y descarga el primer resultado
-- [ ] Modo interactivo mejorado (curses / bubbletea)
+- [x] Modo interactivo mejorado — `internal/downloader/interactive.go`
+      REPL con comandos: sa/st/sr/sp (búsqueda por tipo), dl (URL directa),
+      q (ver queue), rm N (quitar item), clear, go (descargar), exit

@@ -3,7 +3,6 @@
 package downloader
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -1184,7 +1183,7 @@ func getFloat(m map[string]interface{}, key string) float64 {
 	return v
 }
 
-// ---- interactive / lucky search helper used by CLI ----
+// ---- lucky search helper used by CLI ----
 
 func SearchURLs(client *api.Client, itemType, query string, limit int) ([]string, error) {
 	results, err := Search(client, itemType, query, limit)
@@ -1198,66 +1197,3 @@ func SearchURLs(client *api.Client, itemType, query string, limit int) ([]string
 	return urls, nil
 }
 
-// ---- interactive mode (terminal UI without external deps) ----
-
-func (d *Downloader) Interactive() {
-	reader := bufio.NewReader(os.Stdin)
-
-	fmt.Println("\033[33mInteractive mode. Ctrl+C to quit.\033[0m")
-	fmt.Println("Search type: [1] Albums  [2] Tracks  [3] Artists  [4] Playlists")
-	fmt.Print("Choice: ")
-	choiceStr, _ := reader.ReadString('\n')
-	choiceStr = strings.TrimSpace(choiceStr)
-
-	typeMap := map[string]string{"1": "album", "2": "track", "3": "artist", "4": "playlist"}
-	itemType, ok := typeMap[choiceStr]
-	if !ok {
-		fmt.Println("\033[31mInvalid choice\033[0m")
-		return
-	}
-
-	var selectedURLs []string
-	for {
-		fmt.Printf("\033[36mSearch (%ss): \033[0m", itemType)
-		query, _ := reader.ReadString('\n')
-		query = strings.TrimSpace(query)
-		if query == "" {
-			continue
-		}
-
-		results, err := Search(d.Client, itemType, query, 20)
-		if err != nil || len(results) == 0 {
-			fmt.Println("\033[90mNo results found\033[0m")
-			continue
-		}
-
-		for i, r := range results {
-			fmt.Printf("  [%2d] %s\n", i+1, r.Text)
-		}
-		fmt.Print("Select numbers (e.g. 1 3 5), or Enter to search again: ")
-		line, _ := reader.ReadString('\n')
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		for _, tok := range strings.Fields(line) {
-			n, err := strconv.Atoi(tok)
-			if err == nil && n >= 1 && n <= len(results) {
-				selectedURLs = append(selectedURLs, results[n-1].URL)
-			}
-		}
-
-		fmt.Printf("\033[33m%d items queued. Keep searching? [y/N]: \033[0m", len(selectedURLs))
-		ans, _ := reader.ReadString('\n')
-		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(ans)), "y") {
-			break
-		}
-	}
-
-	if len(selectedURLs) == 0 {
-		fmt.Println("\033[90mNothing to download\033[0m")
-		return
-	}
-	d.DownloadURLs(selectedURLs)
-}

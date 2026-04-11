@@ -97,9 +97,27 @@ qobuz-dl [options] <command> [args]
 # Search for tracks instead of albums
 ./qobuz-dl lucky --lucky-type track "Paranoid Android"
 
-# Interactive mode
+# Interactive REPL mode
 ./qobuz-dl fun
 ```
+
+### Interactive mode (`fun`)
+
+A command-driven REPL for searching and building a download queue without leaving the session:
+
+```
+qobuz > sa radiohead          # search albums
+qobuz > st paranoid android   # search tracks
+qobuz > sr radiohead          # search artists
+qobuz > sp workout            # search playlists
+qobuz > dl https://...        # add a URL directly to the queue
+qobuz > q                     # show the queue
+qobuz > rm 2                  # remove item 2 from the queue
+qobuz > go                    # start downloading
+qobuz > exit                  # quit
+```
+
+After each search, pick result numbers to add to the queue (e.g. `1 3 5`). Type `help` for the full command list.
 
 ### Last.fm playlists
 
