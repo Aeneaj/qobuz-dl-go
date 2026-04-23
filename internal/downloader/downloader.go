@@ -724,11 +724,12 @@ func (d *Downloader) downloadWithProgress(rawURL, dest string, bar *mpb.Bar) err
 		}
 
 		// Server ignored Range and sent full file — discard partial data and restart.
+		// Must continue so we make a fresh request with the original (non-closed) body.
 		if offset > 0 && resp.StatusCode == http.StatusOK {
 			resp.Body.Close()
 			os.Remove(dest)
-			offset = 0
 			barCredited = 0
+			continue
 		}
 
 		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
@@ -753,7 +754,9 @@ func (d *Downloader) downloadWithProgress(rawURL, dest string, bar *mpb.Bar) err
 			}
 		}
 
-		// Initialise bar total as soon as we know it.
+		// Set bar total for display only — do NOT trigger auto-completion here.
+		// The bar is explicitly completed after io.Copy returns to avoid mpb
+		// closing its operateState channel while ProxyReader is still active.
 		if bar != nil && totalSize > 0 {
 			bar.SetTotal(totalSize, false)
 		}
@@ -798,12 +801,18 @@ func (d *Downloader) downloadWithProgress(rawURL, dest string, bar *mpb.Bar) err
 		written := offset + n
 
 		if copyErr == nil {
-			if bar != nil && totalSize <= 0 {
-				// Mark complete with actual bytes when Content-Length was absent.
-				bar.SetTotal(written, true)
-			}
 			if totalSize > 0 && written != totalSize {
 				return fmt.Errorf("incomplete download: got %d of %d bytes", written, totalSize)
+			}
+			// Explicitly mark bar complete now that io.Copy has fully returned.
+			// Doing this here (not during SetTotal) prevents mpb from closing its
+			// internal operateState channel while ProxyReader is still reading.
+			if bar != nil {
+				completedAt := totalSize
+				if completedAt <= 0 {
+					completedAt = written
+				}
+				bar.SetTotal(completedAt, true)
 			}
 			return nil
 		}
