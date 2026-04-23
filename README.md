@@ -5,6 +5,7 @@ A complete rewrite of [vitiko98/qobuz-dl](https://github.com/vitiko98/qobuz-dl) 
 ## Features
 
 - Download albums, tracks, artists, playlists, and labels by URL
+- **Batch download from a TuneMyMusic CSV export** — `csv` command
 - Quality up to 24-bit / 192kHz Hi-Res
 - FLAC (Vorbis Comment) and MP3 (ID3v2.3) tagging — pure Go, no external tools needed
 - Cover art download and optional embedding
@@ -12,6 +13,7 @@ A complete rewrite of [vitiko98/qobuz-dl](https://github.com/vitiko98/qobuz-dl) 
 - Concurrent track downloads per album
 - Downloads database to skip already-downloaded tracks
 - Configurable folder and track naming formats
+- Last.fm playlist support (loved tracks, recent tracks)
 - OAuth and manual token authentication (password login no longer supported by Qobuz)
 - Minimal dependencies — only stdlib plus a progress-bar library
 
@@ -67,6 +69,7 @@ qobuz-dl [options] <command> [args]
 |---|---|
 | `dl <URL...>` | Download one or more URLs (album, track, artist, label, playlist, Last.fm) |
 | `lucky <query>` | Search and download the top N results |
+| `csv <file.csv>` | Batch download from a TuneMyMusic CSV export |
 | `oauth [code\|url]` | Log in via OAuth |
 | `fun` | Interactive search and download mode |
 
@@ -119,6 +122,36 @@ qobuz > exit                  # quit
 
 After each search, pick result numbers to add to the queue (e.g. `1 3 5`). Type `help` for the full command list.
 
+### CSV batch download (`csv`)
+
+Export your playlist from [TuneMyMusic](https://www.tunemymusic.com/) as CSV, then:
+
+```bash
+# Basic batch download
+./qobuz-dl csv my_playlist.csv
+
+# Hi-res quality + save a report of tracks that failed or weren't found
+./qobuz-dl csv my_playlist.csv -q 27 --failed skipped.csv
+
+# Download to a specific folder
+./qobuz-dl -d ~/Music csv my_playlist.csv -q 6
+```
+
+The parser handles the most common TuneMyMusic export quirk: when `Artist name`, `Album`, and `ISRC` columns are blank and the track appears as `"Artist - Title"` in the `Track name` field, the artist and title are inferred automatically.
+
+At the end of the run a summary is printed:
+
+```
+=== CSV Batch Summary ===
+  Total processed: 50
+  Downloaded:      45
+  Not found:        3
+  Errors:           2
+  Failed tracks saved to: skipped.csv
+```
+
+The `--failed` report is a CSV with columns `row`, `artist`, `title`, `query`, `reason` so you can inspect and retry manually.
+
 ### Last.fm playlists
 
 Pass a Last.fm user playlist URL to `dl` and qobuz-dl will fetch the track list and search each song on Qobuz automatically:
@@ -152,6 +185,7 @@ No Last.fm API key is required. Tracks are saved to `<download-dir>/Last.fm - {u
 | `--smart-discog` | Smart discography filter (skip live/compilation albums) |
 | `--lucky-type` | Item type for `lucky` command: `album`, `track`, `artist`, `playlist` |
 | `--lucky-n` | Number of results to download with `lucky` (default: 1) |
+| `--failed <file>` | Output CSV for failed/not-found tracks after a `csv` run (default: `failed_downloads.csv`) |
 
 ### Quality levels
 
