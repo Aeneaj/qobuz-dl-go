@@ -15,13 +15,14 @@ import (
 )
 
 // version is set at build time via -ldflags "-X main.version=v1.x.x".
-var version = "dev"
+var version = "v1.3.0"
 
 const usage = `Usage: qobuz-dl [options] <command> [args]
 
 Commands:
   dl  <URL...>       Download by URL (album/track/artist/label/playlist/last.fm)
   lucky <query>      Download first N search results
+  csv <file.csv>     Batch download from a TuneMyMusic CSV export
   oauth [code|url]   Login via OAuth (recommended)
   fun                Interactive search and download mode
 
@@ -45,6 +46,7 @@ Options:
   --smart-discog     Smart discography filter
   --lucky-type       Type for lucky command (album|track|artist|playlist)
   --lucky-n          Number of results for lucky command
+  --failed <file>    Output CSV for failed/not-found tracks (csv command, default: failed_downloads.csv)
 `
 
 func main() {
@@ -75,6 +77,7 @@ func main() {
 	smartDiscog := fs.Bool("smart-discog", false, "")
 	luckyType := fs.String("lucky-type", "album", "")
 	luckyN := fs.Int("lucky-n", 1, "")
+	failed := fs.String("failed", "failed_downloads.csv", "")
 
 	fs.Parse(os.Args[1:])
 
@@ -161,6 +164,17 @@ func main() {
 			fatalf("%v", err)
 		}
 		dl.DownloadURLs(urls)
+
+	case "csv":
+		if len(cmdArgs) == 0 {
+			fmt.Fprintln(os.Stderr, "csv: provide path to a TuneMyMusic CSV file")
+			os.Exit(1)
+		}
+		dl, err := initDownloader(ctx, *dir, *quality, *embedArt, *albumsOnly, *noM3U, *noFallback, *ogCover, *noCover, *noDB, *workers, *folderFmt, *trackFmt, *smartDiscog)
+		if err != nil {
+			fatalf("%v", err)
+		}
+		dl.DownloadCSV(cmdArgs[0], *failed)
 
 	case "oauth":
 		codeOrURL := ""
