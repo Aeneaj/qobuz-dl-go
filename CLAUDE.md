@@ -55,3 +55,10 @@ go build -o qobuz-dl ./cmd/qobuz-dl/
 - [x] Modo interactivo mejorado — `internal/downloader/interactive.go`
       REPL con comandos: sa/st/sr/sp (búsqueda por tipo), dl (URL directa),
       q (ver queue), rm N (quitar item), clear, go (descargar), exit
+- [x] Sistema de descarga robusto con reintentos — `internal/downloader/downloader.go`
+      Motivación: fallos mid-download en FLACs grandes por drops del servidor (io.ErrUnexpectedEOF / net.Error).
+      `downloadWithProgress` reescrito: hasta 5 reintentos con backoff exponencial (1s/2s/4s/8s),
+      resume desde offset en disco via `Range: bytes=N-`, append al archivo parcial en vez de sobrescribir,
+      bar fast-forward a bytes ya descargados via `barCredited`, maneja servidores que ignoran Range
+      (responden 200 en vez de 206): trunca y reinicia limpio, cierra `resp.Body` explícitamente
+      cada intento para no filtrar conexiones. Helpers: `isContextError`, `isRecoverableErr`.
