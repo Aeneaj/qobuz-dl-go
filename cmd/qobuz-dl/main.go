@@ -254,4 +254,3 @@ func initDownloader(ctx context.Context, dir string, quality int, embedArt, albu
 func searchByType(client *api.Client, itemType, query string, limit int) ([]string, error) {
 	return downloader.SearchURLs(client, itemType, query, limit)
 }
-

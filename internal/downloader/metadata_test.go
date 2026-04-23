@@ -175,12 +175,12 @@ func TestBuildFLACTags_IsTrack(t *testing.T) {
 		"performer":    map[string]interface{}{"name": "Performer"},
 		"copyright":    "(P) 2024",
 		"album": map[string]interface{}{
-			"title":                  "My Album",
-			"artist":                 map[string]interface{}{"name": "Album Artist"},
-			"release_date_original":  "2024-01-15",
-			"tracks_count":           float64(12),
-			"genres_list":            []interface{}{"Pop/Rock"},
-			"label":                  map[string]interface{}{"name": "Best Label"},
+			"title":                 "My Album",
+			"artist":                map[string]interface{}{"name": "Album Artist"},
+			"release_date_original": "2024-01-15",
+			"tracks_count":          float64(12),
+			"genres_list":           []interface{}{"Pop/Rock"},
+			"label":                 map[string]interface{}{"name": "Best Label"},
 		},
 	}
 	tags := buildFLACTags(track, nil, true)
@@ -256,18 +256,18 @@ func TestParseQobuzURL_Invalid(t *testing.T) {
 func TestSmartDiscogFilter_RemovesDuplicates(t *testing.T) {
 	items := []map[string]interface{}{
 		{
-			"title":                  "Abbey Road",
-			"artist":                 map[string]interface{}{"name": "The Beatles"},
-			"maximum_bit_depth":      float64(16),
-			"maximum_sampling_rate":  float64(44.1),
-			"id":                     "1",
+			"title":                 "Abbey Road",
+			"artist":                map[string]interface{}{"name": "The Beatles"},
+			"maximum_bit_depth":     float64(16),
+			"maximum_sampling_rate": float64(44.1),
+			"id":                    "1",
 		},
 		{
-			"title":                  "Abbey Road (Remastered)",
-			"artist":                 map[string]interface{}{"name": "The Beatles"},
-			"maximum_bit_depth":      float64(24),
-			"maximum_sampling_rate":  float64(96.0),
-			"id":                     "2",
+			"title":                 "Abbey Road (Remastered)",
+			"artist":                map[string]interface{}{"name": "The Beatles"},
+			"maximum_bit_depth":     float64(24),
+			"maximum_sampling_rate": float64(96.0),
+			"id":                    "2",
 		},
 	}
 	filtered := smartDiscogFilter("The Beatles", items)

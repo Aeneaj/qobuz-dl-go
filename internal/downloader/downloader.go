@@ -4,8 +4,10 @@ package downloader
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -22,9 +24,9 @@ import (
 )
 
 const (
-	qlDowngrade   = "FormatRestrictedByFormatAvailability"
-	coverFile     = "cover.jpg"
-	bookletFile   = "booklet.pdf"
+	qlDowngrade = "FormatRestrictedByFormatAvailability"
+	coverFile   = "cover.jpg"
+	bookletFile = "booklet.pdf"
 )
 
 var qualities = map[int]string{
@@ -681,55 +683,153 @@ func (d *Downloader) resolveFormat(albumMeta map[string]interface{}) (fileFormat
 // downloadWithProgress downloads rawURL to dest, updating bar as bytes arrive.
 // It uses the Downloader's shared httpClient and respects the context for
 // cancellation (e.g. Ctrl+C).
+const maxDownloadRetries = 5
+
 func (d *Downloader) downloadWithProgress(rawURL, dest string, bar *mpb.Bar) error {
-	req, err := http.NewRequestWithContext(d.ctx, http.MethodGet, rawURL, nil)
-	if err != nil {
-		return err
-	}
-	resp, err := d.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
+	var (
+		totalSize   int64 = -1 // full file size, resolved from Content-Length or Content-Range
+		barCredited int64      // bytes already reflected in the bar across all attempts
+	)
 
-	total := resp.ContentLength // may be -1 when server uses chunked encoding
-
-	f, err := os.Create(dest)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	var reader io.Reader
-	var pr io.ReadCloser
-	if bar != nil {
-		if total > 0 {
-			bar.SetTotal(total, false)
+	for attempt := 0; attempt < maxDownloadRetries; attempt++ {
+		if attempt > 0 {
+			delay := time.Duration(1<<(attempt-1)) * time.Second // 1s, 2s, 4s, 8s
+			select {
+			case <-d.ctx.Done():
+				return d.ctx.Err()
+			case <-time.After(delay):
+			}
 		}
-		pr = bar.ProxyReader(resp.Body)
-		reader = pr
-	} else {
-		reader = resp.Body
-	}
 
-	n, copyErr := io.Copy(f, reader)
+		// Bytes already saved from a previous attempt.
+		var offset int64
+		if fi, err := os.Stat(dest); err == nil {
+			offset = fi.Size()
+		}
 
-	if pr != nil {
-		pr.Close()
-		// Explicitly mark the bar complete with the actual byte count so that
-		// p.Wait() can unblock even when Content-Length was absent (total==-1).
+		req, err := http.NewRequestWithContext(d.ctx, http.MethodGet, rawURL, nil)
+		if err != nil {
+			return err
+		}
+		if offset > 0 {
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
+		}
+
+		resp, err := d.httpClient.Do(req)
+		if err != nil {
+			if isContextError(err) {
+				return err
+			}
+			continue // network error before response — retry
+		}
+
+		// Server ignored Range and sent full file — discard partial data and restart.
+		if offset > 0 && resp.StatusCode == http.StatusOK {
+			resp.Body.Close()
+			os.Remove(dest)
+			offset = 0
+			barCredited = 0
+		}
+
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+			resp.Body.Close()
+			return fmt.Errorf("unexpected HTTP status %d", resp.StatusCode)
+		}
+
+		// Resolve total file size once.
+		if totalSize <= 0 {
+			if resp.StatusCode == http.StatusPartialContent {
+				// Content-Range: bytes N-M/TOTAL
+				if cr := resp.Header.Get("Content-Range"); cr != "" {
+					if idx := strings.LastIndex(cr, "/"); idx >= 0 {
+						if t, err2 := strconv.ParseInt(cr[idx+1:], 10, 64); err2 == nil && t > 0 {
+							totalSize = t
+						}
+					}
+				}
+			}
+			if totalSize <= 0 && resp.ContentLength > 0 {
+				totalSize = offset + resp.ContentLength
+			}
+		}
+
+		// Initialise bar total as soon as we know it.
+		if bar != nil && totalSize > 0 {
+			bar.SetTotal(totalSize, false)
+		}
+
+		// Fast-forward bar for bytes already on disk from prior attempts.
+		if bar != nil && offset > barCredited {
+			bar.IncrBy(int(offset - barCredited))
+			barCredited = offset
+		}
+
+		// Open file: create fresh on first write, append on resume.
+		var f *os.File
+		if offset == 0 {
+			f, err = os.Create(dest)
+		} else {
+			f, err = os.OpenFile(dest, os.O_APPEND|os.O_WRONLY, 0644)
+		}
+		if err != nil {
+			resp.Body.Close()
+			return err
+		}
+
+		var reader io.Reader
+		var pr io.ReadCloser
+		if bar != nil {
+			pr = bar.ProxyReader(resp.Body)
+			reader = pr
+		} else {
+			reader = resp.Body
+		}
+
+		n, copyErr := io.Copy(f, reader)
+
+		// Always close all handles before deciding what to do next.
+		if pr != nil {
+			pr.Close()
+		}
+		resp.Body.Close()
+		f.Close()
+
+		barCredited += n
+		written := offset + n
+
 		if copyErr == nil {
-			bar.SetTotal(n, true)
+			if bar != nil && totalSize <= 0 {
+				// Mark complete with actual bytes when Content-Length was absent.
+				bar.SetTotal(written, true)
+			}
+			if totalSize > 0 && written != totalSize {
+				return fmt.Errorf("incomplete download: got %d of %d bytes", written, totalSize)
+			}
+			return nil
 		}
+
+		if isContextError(copyErr) {
+			return copyErr
+		}
+		if !isRecoverableErr(copyErr) {
+			return copyErr
+		}
+		// Recoverable (EOF / network drop) — next iteration resumes via Range header.
 	}
 
-	if copyErr != nil {
-		return copyErr
+	return fmt.Errorf("download failed after %d attempts", maxDownloadRetries)
+}
+
+func isContextError(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+func isRecoverableErr(err error) bool {
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+		return true
 	}
-	if total > 0 && n != total {
-		return fmt.Errorf("incomplete download: got %d of %d bytes", n, total)
-	}
-	return nil
+	var netErr net.Error
+	return errors.As(err, &netErr)
 }
 
 // downloadExtra fetches a supplementary file (cover art, booklet PDF).
@@ -976,9 +1076,10 @@ func expandPlaceholders(format string, attrs map[string]string) string {
 // ---- URL parsing ----
 
 // reQobuzURL matches Qobuz URLs in multiple formats:
-//   https://www.qobuz.com/us-en/{type}/{name}/{id}
-//   https://open.qobuz.com/{type}/{id}
-//   https://play.qobuz.com/{type}/{id}
+//
+//	https://www.qobuz.com/us-en/{type}/{name}/{id}
+//	https://open.qobuz.com/{type}/{id}
+//	https://play.qobuz.com/{type}/{id}
 var reQobuzURL = regexp.MustCompile(
 	`(?:https?://(?:www|open|play)\.qobuz\.com)?(?:/[a-z]{2}-[a-z]{2})?` +
 		`/(album|artist|track|playlist|label)(?:/[-\w\d]+)?/([\w\d]+)`,
@@ -1196,4 +1297,3 @@ func SearchURLs(client *api.Client, itemType, query string, limit int) ([]string
 	}
 	return urls, nil
 }
-

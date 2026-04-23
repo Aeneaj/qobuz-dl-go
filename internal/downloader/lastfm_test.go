@@ -9,17 +9,17 @@ import (
 
 func TestParseLastFMURL(t *testing.T) {
 	tests := []struct {
-		rawURL       string
-		wantUser     string
-		wantType     string
-		wantErr      bool
+		rawURL   string
+		wantUser string
+		wantType string
+		wantErr  bool
 	}{
 		{"https://www.last.fm/user/rj/loved", "rj", "loved", false},
 		{"https://last.fm/user/rj/loved", "rj", "loved", false},
 		{"https://www.last.fm/user/someuser/library", "someuser", "library", false},
-		{"https://www.qobuz.com/album/foo/123", "", "", true},  // not last.fm
-		{"https://www.last.fm/user/onlytwo", "", "", true},     // path too short
-		{"https://www.last.fm/charts", "", "", true},           // no "user" prefix
+		{"https://www.qobuz.com/album/foo/123", "", "", true}, // not last.fm
+		{"https://www.last.fm/user/onlytwo", "", "", true},    // path too short
+		{"https://www.last.fm/charts", "", "", true},          // no "user" prefix
 	}
 
 	for _, tc := range tests {
@@ -48,8 +48,8 @@ func TestFetchLastFMTracks(t *testing.T) {
 		TrackList: []xspfTrack{
 			{Title: "Karma Police", Creator: "Radiohead"},
 			{Title: "No Surprises", Creator: "Radiohead"},
-			{Title: "", Creator: "Empty Artist"},  // should be skipped
-			{Title: "No Creator", Creator: ""},    // should be skipped
+			{Title: "", Creator: "Empty Artist"}, // should be skipped
+			{Title: "No Creator", Creator: ""},   // should be skipped
 		},
 	}
 	body, _ := xml.Marshal(xspf)

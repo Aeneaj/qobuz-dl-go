@@ -32,10 +32,10 @@ func (d *Downloader) OAuthLogin(appID, privateKey string, codeOrURL string) erro
 
 	if result.Token == "" && result.Code == "" {
 		return fmt.Errorf(
-			"OAuth redirect did not contain a usable token or code.\n" +
-				"Received params: %v\n\n" +
-				"As a workaround, log in at https://play.qobuz.com, then open\n" +
-				"DevTools → Application → Local Storage → find 'localuser' and run:\n" +
+			"OAuth redirect did not contain a usable token or code.\n"+
+				"Received params: %v\n\n"+
+				"As a workaround, log in at https://play.qobuz.com, then open\n"+
+				"DevTools → Application → Local Storage → find 'localuser' and run:\n"+
 				"  qobuz-dl --reset --token",
 			result.AllParams,
 		)

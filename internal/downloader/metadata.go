@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 	"path/filepath"
+	"strings"
 	"unicode/utf16"
 )
 
@@ -396,7 +396,7 @@ func writeID3v23(path string, tags map[string]string, embedArt bool, coverDir st
 	header := []byte{
 		'I', 'D', '3',
 		0x03, 0x00, // version 2.3, revision 0
-		0x00,       // flags
+		0x00, // flags
 		syncsafe[0], syncsafe[1], syncsafe[2], syncsafe[3],
 	}
 
