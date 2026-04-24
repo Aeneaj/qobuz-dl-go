@@ -13,6 +13,7 @@ A complete rewrite of [vitiko98/qobuz-dl](https://github.com/vitiko98/qobuz-dl) 
 - Downloads database to skip already-downloaded tracks
 - Configurable folder and track naming formats
 - OAuth and manual token authentication (password login no longer supported by Qobuz)
+- CSV batch download from [TuneMyMusic](https://www.tunemymusic.com/) exports
 - Minimal dependencies — only stdlib plus a progress-bar library
 
 ## Requirements
@@ -68,6 +69,7 @@ qobuz-dl [options] <command> [args]
 | `dl <URL...>` | Download one or more URLs (album, track, artist, label, playlist, Last.fm) |
 | `lucky <query>` | Search and download the top N results |
 | `oauth [code\|url]` | Log in via OAuth |
+| `csv <file>` | Batch download from a TuneMyMusic CSV export |
 | `fun` | Interactive search and download mode |
 
 ### Examples
@@ -130,6 +132,36 @@ Pass a Last.fm user playlist URL to `dl` and qobuz-dl will fetch the track list 
 
 No Last.fm API key is required. Tracks are saved to `<download-dir>/Last.fm - {user} - {type}/`. Tracks not found on Qobuz are skipped and counted in the final summary.
 
+### CSV batch download (`csv`)
+
+Export a playlist from [TuneMyMusic](https://www.tunemymusic.com/) as CSV, then:
+
+```bash
+# Basic batch download
+./qobuz-dl csv my_playlist.csv
+
+# Hi-res quality + save a report of tracks that failed or weren't found
+./qobuz-dl csv my_playlist.csv -q 27 --failed skipped.csv
+
+# Download to a specific folder
+./qobuz-dl -d ~/Music csv my_playlist.csv -q 6
+```
+
+The parser handles the most common TuneMyMusic export quirk: when `Artist name`, `Album`, and `ISRC` columns are blank and the track appears as `"Artist - Title"` in the `Track name` field, artist and title are inferred automatically.
+
+At the end of the run a summary is printed:
+
+```
+=== CSV Batch Summary ===
+  Total processed: 50
+  Downloaded:      45
+  Not found:        3
+  Errors:           2
+  Failed tracks saved to: skipped.csv
+```
+
+The `--failed` report is a CSV with columns `row`, `artist`, `title`, `query`, `reason` — inspect it and retry manually.
+
 ### Options
 
 | Flag | Description |
@@ -152,6 +184,7 @@ No Last.fm API key is required. Tracks are saved to `<download-dir>/Last.fm - {u
 | `--smart-discog` | Smart discography filter (skip live/compilation albums) |
 | `--lucky-type` | Item type for `lucky` command: `album`, `track`, `artist`, `playlist` |
 | `--lucky-n` | Number of results to download with `lucky` (default: 1) |
+| `--failed <file>` | (`csv` only) Save undownloaded tracks to this CSV file |
 
 ### Quality levels
 
