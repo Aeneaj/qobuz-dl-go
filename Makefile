@@ -3,6 +3,7 @@ CMD      := ./cmd/qobuz-dl
 DIST     := dist
 VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS  := -s -w -X main.version=$(VERSION)
+UNAME_S := $(shell uname -s)
 
 PLATFORMS := \
 	linux/amd64 \
@@ -11,7 +12,7 @@ PLATFORMS := \
 	darwin/arm64 \
 	windows/amd64
 
-.PHONY: all clean checksums
+.PHONY: all clean checksums install
 
 all: clean $(PLATFORMS) checksums
 
@@ -40,3 +41,11 @@ test:
 
 vet:
 	go vet ./...
+
+install: build
+	@if [ "$(UNAME_S)" = "Darwin" ] || [ "$(UNAME_S)" = "Linux" ]; then \
+		sudo cp $(BINARY) /usr/local/bin/; \
+	else \
+		echo "Please manually copy $(BINARY) to a directory in your PATH"; \
+	fi
+	@echo "Installed $(BINARY) to /usr/local/bin/"

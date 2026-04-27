@@ -21,7 +21,25 @@ A complete rewrite of [vitiko98/qobuz-dl](https://github.com/vitiko98/qobuz-dl) 
 - Go 1.24+
 - A Qobuz account (subscription required for lossless quality)
 
-## Build
+## Install
+
+```bash
+git clone https://github.com/Aeneaj/qobuz-dl-go.git
+cd qobuz-dl-go
+go install ./cmd/qobuz-dl/
+```
+
+Or if you want install for all users:
+
+```bash
+git clone https://github.com/Aeneaj/qobuz-dl-go.git
+cd qobuz-dl-go
+make install
+```
+
+> Binary will be copied in `/usr/local/bin/`
+
+## Build for manually installation
 
 ```bash
 git clone https://github.com/Aeneaj/qobuz-dl-go.git
