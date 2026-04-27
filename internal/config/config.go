@@ -14,6 +14,29 @@ import (
 	"github.com/Aeneaj/qobuz-dl-go/internal/bundle"
 )
 
+// ResolveDir expands ~ and relative paths, then creates the directory tree.
+// Returns the absolute path ready to use, or an error if creation fails.
+func ResolveDir(dir string) (string, error) {
+	if dir == "" {
+		return "", fmt.Errorf("directory path is empty")
+	}
+	if strings.HasPrefix(dir, "~/") || dir == "~" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("expand ~: %w", err)
+		}
+		dir = filepath.Join(home, dir[1:])
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", fmt.Errorf("resolve path %q: %w", dir, err)
+	}
+	if err := os.MkdirAll(abs, 0755); err != nil {
+		return "", fmt.Errorf("create directory %q: %w", abs, err)
+	}
+	return abs, nil
+}
+
 const (
 	DefaultFolder = "{artist} - {album} ({year}) [{bit_depth}B-{sampling_rate}kHz]"
 	DefaultTrack  = "{tracknumber}. {tracktitle}"
@@ -23,6 +46,7 @@ const (
 type Config struct {
 	UserID         string
 	UserAuthToken  string
+	DownloadDir    string
 	DefaultFolder  string
 	DefaultQuality int
 	DefaultLimit   int
@@ -91,6 +115,7 @@ func Load() (*Config, error) {
 	return &Config{
 		UserID:         get("user_id", ""),
 		UserAuthToken:  get("user_auth_token", ""),
+		DownloadDir:    get("download_dir", ""),
 		DefaultFolder:  get("default_folder", "Qobuz Downloads"),
 		DefaultQuality: getInt("default_quality", 6),
 		DefaultLimit:   getInt("default_limit", 20),
@@ -129,6 +154,7 @@ func Reset() error {
 	kv["user_id"] = prompt("Enter your Qobuz user_id:\n- ")
 	kv["user_auth_token"] = prompt("Enter your Qobuz user_auth_token:\n- ")
 
+	kv["download_dir"] = prompt("Enter default download directory (leave blank for ./qobuz-downloader):\n- ")
 	kv["default_folder"] = promptDefault("Folder for downloads (leave empty for 'Qobuz Downloads')\n- ", "Qobuz Downloads")
 	kv["default_quality"] = promptDefault("Download quality (5, 6, 7, 27) [320, LOSSLESS, 24B <96KHZ, 24B >96KHZ]\n(leave empty for '6')\n- ", "6")
 	kv["default_limit"] = "20"
@@ -243,7 +269,7 @@ func writeINI(path string, kv map[string]string) error {
 	order := []string{
 		"user_id", "user_auth_token",
 		"email", "password", // legacy — kept for reading old configs
-		"default_folder", "default_quality", "default_limit",
+		"download_dir", "default_folder", "default_quality", "default_limit",
 		"no_m3u", "albums_only", "no_fallback", "og_cover",
 		"embed_art", "no_cover", "no_database", "smart_discography",
 		"app_id", "secrets", "private_key",

@@ -216,9 +216,19 @@ func initDownloader(ctx context.Context, dir string, quality int, embedArt, albu
 		return nil, err
 	}
 
+	// Directory resolution hierarchy: flag -d → config download_dir → default.
 	if dir == "" {
-		dir = cfg.DefaultFolder
+		dir = cfg.DownloadDir
 	}
+	if dir == "" {
+		dir = "./qobuz-downloader"
+	}
+	resolvedDir, err := config.ResolveDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("download directory: %w", err)
+	}
+	dir = resolvedDir
+
 	if quality == 0 {
 		quality = cfg.DefaultQuality
 	}

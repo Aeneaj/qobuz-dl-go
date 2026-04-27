@@ -13,10 +13,17 @@ internal/config/     Lector/escritor de config.ini (INI casero, sin deps)
 internal/downloader/ Descarga, tagging FLAC/MP3, colecciones, OAuth
 ```
 
-## Sin dependencias externas
+## Dependencias externas
 
-Solo stdlib de Go. El tagging FLAC (Vorbis Comment) y MP3 (ID3v2.3) están
-implementados en Go puro en `internal/downloader/metadata.go`.
+El tagging FLAC (Vorbis Comment) y MP3 (ID3v2.3) están implementados en Go puro
+en `internal/downloader/metadata.go`, sin herramientas externas del sistema.
+Las dependencias de módulo son:
+- `github.com/vbauerster/mpb/v8` — barras de progreso
+- `github.com/acarl005/stripansi` — limpieza de secuencias ANSI
+- `github.com/VividCortex/ewma` — media móvil (usada por mpb)
+- `github.com/mattn/go-runewidth` — ancho de caracteres Unicode
+- `github.com/clipperhouse/uax29/v2` — segmentación de texto Unicode
+- `golang.org/x/sys` — syscalls de bajo nivel
 
 ## Estado actual
 
@@ -42,6 +49,19 @@ go build -o qobuz-dl ./cmd/qobuz-dl/
 ./qobuz-dl lucky -q 6 "Radiohead" # búsqueda + descarga
 ./qobuz-dl fun                     # modo interactivo
 ```
+
+## Directorio de descarga (`download_dir`)
+
+Jerarquía de prioridad al resolver la ruta de descarga:
+1. Flag CLI `-d <ruta>` (máxima prioridad)
+2. Clave `download_dir` en `config.ini`
+3. Fallback: `./qobuz-downloader` (relativo al CWD)
+
+Implementación:
+- `config.ResolveDir(dir string) (string, error)` — expande `~`, llama `filepath.Abs`, crea con `os.MkdirAll`; devuelve error descriptivo si hay problema de permisos (sin panic)
+- `Config.DownloadDir` — campo separado de `DefaultFolder` (que es el formato de nombre de álbum, no una ruta)
+- `Reset()` pregunta al usuario por el directorio antes de `default_folder`
+- `downloader.New()` ya no tiene fallback hardcodeado — la ruta llega siempre resuelta desde `initDownloader`
 
 ## Pendiente / Ideas
 

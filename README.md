@@ -14,7 +14,7 @@ A complete rewrite of [vitiko98/qobuz-dl](https://github.com/vitiko98/qobuz-dl) 
 - Configurable folder and track naming formats
 - OAuth and manual token authentication (password login no longer supported by Qobuz)
 - CSV batch download from [TuneMyMusic](https://www.tunemymusic.com/) exports
-- Minimal dependencies — only stdlib plus a progress-bar library
+- Small dependency footprint — stdlib plus a handful of focused libraries (progress bars, Unicode, ANSI)
 
 ## Requirements
 
@@ -232,7 +232,7 @@ By default qobuz-dl keeps a plain-text database of downloaded track IDs at `~/.c
 cmd/qobuz-dl/        CLI entry point
 internal/api/        Qobuz HTTP API client
 internal/bundle/     Scraper for app_id / secrets / private_key from bundle.js
-internal/config/     INI config reader/writer (no external deps)
+internal/config/     INI config reader/writer
 internal/downloader/ Download logic, FLAC/MP3 tagging, collections, OAuth
 ```
 

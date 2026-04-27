@@ -66,9 +66,6 @@ type Downloader struct {
 // New creates a Downloader. ctx is used to cancel in-flight downloads on
 // Ctrl+C; pass context.Background() if cancellation is not needed.
 func New(client *api.Client, opts Options, ctx context.Context) *Downloader {
-	if opts.Directory == "" {
-		opts.Directory = "Qobuz Downloads"
-	}
 	if opts.FolderFormat == "" {
 		opts.FolderFormat = "{artist} - {album} ({year}) [{bit_depth}B-{sampling_rate}kHz]"
 	}
