@@ -20,8 +20,29 @@ import (
 	"github.com/vbauerster/mpb/v8"
 	"github.com/vbauerster/mpb/v8/decor"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/Aeneaj/qobuz-dl-go/internal/api"
+	"github.com/Aeneaj/qobuz-dl-go/internal/ui"
 )
+
+// ProgressBar abstracts mpb.Bar and ui.TrackHandle behind a common interface.
+// *mpb.Bar satisfies this interface natively; ui.TrackHandle implements it explicitly.
+// ProxyReader matches mpb.Bar's signature (io.Reader → io.ReadCloser).
+type ProgressBar interface {
+	SetTotal(total int64, triggerComplete bool)
+	IncrBy(n int)
+	ProxyReader(r io.Reader) io.ReadCloser
+	Abort(drop bool)
+}
+
+// noopBar is used when uiProg is nil and no mpb context exists (e.g. in tests).
+type noopBar struct{}
+
+func (noopBar) SetTotal(int64, bool)                  {}
+func (noopBar) IncrBy(int)                            {}
+func (noopBar) ProxyReader(r io.Reader) io.ReadCloser { return io.NopCloser(r) }
+func (noopBar) Abort(bool)                            {}
 
 const (
 	qlDowngrade = "FormatRestrictedByFormatAvailability"
@@ -61,7 +82,15 @@ type Downloader struct {
 	db         *downloadDB
 	httpClient *http.Client
 	ctx        context.Context
+	uiProg     *tea.Program // nil → use mpb progress bars
 }
+
+// SetUI wires up the bubbletea program for the TUI download display.
+// Must be called before any download methods if TUI mode is desired.
+func (d *Downloader) SetUI(p *tea.Program) { d.uiProg = p }
+
+// quiet returns true when the TUI is active; callers suppress fmt.Printf in that case.
+func (d *Downloader) quiet() bool { return d.uiProg != nil }
 
 // New creates a Downloader. ctx is used to cancel in-flight downloads on
 // Ctrl+C; pass context.Background() if cancellation is not needed.
@@ -283,8 +312,17 @@ func (d *Downloader) downloadAlbum(albumID, baseDir string) error {
 			trackCount = len(raw)
 		}
 	}
-	fmt.Printf("\n\033[1m♫  %s\033[0m  ·  \033[33m%s %v/%v\033[0m  ·  %d tracks\n\n",
-		title, fileFormat, bitDepth, samplingRate, trackCount)
+	if d.uiProg != nil {
+		d.uiProg.Send(ui.MsgAlbum{
+			Title:  title,
+			Artist: artist,
+			Format: fmt.Sprintf("%s %v/%v", fileFormat, bitDepth, samplingRate),
+			Tracks: trackCount,
+		})
+	} else {
+		fmt.Printf("\n\033[1m♫  %s\033[0m  ·  \033[33m%s %v/%v\033[0m  ·  %d tracks\n\n",
+			title, fileFormat, bitDepth, samplingRate, trackCount)
+	}
 
 	// Build folder name
 	folderFmt := cleanFormatStr(d.Opts.FolderFormat, fileFormat)
@@ -346,10 +384,14 @@ func (d *Downloader) downloadAlbum(albumID, baseDir string) error {
 		track    map[string]interface{}
 		trackDir string
 		trackID  string
-		bar      *mpb.Bar
+		bar      ProgressBar
 	}
 
-	p := mpb.New(mpb.WithRefreshRate(150 * time.Millisecond))
+	var mpbProg *mpb.Progress
+	if d.uiProg == nil {
+		mpbProg = mpb.New(mpb.WithRefreshRate(150 * time.Millisecond))
+	}
+
 	var jobs []trackJob
 
 	for idx, t := range rawItems {
@@ -369,7 +411,9 @@ func (d *Downloader) downloadAlbum(albumID, baseDir string) error {
 				trackURL, err = d.fallbackQuality(trackID)
 			}
 			if err != nil {
-				fmt.Printf("\033[31mTrack %s: cannot get URL: %v. Skipping...\033[0m\n", trackID, err)
+				if !d.quiet() {
+					fmt.Printf("\033[31mTrack %s: cannot get URL: %v. Skipping...\033[0m\n", trackID, err)
+				}
 				continue
 			}
 		}
@@ -391,17 +435,26 @@ func (d *Downloader) downloadAlbum(albumID, baseDir string) error {
 		if tn, ok := track["track_number"].(float64); ok {
 			trackNum = int(tn)
 		}
-		label := barLabel(trackNum, getTitle(track))
-		bar := p.New(0,
-			mpb.BarStyle().Lbound("╢").Filler("█").Tip("█").Padding("░").Rbound("╟"),
-			mpb.BarPriority(idx),
-			mpb.PrependDecorators(decor.Name(label)),
-			mpb.AppendDecorators(
-				decor.Counters(decor.SizeB1024(0), " % .1f / % .1f "),
-				decor.EwmaSpeed(decor.SizeB1024(0), "% .1f MiB/s", 30),
-				decor.OnComplete(decor.Name(""), " \033[32m✓\033[0m"),
-			),
-		)
+		trackTitle := getTitle(track)
+
+		var bar ProgressBar
+		if d.uiProg != nil {
+			handle := ui.NewTrackHandle(trackID, d.uiProg)
+			d.uiProg.Send(ui.MsgRegisterTrack{ID: trackID, Num: trackNum, Name: trackTitle, Counter: handle.Counter()})
+			bar = handle
+		} else {
+			label := barLabel(trackNum, trackTitle)
+			bar = mpbProg.New(0,
+				mpb.BarStyle().Lbound("╢").Filler("█").Tip("█").Padding("░").Rbound("╟"),
+				mpb.BarPriority(idx),
+				mpb.PrependDecorators(decor.Name(label)),
+				mpb.AppendDecorators(
+					decor.Counters(decor.SizeB1024(0), " % .1f / % .1f "),
+					decor.EwmaSpeed(decor.SizeB1024(0), "% .1f MiB/s", 30),
+					decor.OnComplete(decor.Name(""), " \033[32m✓\033[0m"),
+				),
+			)
+		}
 
 		jobs = append(jobs, trackJob{idx, trackURL, track, trackDir, trackID, bar})
 	}
@@ -417,20 +470,30 @@ func (d *Downloader) downloadAlbum(albumID, baseDir string) error {
 			defer wg.Done()
 			defer func() { <-sem }()
 			if err := d.downloadAndTag(j.trackDir, j.idx, j.trackURL, j.track, meta, false, isMP3, trackFmt, j.bar); err != nil {
-				j.bar.Abort(false)
-				fmt.Printf("\033[31mTrack %s failed: %v. Skipping...\033[0m\n", j.trackID, err)
+				if d.uiProg != nil {
+					d.uiProg.Send(ui.MsgFailed{ID: j.trackID, Err: err})
+				} else {
+					j.bar.Abort(false)
+					fmt.Printf("\033[31mTrack %s failed: %v. Skipping...\033[0m\n", j.trackID, err)
+				}
 			} else if d.db != nil {
 				if err := d.db.add(j.trackID); err != nil {
-					fmt.Printf("\033[33mWarning: could not record track in DB: %v\033[0m\n", err)
+					if !d.quiet() {
+						fmt.Printf("\033[33mWarning: could not record track in DB: %v\033[0m\n", err)
+					}
 				}
 			}
 		}(job)
 	}
 
 	wg.Wait()
-	p.Wait()
+	if mpbProg != nil {
+		mpbProg.Wait()
+	}
 
-	fmt.Printf("\033[32m✓  Completed: %s\033[0m\n\n", title)
+	if !d.quiet() {
+		fmt.Printf("\033[32m✓  Completed: %s\033[0m\n\n", title)
+	}
 	return nil
 }
 
@@ -503,38 +566,67 @@ func (d *Downloader) downloadTrackByID(trackID, baseDir string) error {
 		}
 	}
 
-	fmt.Printf("\n\033[1m♫  %s\033[0m  ·  \033[33m%s — %s\033[0m\n\n", title, performer, fileFormat)
+	if !d.quiet() {
+		fmt.Printf("\n\033[1m♫  %s\033[0m  ·  \033[33m%s — %s\033[0m\n\n", title, performer, fileFormat)
+	}
 
 	trackNum := 0
 	if tn, ok := meta["track_number"].(float64); ok {
 		trackNum = int(tn)
 	}
-	p := mpb.New(mpb.WithRefreshRate(150 * time.Millisecond))
-	bar := p.New(0,
-		mpb.BarStyle().Lbound("╢").Filler("█").Tip("█").Padding("░").Rbound("╟"),
-		mpb.PrependDecorators(decor.Name(barLabel(trackNum, title))),
-		mpb.AppendDecorators(
-			decor.Counters(decor.SizeB1024(0), " % .1f / % .1f "),
-			decor.EwmaSpeed(decor.SizeB1024(0), "% .1f MiB/s", 30),
-			decor.OnComplete(decor.Name(""), " \033[32m✓\033[0m"),
-		),
-	)
+
+	var bar ProgressBar
+	var mpbProg *mpb.Progress
+	if d.uiProg != nil {
+		d.uiProg.Send(ui.MsgAlbum{
+			Title:  title,
+			Artist: performer,
+			Format: fileFormat,
+			Tracks: 1,
+		})
+		handle := ui.NewTrackHandle(trackID, d.uiProg)
+		d.uiProg.Send(ui.MsgRegisterTrack{ID: trackID, Num: trackNum, Name: title, Counter: handle.Counter()})
+		bar = handle
+	} else {
+		mpbProg = mpb.New(mpb.WithRefreshRate(150 * time.Millisecond))
+		bar = mpbProg.New(0,
+			mpb.BarStyle().Lbound("╢").Filler("█").Tip("█").Padding("░").Rbound("╟"),
+			mpb.PrependDecorators(decor.Name(barLabel(trackNum, title))),
+			mpb.AppendDecorators(
+				decor.Counters(decor.SizeB1024(0), " % .1f / % .1f "),
+				decor.EwmaSpeed(decor.SizeB1024(0), "% .1f MiB/s", 30),
+				decor.OnComplete(decor.Name(""), " \033[32m✓\033[0m"),
+			),
+		)
+	}
 
 	isMP3 := d.Opts.Quality == 5
 	trackFmt := cleanFormatStr(d.Opts.TrackFormat, fileFormat)
 	if err := d.downloadAndTag(trackDir, 1, trackURL, meta, meta, true, isMP3, trackFmt, bar); err != nil {
-		bar.Abort(false)
-		p.Wait()
+		if d.uiProg != nil {
+			d.uiProg.Send(ui.MsgFailed{ID: trackID, Err: err})
+		} else {
+			bar.Abort(false)
+			if mpbProg != nil {
+				mpbProg.Wait()
+			}
+		}
 		return err
 	}
 	if d.db != nil {
 		if err := d.db.add(trackID); err != nil {
-			fmt.Printf("\033[33mWarning: could not record track in DB: %v\033[0m\n", err)
+			if !d.quiet() {
+				fmt.Printf("\033[33mWarning: could not record track in DB: %v\033[0m\n", err)
+			}
 		}
 	}
-	p.Wait()
+	if mpbProg != nil {
+		mpbProg.Wait()
+	}
 
-	fmt.Printf("\033[32m✓  Completed: %s\033[0m\n\n", title)
+	if !d.quiet() {
+		fmt.Printf("\033[32m✓  Completed: %s\033[0m\n\n", title)
+	}
 	return nil
 }
 
@@ -549,7 +641,7 @@ func (d *Downloader) downloadAndTag(
 	isTrack bool,
 	isMP3 bool,
 	trackFmt string,
-	bar *mpb.Bar,
+	bar ProgressBar,
 ) error {
 	fileURL, _ := trackURLDict["url"].(string)
 	if fileURL == "" {
@@ -592,9 +684,7 @@ func (d *Downloader) downloadAndTag(
 	finalFile += ext
 
 	if _, err := os.Stat(finalFile); err == nil {
-		if bar != nil {
-			bar.Abort(true) // hide already-downloaded bars
-		}
+		bar.Abort(true) // file already downloaded: mark as done in TUI or hide in mpb
 		return nil
 	}
 
@@ -682,7 +772,7 @@ func (d *Downloader) resolveFormat(albumMeta map[string]interface{}) (fileFormat
 // cancellation (e.g. Ctrl+C).
 const maxDownloadRetries = 5
 
-func (d *Downloader) downloadWithProgress(rawURL, dest string, bar *mpb.Bar) error {
+func (d *Downloader) downloadWithProgress(rawURL, dest string, bar ProgressBar) error {
 	var (
 		totalSize   int64 = -1 // full file size, resolved from Content-Length or Content-Range
 		barCredited int64      // bytes already reflected in the bar across all attempts
@@ -754,12 +844,12 @@ func (d *Downloader) downloadWithProgress(rawURL, dest string, bar *mpb.Bar) err
 		// Set bar total for display only — do NOT trigger auto-completion here.
 		// The bar is explicitly completed after io.Copy returns to avoid mpb
 		// closing its operateState channel while ProxyReader is still active.
-		if bar != nil && totalSize > 0 {
+		if totalSize > 0 {
 			bar.SetTotal(totalSize, false)
 		}
 
 		// Fast-forward bar for bytes already on disk from prior attempts.
-		if bar != nil && offset > barCredited {
+		if offset > barCredited {
 			bar.IncrBy(int(offset - barCredited))
 			barCredited = offset
 		}
@@ -776,21 +866,11 @@ func (d *Downloader) downloadWithProgress(rawURL, dest string, bar *mpb.Bar) err
 			return err
 		}
 
-		var reader io.Reader
-		var pr io.ReadCloser
-		if bar != nil {
-			pr = bar.ProxyReader(resp.Body)
-			reader = pr
-		} else {
-			reader = resp.Body
-		}
-
-		n, copyErr := io.Copy(f, reader)
+		pr := bar.ProxyReader(resp.Body)
+		n, copyErr := io.Copy(f, pr)
 
 		// Always close all handles before deciding what to do next.
-		if pr != nil {
-			pr.Close()
-		}
+		pr.Close()
 		resp.Body.Close()
 		f.Close()
 
@@ -804,13 +884,11 @@ func (d *Downloader) downloadWithProgress(rawURL, dest string, bar *mpb.Bar) err
 			// Explicitly mark bar complete now that io.Copy has fully returned.
 			// Doing this here (not during SetTotal) prevents mpb from closing its
 			// internal operateState channel while ProxyReader is still reading.
-			if bar != nil {
-				completedAt := totalSize
-				if completedAt <= 0 {
-					completedAt = written
-				}
-				bar.SetTotal(completedAt, true)
+			completedAt := totalSize
+			if completedAt <= 0 {
+				completedAt = written
 			}
+			bar.SetTotal(completedAt, true)
 			return nil
 		}
 

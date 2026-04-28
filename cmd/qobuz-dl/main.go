@@ -9,9 +9,12 @@ import (
 	"strings"
 	"syscall"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/Aeneaj/qobuz-dl-go/internal/api"
 	"github.com/Aeneaj/qobuz-dl-go/internal/config"
 	"github.com/Aeneaj/qobuz-dl-go/internal/downloader"
+	"github.com/Aeneaj/qobuz-dl-go/internal/ui"
 )
 
 // version is set at build time via -ldflags "-X main.version=v1.x.x".
@@ -143,7 +146,7 @@ func main() {
 		if err != nil {
 			fatalf("%v", err)
 		}
-		dl.DownloadURLs(cmdArgs)
+		runWithTUI(ctx, stop, dl, func() { dl.DownloadURLs(cmdArgs) })
 
 	case "lucky":
 		if len(cmdArgs) == 0 {
@@ -163,7 +166,7 @@ func main() {
 		if err != nil {
 			fatalf("%v", err)
 		}
-		dl.DownloadURLs(urls)
+		runWithTUI(ctx, stop, dl, func() { dl.DownloadURLs(urls) })
 
 	case "csv":
 		if len(cmdArgs) == 0 {
@@ -174,7 +177,7 @@ func main() {
 		if err != nil {
 			fatalf("%v", err)
 		}
-		dl.DownloadCSV(cmdArgs[0], *failed)
+		runWithTUI(ctx, stop, dl, func() { dl.DownloadCSV(cmdArgs[0], *failed) })
 
 	case "oauth":
 		codeOrURL := ""
@@ -277,4 +280,25 @@ func initDownloader(ctx context.Context, dir string, quality int, embedArt, albu
 
 func searchByType(client *api.Client, itemType, query string, limit int) ([]string, error) {
 	return downloader.SearchURLs(client, itemType, query, limit)
+}
+
+// runWithTUI launches the bubbletea TUI, runs fn in a goroutine, then blocks
+// until either fn finishes or the user presses Ctrl+C.
+// stop is the context cancel function from signal.NotifyContext; it is called
+// after the TUI exits so that any in-flight HTTP requests are cancelled.
+func runWithTUI(ctx context.Context, stop context.CancelFunc, dl *downloader.Downloader, fn func()) {
+	model := ui.NewModel()
+	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithContext(ctx))
+	dl.SetUI(p)
+
+	go func() {
+		fn()
+		p.Quit()
+	}()
+
+	if _, err := p.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
+	}
+	// Cancel context so any goroutines still blocked on HTTP respect the exit.
+	stop()
 }
