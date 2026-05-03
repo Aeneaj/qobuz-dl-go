@@ -11,12 +11,34 @@ internal/api/        Cliente HTTP Qobuz API (qopy.py)
 internal/bundle/     Scraper de app_id/secrets/private_key de bundle.js
 internal/config/     Lector/escritor de config.ini (INI casero, sin deps)
 internal/downloader/ Descarga, tagging FLAC/MP3, colecciones, OAuth
+internal/lyrics/     Descarga de .lrc: lector de metadatos FLAC/MP3, cliente LRCLIB
 ```
+
+## Filosofía de Arquitectura
+
+### Zero Dependencies para parseo de audio
+
+El tagging y la lectura de metadatos FLAC y MP3 están implementados en **Go puro**, sin librerías externas de audio:
+
+- `internal/downloader/metadata.go` — escritura de tags (Vorbis Comment + ID3v2.3)
+- `internal/lyrics/metadata.go` — lectura de tags y duración (STREAMINFO, Vorbis Comment, ID3v2.3/v2.4, cabecera Xing, estimación CBR)
+
+No añadir dependencias de parseo de audio externas. Si necesitas leer o escribir un campo nuevo de metadatos, impleméntalo en pure Go.
+
+### UI de Terminal: siempre `mpb`
+
+Todas las barras de progreso y el feedback visual se implementan con `github.com/vbauerster/mpb/v8`. Patrones establecidos:
+
+- Estilo de barra: `╢█████░░░╟` (`Lbound("╢").Filler("█").Tip("█").Padding("░").Rbound("╟")`)
+- Etiqueta izquierda (PrependDecorators): ancho fijo con `truncateStr` o `buildLabel`
+- Etiqueta dinámica: `decor.Any(func(_ decor.Statistics) string {...})` + `atomic.Value` para thread safety
+- Completado: `decor.OnComplete(decor.Name(""), " \033[32m✓\033[0m")`
+- Refresh: `mpb.WithRefreshRate(150 * time.Millisecond)`
+
+Cualquier nueva feature con feedback visual debe reutilizar este patrón para consistencia.
 
 ## Dependencias externas
 
-El tagging FLAC (Vorbis Comment) y MP3 (ID3v2.3) están implementados en Go puro
-en `internal/downloader/metadata.go`, sin herramientas externas del sistema.
 Las dependencias de módulo son:
 - `github.com/vbauerster/mpb/v8` — barras de progreso
 - `github.com/acarl005/stripansi` — limpieza de secuencias ANSI
@@ -25,12 +47,24 @@ Las dependencias de módulo son:
 - `github.com/clipperhouse/uax29/v2` — segmentación de texto Unicode
 - `golang.org/x/sys` — syscalls de bajo nivel
 
-## Estado actual
+No añadir dependencias nuevas sin discusión. En particular no añadir librerías de parseo de audio (dhowden/tag, mewkiz/flac, bogem/id3v2, etc.) — ya tenemos implementaciones propias.
+
+## Estado actual (v1.3.5)
 
 - `go build ./...` ✅
 - `go vet ./...` ✅
 - `go test ./...` ✅ (todos los paquetes pasan)
-- Cobertura: api 42%, bundle 64%, config 46%, downloader 25%
+- Cobertura: api 42%, bundle 64%, config 46%, downloader 25%, lyrics 100% (42 tests)
+
+## Comandos de construcción
+
+```bash
+go build -o qobuz-dl ./cmd/qobuz-dl/   # compilar binario
+go build ./...                          # verificar que compila todo
+go vet ./...                            # análisis estático
+go test ./...                           # todos los tests
+go test ./internal/lyrics/... -v        # tests de un paquete concreto
+```
 
 ## Autenticación Qobuz (abril 2026)
 
@@ -50,23 +84,26 @@ Callers:
 - `initDownloader(...)` → `loadOrInitConfig(false)` — todos los comandos de descarga (dl, lucky, csv, fun).
 - `runOAuth(...)` → `loadOrInitConfig(true)` — el flujo OAuth obtiene y guarda el token él mismo via `config.SaveToken`.
 - `--reset` flag → llama `config.Reset()` directamente, sin pasar por `loadOrInitConfig`.
+- `runLyrics(...)` → llama `config.Load()` directamente (solo necesita `DownloadDir`, no credenciales).
 
 Funciones en `internal/config/config.go`:
 - `Reset()` — setup completo con credenciales manuales. Solo para `--reset`.
 - `InitConfig()` — setup sin credenciales. Solo para primera ejecución con `oauth`.
 - `setupPreferences(kv)` — helper interno compartido por ambas: bundle fetch + prompts de directorio/calidad/formatos.
 
-**Regla UX**: nunca pedir user_id/user_auth_token al usuario cuando el comando es `oauth`. El token llega solo del flujo OAuth.
+**Regla UX**: nunca pedir user_id/user_auth_token al usuario cuando el comando es `oauth` o `lyrics`. El token llega del flujo OAuth; `lyrics` no necesita Qobuz.
 
 ## Comandos
 
 ```bash
 go build -o qobuz-dl ./cmd/qobuz-dl/
-./qobuz-dl --reset        # configurar con token manual (pide user_id + token + preferencias)
-./qobuz-dl oauth          # login OAuth (primera ejecución solo pide preferencias básicas)
-./qobuz-dl dl <URL>       # descargar por URL
-./qobuz-dl lucky -q 6 "Radiohead" # búsqueda + descarga
-./qobuz-dl fun            # modo interactivo
+./qobuz-dl --reset           # configurar con token manual (pide user_id + token + preferencias)
+./qobuz-dl oauth             # login OAuth (primera ejecución solo pide preferencias básicas)
+./qobuz-dl dl <URL>          # descargar por URL
+./qobuz-dl lucky -q 6 "Radiohead"  # búsqueda + descarga
+./qobuz-dl fun               # modo interactivo
+./qobuz-dl lyrics            # fetch .lrc para el directorio configurado
+./qobuz-dl lyrics ~/Music    # fetch .lrc para una ruta específica
 ```
 
 ## Directorio de descarga (`download_dir`)
@@ -81,6 +118,55 @@ Implementación:
 - `Config.DownloadDir` — campo separado de `DefaultFolder` (que es el formato de nombre de álbum, no una ruta)
 - `Reset()` pregunta al usuario por el directorio antes de `default_folder`
 - `downloader.New()` ya no tiene fallback hardcodeado — la ruta llega siempre resuelta desde `initDownloader`
+
+**Importante**: el comando `lyrics` usa `resolveScanDir` (en `lyrics_cmd.go`), que es igual a `ResolveDir` pero **sin** `os.MkdirAll` — no crea el directorio si no existe. El usuario debe apuntar a una biblioteca ya existente.
+
+## Comando `lyrics` — detalles de implementación
+
+### Paquete `internal/lyrics/`
+
+```
+metadata.go  — lectura de tags y duración desde FLAC y MP3 (pure Go)
+lrclib.go    — cliente HTTP para LRCLIB API
+lyrics.go    — orquestador: escaneo → barra mpb → fetch secuencial → escritura .lrc
+```
+
+### Lectura de metadatos (metadata.go)
+
+**FLAC:**
+- Bloque STREAMINFO (tipo 0): `sample_rate` (20 bits) + `total_samples` (36 bits) → `duration = total_samples / sample_rate`
+- Bloque VORBIS_COMMENT (tipo 4): pares `KEY=VALUE` en UTF-8; `ARTIST` tiene prioridad sobre `ALBUMARTIST`
+
+**MP3:**
+- Cabecera ID3v2.3 y v2.4 (tamaño syncsafe para v2.4, BE uint32 para v2.3)
+- Frames `TIT2`, `TPE1`, `TPE2`, `TALB`, `TLEN`; decodifica Latin-1, UTF-16LE/BE, UTF-8
+- Duración: `TLEN` (ms) → cabecera Xing/Info (VBR, total_frames × spf / sr) → estimación CBR (filesize × 8 / bitrate)
+
+### LRCLIB API (lrclib.go)
+
+`GET https://lrclib.net/api/get?track_name=...&artist_name=...&album_name=...&duration=...`
+- 200: prioriza `syncedLyrics` sobre `plainLyrics`
+- 404: `("", nil)` — no es un error
+- 429: `time.Sleep(retryDelay)` + un reintento
+- `duration` se omite del query cuando es 0
+
+Campos testables en `Client`: `baseURL`, `retryDelay`, `StepDelay` (todos configurables en tests para velocidad y mock).
+
+### Orquestador (lyrics.go)
+
+- `Run(dir string) error` — API pública, llama `runWithClient(dir, NewClient())`
+- `runWithClient(dir string, client *Client) error` — función interna inyectable en tests
+- Barra mpb con `decor.Any` + `atomic.Value` para etiqueta dinámica `[N/M] Título — Artista`
+- `time.Sleep(client.StepDelay)` entre requests (500ms en producción, 0 en tests)
+- Warnings (404, errores) acumulados en slice, impresos todos tras `p.Wait()`
+
+### Tests (42 tests, cobertura completa)
+
+```
+metadata_test.go  — FLAC tags+duración, fallback ALBUMARTIST, MP3 Latin-1/UTF-16LE/TLEN/TPE2, decodeID3Text
+lrclib_test.go    — syncedLyrics preferred, plainFallback, 404→nil, 429→error, queryParams, OmitsDuration, retry429
+lyrics_test.go    — buildLabel (formato, ancho fijo, truncado), lrcPathFor, scanAudioFiles, runWithClient e2e
+```
 
 ## Pendiente / Ideas
 
@@ -101,3 +187,7 @@ Implementación:
       bar fast-forward a bytes ya descargados via `barCredited`, maneja servidores que ignoran Range
       (responden 200 en vez de 206): trunca y reinicia limpio, cierra `resp.Body` explícitamente
       cada intento para no filtrar conexiones. Helpers: `isContextError`, `isRecoverableErr`.
+- [x] Descarga de letras sincronizadas — `internal/lyrics/`
+      LRCLIB API pública (sin auth); prioriza syncedLyrics sobre plainLyrics; rate limiting 500ms/req;
+      retry único en 429; skip si ya existe .lrc; barra mpb con etiqueta dinámica; zero-deps para parseo FLAC/MP3.
+      Comando: `./qobuz-dl lyrics [ruta]`. Navidrome-compatible (Plug & Play karaoke).

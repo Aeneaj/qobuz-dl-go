@@ -25,6 +25,7 @@ Commands:
   csv <file.csv>     Batch download from a TuneMyMusic CSV export
   oauth [code|url]   Login via OAuth (recommended)
   fun                Interactive search and download mode
+  lyrics [path]      Fetch .lrc files from LRCLIB for a music library
 
 Options:
   -r, --reset        Reconfigure credentials (prompts for user_id + token)
@@ -182,6 +183,9 @@ func main() {
 			codeOrURL = cmdArgs[0]
 		}
 		runOAuth(codeOrURL)
+
+	case "lyrics":
+		runLyrics(cmdArgs)
 
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)

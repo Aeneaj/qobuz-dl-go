@@ -71,6 +71,7 @@ qobuz-dl [options] <command> [args]
 | `oauth [code\|url]` | Log in via OAuth |
 | `csv <file>` | Batch download from a TuneMyMusic CSV export |
 | `fun` | Interactive search and download mode |
+| `lyrics [path]` | Fetch synchronized `.lrc` files from LRCLIB for a music library |
 
 ### Examples
 
@@ -162,6 +163,31 @@ At the end of the run a summary is printed:
 
 The `--failed` report is a CSV with columns `row`, `artist`, `title`, `query`, `reason` — inspect it and retry manually.
 
+### Synchronized lyrics (`lyrics`)
+
+Fetch synchronized `.lrc` files from [LRCLIB](https://lrclib.net) for every FLAC and MP3 file found recursively under a directory. Each `.lrc` is written next to its audio file with the same base name — the standard layout expected by Navidrome, Jellyfin, and any player with karaoke or time-synced lyrics support.
+
+```bash
+# Scan the configured download directory (from config.ini)
+./qobuz-dl lyrics
+
+# Scan a specific path
+./qobuz-dl lyrics ~/Music/Qobuz
+
+# Use the -d flag
+./qobuz-dl lyrics -d ~/Music
+```
+
+**Key behaviours:**
+
+- **No Qobuz auth required.** The command calls the public LRCLIB API only — no token or login needed.
+- **Synced lyrics preferred.** When LRCLIB returns both synced (`[mm:ss.xx]` timestamps) and plain lyrics, the synced version is always saved.
+- **Idempotent.** Files that already have a `.lrc` sibling are skipped without making any network request.
+- **Rate-limit safe.** Requests are paced at ~2 per second. A single automatic retry with a 10-second backoff handles the rare HTTP 429 response — no manual intervention needed.
+- **Graceful on missing lyrics.** When LRCLIB has no match (HTTP 404) the track is noted in the final summary and the run continues.
+
+The directory resolution follows the same priority chain as downloads: `-d` flag → `download_dir` in `config.ini` → `./qobuz-downloader`. Unlike other commands this one does **not** create the directory if it doesn't exist — point it at an existing library.
+
 ### Options
 
 | Flag | Description |
@@ -234,6 +260,7 @@ internal/api/        Qobuz HTTP API client
 internal/bundle/     Scraper for app_id / secrets / private_key from bundle.js
 internal/config/     INI config reader/writer
 internal/downloader/ Download logic, FLAC/MP3 tagging, collections, OAuth
+internal/lyrics/     .lrc fetcher: audio metadata reader (FLAC/MP3), LRCLIB HTTP client
 ```
 
 ## Credits
