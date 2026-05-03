@@ -12,7 +12,7 @@ import (
 )
 
 func runOAuth(codeOrURL string) {
-	cfg, err := loadOrInitConfig()
+	cfg, err := loadOrInitConfig(true)
 	if err != nil {
 		fatalf("load config: %v", err)
 	}

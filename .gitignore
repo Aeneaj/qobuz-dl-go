@@ -1,26 +1,48 @@
-# Compiled binaries (root-level only, not cmd/qobuz-dl/ directory)
+# --- Binarios y Compilados ---
+# Bloquea binarios en la raíz
 /qobuz-dl
 /qobuz-dl.exe
+bin/
+dist/
 
-# Downloaded music
+# --- Configuración y Datos Privados (CRÍTICO) ---
+# Tu user_id y tokens de Qobuz viven aquí
+config.ini
+*.ini
+
+# Tu historial local de descargas para evitar duplicados
+*.db
+qobuz_dl.db
+
+# --- Descargas y Multimedia ---
+# Evita subir gigabytes de música por accidente
+qobuz-downloader/
 Qobuz Downloads/
+*.flac
+*.mp3
+*.jpg
 
-# Test coverage
+# --- Reportes y Archivos de Pruebas ---
+# Archivos generados por las descargas en lote (CSV)
+failed_downloads.csv
+skipped.csv
+test_playlist.csv
+failed_*.csv
+test_failed.csv
+
+# --- Herramientas y Cobertura ---
+# Archivos de Claude Code y pruebas de Go
+.claude/
 coverage.out
 *.out
+*.log
 
-# IDE and editor
+# --- IDEs y Editores ---
 .idea/
 .vscode/
 *.swp
 *.swo
 
-# OS
+# --- Basura del Sistema Operativo ---
 .DS_Store
 Thumbs.db
-
-# Claude Code internal files
-.claude/
-
-# Go build cache artifacts
-dist/

@@ -35,19 +35,38 @@ Las dependencias de módulo son:
 ## Autenticación Qobuz (abril 2026)
 
 Password auth rota (401). Workarounds implementados:
-1. **Token** (recomendado): `qobuz-dl --reset --token` → pegar user_id + user_auth_token desde DevTools
-2. **OAuth**: `qobuz-dl oauth` → servidor local captura redirect con `user_auth_token=` o `code_autorisation=`
+1. **Token**: `qobuz-dl --reset` → pegar user_id + user_auth_token desde DevTools
+2. **OAuth** (recomendado): `qobuz-dl oauth` → servidor local captura redirect con `user_auth_token=` o `code_autorisation=`
 3. `/oauth/callback` puede devolver 404 — el código intenta `code_autorisation` y `code` como fallback
+
+### Flujo de inicialización y credenciales
+
+`loadOrInitConfig(skipCredentials bool)` en `main.go` gestiona la primera ejecución:
+- Si ya existe `config.ini` → lo carga directamente.
+- Si NO existe y `skipCredentials=false` → llama `config.Reset()` (pide user_id + token + preferencias).
+- Si NO existe y `skipCredentials=true` → llama `config.InitConfig()` (solo preferencias, deja credenciales vacías).
+
+Callers:
+- `initDownloader(...)` → `loadOrInitConfig(false)` — todos los comandos de descarga (dl, lucky, csv, fun).
+- `runOAuth(...)` → `loadOrInitConfig(true)` — el flujo OAuth obtiene y guarda el token él mismo via `config.SaveToken`.
+- `--reset` flag → llama `config.Reset()` directamente, sin pasar por `loadOrInitConfig`.
+
+Funciones en `internal/config/config.go`:
+- `Reset()` — setup completo con credenciales manuales. Solo para `--reset`.
+- `InitConfig()` — setup sin credenciales. Solo para primera ejecución con `oauth`.
+- `setupPreferences(kv)` — helper interno compartido por ambas: bundle fetch + prompts de directorio/calidad/formatos.
+
+**Regla UX**: nunca pedir user_id/user_auth_token al usuario cuando el comando es `oauth`. El token llega solo del flujo OAuth.
 
 ## Comandos
 
 ```bash
 go build -o qobuz-dl ./cmd/qobuz-dl/
-./qobuz-dl --reset --token        # configurar con token
-./qobuz-dl oauth                   # login OAuth
-./qobuz-dl dl <URL>               # descargar por URL
+./qobuz-dl --reset        # configurar con token manual (pide user_id + token + preferencias)
+./qobuz-dl oauth          # login OAuth (primera ejecución solo pide preferencias básicas)
+./qobuz-dl dl <URL>       # descargar por URL
 ./qobuz-dl lucky -q 6 "Radiohead" # búsqueda + descarga
-./qobuz-dl fun                     # modo interactivo
+./qobuz-dl fun            # modo interactivo
 ```
 
 ## Directorio de descarga (`download_dir`)

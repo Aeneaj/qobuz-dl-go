@@ -137,23 +137,9 @@ func Load() (*Config, error) {
 	}, nil
 }
 
-// Reset interactively creates a fresh config.ini.
-// Credentials are set via OAuth token (user_id + user_auth_token).
-func Reset() error {
-	dir := ConfigDir()
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
-	}
-	cfgFile := filepath.Join(dir, "config.ini")
-	fmt.Printf("\033[33mCreating config file: %s\033[0m\n", cfgFile)
-
-	kv := map[string]string{}
-
-	fmt.Println("\033[33mTo get your credentials: log in at https://play.qobuz.com,")
-	fmt.Println("open DevTools → Application → Local Storage → find 'localuser'\033[0m")
-	kv["user_id"] = prompt("Enter your Qobuz user_id:\n- ")
-	kv["user_auth_token"] = prompt("Enter your Qobuz user_auth_token:\n- ")
-
+// setupPreferences fills kv with user preferences and fetches bundle tokens.
+// Shared by Reset and InitConfig.
+func setupPreferences(kv map[string]string) error {
 	kv["download_dir"] = prompt("Enter default download directory (leave blank for ./qobuz-downloader):\n- ")
 	kv["default_folder"] = promptDefault("Folder for downloads (leave empty for 'Qobuz Downloads')\n- ", "Qobuz Downloads")
 	kv["default_quality"] = promptDefault("Download quality (5, 6, 7, 27) [320, LOSSLESS, 24B <96KHZ, 24B >96KHZ]\n(leave empty for '6')\n- ", "6")
@@ -194,6 +180,56 @@ func Reset() error {
 	kv["app_id"] = appID
 	kv["secrets"] = strings.Join(secList, ",")
 	kv["private_key"] = b.PrivateKey()
+	return nil
+}
+
+// Reset interactively creates a fresh config.ini including manual credentials.
+// Used by the --reset flag.
+func Reset() error {
+	dir := ConfigDir()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	cfgFile := filepath.Join(dir, "config.ini")
+	fmt.Printf("\033[33mCreating config file: %s\033[0m\n", cfgFile)
+
+	kv := map[string]string{}
+
+	fmt.Println("\033[33mTo get your credentials: log in at https://play.qobuz.com,")
+	fmt.Println("open DevTools → Application → Local Storage → find 'localuser'\033[0m")
+	kv["user_id"] = prompt("Enter your Qobuz user_id:\n- ")
+	kv["user_auth_token"] = prompt("Enter your Qobuz user_auth_token:\n- ")
+
+	if err := setupPreferences(kv); err != nil {
+		return err
+	}
+
+	if err := writeINI(cfgFile, kv); err != nil {
+		return err
+	}
+	fmt.Printf("\033[32mConfig saved to %s\033[0m\n", cfgFile)
+	return nil
+}
+
+// InitConfig creates a fresh config.ini with preferences but no credentials.
+// Used on first run when the oauth command is invoked, since OAuth will
+// obtain and save the token itself moments later.
+func InitConfig() error {
+	dir := ConfigDir()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	cfgFile := filepath.Join(dir, "config.ini")
+	fmt.Printf("\033[33mCreating config file: %s\033[0m\n", cfgFile)
+
+	kv := map[string]string{
+		"user_id":         "",
+		"user_auth_token": "",
+	}
+
+	if err := setupPreferences(kv); err != nil {
+		return err
+	}
 
 	if err := writeINI(cfgFile, kv); err != nil {
 		return err
