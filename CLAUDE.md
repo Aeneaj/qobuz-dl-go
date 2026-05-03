@@ -49,12 +49,52 @@ Las dependencias de módulo son:
 
 No añadir dependencias nuevas sin discusión. En particular no añadir librerías de parseo de audio (dhowden/tag, mewkiz/flac, bogem/id3v2, etc.) — ya tenemos implementaciones propias.
 
-## Estado actual (v1.3.5)
+## Filosofía de Tests
+
+### Reglas invariantes
+
+- **Sin testify ni mocks externos.** Solo stdlib: `testing`, `net/http/httptest`, `os`, `io`, etc.
+- **Tests rápidos y offline.** Ningún test hace peticiones reales a internet. Servidores mock con `httptest.NewServer`.
+- **Table-driven por defecto.** Slice de `struct{ in, want }` + bucle `for _, c := range cases`. Subtests con `t.Run` cuando hay nombre descriptivo.
+- **Inyección de dependencias por parámetro.** La función pública (`Run`) recibe un cliente real; la interna (`runWithClient`) acepta el cliente como argumento para que los tests pasen uno falso. No usar variables globales para el cliente.
+- **Helpers de test mínimos.** Los constructores de datos falsos (`fakeFLAC`, `fakeMP3`) viven en `*_test.go`, no en producción.
+
+### Cobertura por paquete
+
+| Paquete | Tests | Cobertura | Archivos de test |
+|---|---|---|---|
+| api | — | ~42% | api_test.go |
+| bundle | — | ~64% | bundle_test.go |
+| config | — | ~46% | config_test.go |
+| downloader | 30+ | ~35% | metadata_test.go, db_test.go, lastfm_test.go, helpers_test.go |
+| lyrics | 42 | ~100% | metadata_test.go, lrclib_test.go, lyrics_test.go |
+
+`helpers_test.go` en downloader cubre: `sanitize`, `expandPlaceholders`, `renderFormat`, `formatDuration`, `idStr`, `nestedStr`, `releaseYear`, `essenceTitle`, `isAlbumType`.
+
+### CI (`.github/workflows/ci.yml`)
+
+```yaml
+- name: Format   # falla si algún archivo no está formateado con gofmt
+  run: test -z "$(gofmt -l .)"
+- name: Vet
+  run: go vet ./...
+- name: Test     # -cover imprime cobertura por paquete
+  run: go test -cover ./...
+```
+
+### Checklist antes de añadir tests nuevos
+
+1. Buscar si la función ya tiene tests en `*_test.go` del mismo paquete.
+2. Preferir extender una tabla existente antes de crear nueva función de test.
+3. Asegurarse de que `go fmt ./...` no cambia nada antes de commit.
+
+## Estado actual (v1.4.0)
 
 - `go build ./...` ✅
 - `go vet ./...` ✅
-- `go test ./...` ✅ (todos los paquetes pasan)
-- Cobertura: api 42%, bundle 64%, config 46%, downloader 25%, lyrics 100% (42 tests)
+- `go fmt ./...` ✅ (CI falla si hay archivos sin formatear)
+- `go test -cover ./...` ✅ (todos los paquetes pasan)
+- Cobertura: api 42%, bundle 64%, config 46%, downloader ~35% (30+ tests), lyrics 100% (42 tests)
 
 ## Comandos de construcción
 

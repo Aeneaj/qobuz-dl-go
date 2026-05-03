@@ -16,7 +16,7 @@ func fakeFLAC(sampleRate int, totalSamples int64, tags map[string]string) []byte
 	si := make([]byte, 34)
 	si[10] = byte(sampleRate >> 12)
 	si[11] = byte((sampleRate >> 4) & 0xFF)
-	si[12] = byte((sampleRate&0x0F)<<4) | 0x02 // channels-1=1 (stereo), bps-1 bit4=0
+	si[12] = byte((sampleRate&0x0F)<<4) | 0x02    // channels-1=1 (stereo), bps-1 bit4=0
 	si[13] = 0xF0 | byte((totalSamples>>32)&0x0F) // bps-1 bits 3-0=1111 (16 bit), total hi
 	binary.BigEndian.PutUint32(si[14:18], uint32(totalSamples))
 

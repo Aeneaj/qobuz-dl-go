@@ -18,8 +18,11 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Format
+        run: test -z "$(gofmt -l .)"
+
       - name: Vet
         run: go vet ./...
 
       - name: Test
-        run: go test ./...
+        run: go test -cover ./...

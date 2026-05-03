@@ -303,7 +303,7 @@ func readXingDuration(f *os.File, id3End int64) int {
 	}
 	fhdr := buf[start : start+4]
 
-	mpegVer := (fhdr[1] >> 3) & 0x03 // 3=MPEG1, 2=MPEG2, 0=MPEG2.5
+	mpegVer := (fhdr[1] >> 3) & 0x03  // 3=MPEG1, 2=MPEG2, 0=MPEG2.5
 	chanMode := (fhdr[3] >> 6) & 0x03 // 3=mono
 
 	// Side information size determines where Xing header sits.
