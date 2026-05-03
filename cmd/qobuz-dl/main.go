@@ -195,7 +195,7 @@ func fatalf(format string, a ...interface{}) {
 	os.Exit(1)
 }
 
-func loadOrInitConfig() (*config.Config, error) {
+func loadOrInitConfig(skipCredentials bool) (*config.Config, error) {
 	cfgDir := config.ConfigDir()
 	cfgFile := cfgDir + "/config.ini"
 	if _, err := os.Stat(cfgFile); os.IsNotExist(err) {
@@ -203,15 +203,21 @@ func loadOrInitConfig() (*config.Config, error) {
 			return nil, err
 		}
 		fmt.Println("\033[33mFirst run: setting up config...\033[0m")
-		if err := config.Reset(); err != nil {
-			return nil, err
+		if skipCredentials {
+			if err := config.InitConfig(); err != nil {
+				return nil, err
+			}
+		} else {
+			if err := config.Reset(); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return config.Load()
 }
 
 func initDownloader(ctx context.Context, dir string, quality int, embedArt, albumsOnly, noM3U, noFallback, ogCover, noCover, noDB bool, workers int, folderFmt, trackFmt string, smartDiscog bool) (*downloader.Downloader, error) {
-	cfg, err := loadOrInitConfig()
+	cfg, err := loadOrInitConfig(false)
 	if err != nil {
 		return nil, err
 	}

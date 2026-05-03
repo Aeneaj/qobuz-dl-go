@@ -1,0 +1,27 @@
+aenea@negrita:~/Documents/proyectos/trabajoconCLAUDE/qobuz-dl-go$ ./qobuz-dl oauth
+First run: setting up config...
+Creating config file: /home/aenea/.config/qobuz-dl/config.ini
+To get your credentials: log in at https://play.qobuz.com,
+open DevTools → Application → Local Storage → find 'localuser'
+Enter your Qobuz user_id:
+- aldojeo@gmail.com
+Enter your Qobuz user_auth_token:
+- ^C
+Enter default download directory (leave blank for ./qobuz-downloader):
+-
+Folder for downloads (leave empty for 'Qobuz Downloads')
+-
+Download quality (5, 6, 7, 27) [320, LOSSLESS, 24B <96KHZ, 24B >96KHZ]
+(leave empty for '6')
+-
+Fetching app tokens from Qobuz web player, please wait...
+Config saved to /home/aenea/.config/qobuz-dl/config.ini
+Fetching app tokens from Qobuz bundle.js...
+Open this URL in your browser to authenticate with Qobuz:
+https://www.qobuz.com/signin/oauth?ext_app_id=798273057&redirect_url=http://localhost:33189
+
+A local server on port 33189 will capture the OAuth redirect automatically.
+Press Enter after completing login in your browser (or wait for auto-capture)...
+Membership: Studio
+OAuth login successful!
+OAuth token saved to config.ini
