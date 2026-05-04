@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/Aeneaj/qobuz-dl-go/internal/config"
 	"github.com/Aeneaj/qobuz-dl-go/internal/lyrics"
@@ -49,7 +52,20 @@ Options:
 		fatalf("lyrics: %v", err)
 	}
 
-	if err := lyrics.Run(resolved); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// Second Ctrl+C → immediate exit.
+	go func() {
+		<-ctx.Done()
+		stop() // restore default signal behavior
+		ch := make(chan os.Signal, 1)
+		signal.Notify(ch, os.Interrupt)
+		<-ch
+		os.Exit(1)
+	}()
+
+	if err := lyrics.Run(ctx, resolved); err != nil {
 		fatalf("lyrics: %v", err)
 	}
 }

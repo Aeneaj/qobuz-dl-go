@@ -1,6 +1,7 @@
 package lyrics
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"os"
@@ -18,14 +19,18 @@ const labelWidth = 55
 // Run fetches .lrc files for every .flac and .mp3 found recursively under dir.
 // Files that already have a matching .lrc are silently skipped.
 // Requests are sent sequentially with a 500 ms pause to respect LRCLIB rate limits.
-func Run(dir string) error {
-	return runWithClient(dir, NewClient())
+func Run(ctx context.Context, dir string) error {
+	return runWithClient(ctx, dir, NewClient())
 }
 
-func runWithClient(dir string, client *Client) error {
+func runWithClient(ctx context.Context, dir string, client *Client) error {
 	fmt.Printf("\033[33mScanning %s...\033[0m\n", dir)
-	files, err := scanAudioFiles(dir)
+	files, err := scanAudioFiles(ctx, dir)
 	if err != nil {
+		if ctx.Err() != nil {
+			fmt.Println("\n\033[33mInterrupted.\033[0m")
+			return nil
+		}
 		return fmt.Errorf("scan: %w", err)
 	}
 	if len(files) == 0 {
@@ -40,7 +45,7 @@ func runWithClient(dir string, client *Client) error {
 	var currentLabel atomic.Value
 	currentLabel.Store(buildLabel(0, total, "", ""))
 
-	p := mpb.New(mpb.WithRefreshRate(150 * time.Millisecond))
+	p := mpb.NewWithContext(ctx, mpb.WithRefreshRate(150*time.Millisecond))
 	bar := p.New(int64(total),
 		mpb.BarStyle().Lbound("╢").Filler("█").Tip("█").Padding("░").Rbound("╟"),
 		mpb.PrependDecorators(
@@ -56,8 +61,16 @@ func runWithClient(dir string, client *Client) error {
 
 	var fetched, skipped int
 	var warnings []string
+	interrupted := false
 
+loop:
 	for i, f := range files {
+		if ctx.Err() != nil {
+			bar.Abort(false)
+			interrupted = true
+			break
+		}
+
 		currentLabel.Store(buildLabel(i+1, total, f.Title, f.Artist))
 
 		lrcPath := lrcPathFor(f.Path)
@@ -70,30 +83,30 @@ func runWithClient(dir string, client *Client) error {
 		}
 
 		content, fetchErr := client.FetchWithRetry(f)
-		if fetchErr != nil {
+		switch {
+		case fetchErr != nil:
 			warnings = append(warnings,
 				fmt.Sprintf("\033[31mERROR  %s: %v\033[0m", filepath.Base(f.Path), fetchErr))
-			bar.Increment()
-			time.Sleep(client.StepDelay)
-			continue
-		}
-		if content == "" {
+		case content == "":
 			warnings = append(warnings,
 				fmt.Sprintf("\033[33mWARN   not found — %s — %s\033[0m", f.Title, f.Artist))
-			bar.Increment()
-			time.Sleep(client.StepDelay)
-			continue
-		}
-
-		if err := os.WriteFile(lrcPath, []byte(content), 0644); err != nil {
-			warnings = append(warnings,
-				fmt.Sprintf("\033[31mERROR  write %s: %v\033[0m", filepath.Base(lrcPath), err))
-		} else {
-			fetched++
+		default:
+			if err := os.WriteFile(lrcPath, []byte(content), 0644); err != nil {
+				warnings = append(warnings,
+					fmt.Sprintf("\033[31mERROR  write %s: %v\033[0m", filepath.Base(lrcPath), err))
+			} else {
+				fetched++
+			}
 		}
 
 		bar.Increment()
-		time.Sleep(client.StepDelay)
+		select {
+		case <-time.After(client.StepDelay):
+		case <-ctx.Done():
+			bar.Abort(false)
+			interrupted = true
+			break loop
+		}
 	}
 
 	p.Wait()
@@ -105,6 +118,11 @@ func runWithClient(dir string, client *Client) error {
 		}
 	}
 
+	if interrupted {
+		fmt.Printf("\n\033[33m⚠ Interrupted — fetched: %d  skipped: %d\033[0m\n", fetched, skipped)
+		return nil
+	}
+
 	notFound := len(warnings)
 	fmt.Printf("\n\033[32m✓ Done — fetched: %d  skipped: %d  not found/errors: %d\033[0m\n",
 		fetched, skipped, notFound)
@@ -113,9 +131,12 @@ func runWithClient(dir string, client *Client) error {
 
 // scanAudioFiles walks dir recursively and returns AudioInfo for every
 // .flac and .mp3 file. Read errors are reported as warnings and skipped.
-func scanAudioFiles(dir string) ([]AudioInfo, error) {
+func scanAudioFiles(ctx context.Context, dir string) ([]AudioInfo, error) {
 	var files []AudioInfo
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if err != nil {
 			return err
 		}

@@ -1,6 +1,7 @@
 package lyrics
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -90,7 +91,7 @@ func TestScanAudioFiles_FindsFlacAndMP3(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "cover.jpg"), []byte("jpg"), 0644)
 	os.WriteFile(filepath.Join(sub, "notes.txt"), []byte("txt"), 0644)
 
-	files, err := scanAudioFiles(dir)
+	files, err := scanAudioFiles(context.Background(), dir)
 	if err != nil {
 		t.Fatalf("scanAudioFiles: %v", err)
 	}
@@ -105,7 +106,7 @@ func TestScanAudioFiles_SkipsUnparseable(t *testing.T) {
 	// just skip the file.
 	os.WriteFile(filepath.Join(dir, "bad.flac"), []byte("garbage"), 0644)
 
-	files, err := scanAudioFiles(dir)
+	files, err := scanAudioFiles(context.Background(), dir)
 	if err != nil {
 		t.Fatalf("scanAudioFiles: %v", err)
 	}
@@ -120,7 +121,7 @@ func TestScanAudioFiles_FallbackTitle(t *testing.T) {
 	flacData := fakeFLAC(44100, 44100, nil)
 	os.WriteFile(filepath.Join(dir, "my track.flac"), flacData, 0644)
 
-	files, err := scanAudioFiles(dir)
+	files, err := scanAudioFiles(context.Background(), dir)
 	if err != nil {
 		t.Fatalf("scanAudioFiles: %v", err)
 	}
@@ -129,6 +130,23 @@ func TestScanAudioFiles_FallbackTitle(t *testing.T) {
 	}
 	if files[0].Title != "my track" {
 		t.Errorf("fallback Title = %q, want %q", files[0].Title, "my track")
+	}
+}
+
+func TestScanAudioFiles_CancelledContext(t *testing.T) {
+	dir := t.TempDir()
+	// Put several FLAC files in the directory.
+	for i := 0; i < 5; i++ {
+		flacData := fakeFLAC(44100, 44100, map[string]string{"title": "T"})
+		os.WriteFile(filepath.Join(dir, filepath.Join(dir, strings.Repeat("x", i+1)+".flac")), flacData, 0644)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	_, err := scanAudioFiles(ctx, dir)
+	if err == nil {
+		t.Fatal("expected error from cancelled context, got nil")
 	}
 }
 
@@ -146,7 +164,7 @@ func TestRunWithClient_FetchesAndSavesLRC(t *testing.T) {
 	flacPath := filepath.Join(dir, "song.flac")
 	os.WriteFile(flacPath, flacData, 0644)
 
-	if err := runWithClient(dir, testClient(srv.URL)); err != nil {
+	if err := runWithClient(context.Background(), dir, testClient(srv.URL)); err != nil {
 		t.Fatalf("runWithClient: %v", err)
 	}
 
@@ -175,7 +193,7 @@ func TestRunWithClient_SkipsExistingLRC(t *testing.T) {
 	existingLRC := "[00:00.00] Existing lyrics"
 	os.WriteFile(filepath.Join(dir, "song.lrc"), []byte(existingLRC), 0644)
 
-	if err := runWithClient(dir, testClient(srv.URL)); err != nil {
+	if err := runWithClient(context.Background(), dir, testClient(srv.URL)); err != nil {
 		t.Fatalf("runWithClient: %v", err)
 	}
 
@@ -199,7 +217,7 @@ func TestRunWithClient_GracefulOnNotFound(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "unknown.flac"), flacData, 0644)
 
 	// Must not return an error — 404 is a soft "not found", not a failure.
-	if err := runWithClient(dir, testClient(srv.URL)); err != nil {
+	if err := runWithClient(context.Background(), dir, testClient(srv.URL)); err != nil {
 		t.Fatalf("runWithClient must not fail on 404; got: %v", err)
 	}
 	// No .lrc file should be created.
@@ -217,10 +235,29 @@ func TestRunWithClient_EmptyDir(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if err := runWithClient(t.TempDir(), testClient(srv.URL)); err != nil {
+	if err := runWithClient(context.Background(), t.TempDir(), testClient(srv.URL)); err != nil {
 		t.Fatalf("runWithClient: %v", err)
 	}
 	if requestCount != 0 {
 		t.Errorf("expected 0 HTTP requests for empty dir, got %d", requestCount)
+	}
+}
+
+func TestRunWithClient_CancelledContext(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(lrclibResponse{SyncedLyrics: "[00:00.00] ok"})
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	flacData := fakeFLAC(44100, 44100, map[string]string{"title": "Song", "artist": "A"})
+	os.WriteFile(filepath.Join(dir, "song.flac"), flacData, 0644)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel before Run
+
+	// Must return nil — interruption is not an error.
+	if err := runWithClient(ctx, dir, testClient(srv.URL)); err != nil {
+		t.Fatalf("runWithClient with cancelled ctx must return nil, got: %v", err)
 	}
 }
