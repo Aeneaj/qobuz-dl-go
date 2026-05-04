@@ -3,6 +3,7 @@
 package api
 
 import (
+	"context"
 	"crypto/md5"
 	"encoding/json"
 	"fmt"
@@ -29,14 +30,17 @@ type Client struct {
 	Label   string // subscription tier
 	Secret  string // validated app secret
 	http    *http.Client
+	ctx     context.Context
 }
 
-// New creates a Client without authenticating.
-func New(appID string, secrets []string) *Client {
+// New creates a Client without authenticating. ctx is used to cancel in-flight
+// API requests on Ctrl+C; pass context.Background() if cancellation is not needed.
+func New(appID string, secrets []string, ctx context.Context) *Client {
 	return &Client{
 		AppID:   appID,
 		Secrets: secrets,
 		http:    &http.Client{Timeout: 30 * time.Second},
+		ctx:     ctx,
 	}
 }
 
@@ -54,7 +58,7 @@ func (c *Client) doRequest(method, endpoint string, params url.Values, body stri
 	if body != "" {
 		reqBody = strings.NewReader(body)
 	}
-	req, err := http.NewRequest(method, fullURL, reqBody)
+	req, err := http.NewRequestWithContext(c.ctx, method, fullURL, reqBody)
 	if err != nil {
 		return nil, err
 	}

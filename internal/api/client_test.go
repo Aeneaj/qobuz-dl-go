@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ func mockServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *Clie
 		AppID:   "123456789",
 		Secrets: []string{"testsecret"},
 		http:    srv.Client(),
+		ctx:     context.Background(),
 	}
 	// Point baseURL at mock — we override via the transport
 	// Instead, use a wrapper that redirects calls
@@ -137,7 +139,7 @@ func TestDoGet_401_ReturnsAuthError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := &Client{AppID: "123", http: srv.Client()}
+	c := &Client{AppID: "123", http: srv.Client(), ctx: context.Background()}
 	// Temporarily repoint base
 	origBase := baseURL
 	_ = origBase // read to satisfy linter if baseURL were a var; it's a const so we use a shim
@@ -327,7 +329,7 @@ func TestSearchAlbums_MockServer(t *testing.T) {
 }
 
 func TestGetTrackURL_InvalidQuality(t *testing.T) {
-	c := New("123", nil)
+	c := New("123", nil, context.Background())
 	_, err := c.GetTrackURL("t1", 99, "")
 	if err == nil {
 		t.Fatal("expected error for invalid quality")
@@ -384,6 +386,7 @@ func clientForServer(t *testing.T, srv *httptest.Server) *Client {
 		AppID:   "123456789",
 		Secrets: []string{"testsecret"},
 		http:    srv.Client(),
+		ctx:     context.Background(),
 	}
 	// Monkey-patch baseURL by wrapping the transport to rewrite URLs
 	origTransport := srv.Client().Transport

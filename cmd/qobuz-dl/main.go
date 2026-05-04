@@ -120,9 +120,19 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Context cancelled on Ctrl+C / SIGTERM — propagated into HTTP downloads.
+	// Context cancelled on Ctrl+C / SIGTERM — propagated into all HTTP calls.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Second Ctrl+C → immediate exit (in case a goroutine ignores ctx).
+	go func() {
+		<-ctx.Done()
+		stop() // restore default signal behavior
+		ch := make(chan os.Signal, 1)
+		signal.Notify(ch, os.Interrupt)
+		<-ch
+		os.Exit(1)
+	}()
 
 	cmd := args[0]
 	cmdArgs := args[1:]
@@ -182,10 +192,10 @@ func main() {
 		if len(cmdArgs) > 0 {
 			codeOrURL = cmdArgs[0]
 		}
-		runOAuth(codeOrURL)
+		runOAuth(ctx, codeOrURL)
 
 	case "lyrics":
-		runLyrics(cmdArgs)
+		runLyrics(ctx, cmdArgs)
 
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
@@ -249,7 +259,7 @@ func initDownloader(ctx context.Context, dir string, quality int, embedArt, albu
 		trackFmt = cfg.TrackFormat
 	}
 
-	client := api.New(cfg.AppID, cfg.Secrets)
+	client := api.New(cfg.AppID, cfg.Secrets, ctx)
 
 	if cfg.UserID == "" || cfg.UserAuthToken == "" {
 		return nil, fmt.Errorf("no credentials found — run 'qobuz-dl oauth' to log in, or 'qobuz-dl --reset' to set up manually")

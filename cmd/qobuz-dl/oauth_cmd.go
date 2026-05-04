@@ -11,7 +11,7 @@ import (
 	"github.com/Aeneaj/qobuz-dl-go/internal/downloader"
 )
 
-func runOAuth(codeOrURL string) {
+func runOAuth(ctx context.Context, codeOrURL string) {
 	cfg, err := loadOrInitConfig(true)
 	if err != nil {
 		fatalf("load config: %v", err)
@@ -25,7 +25,7 @@ func runOAuth(codeOrURL string) {
 	// private_key are current (they rotate). Also recovers from configs
 	// written when private_key regex didn't match.
 	fmt.Println("\033[33mFetching app tokens from Qobuz bundle.js...\033[0m")
-	b, bundleErr := bundle.Fetch()
+	b, bundleErr := bundle.Fetch(ctx)
 	if bundleErr != nil {
 		fmt.Printf("\033[33mWarning: bundle fetch failed (%v) — falling back to cached config values\033[0m\n", bundleErr)
 	} else {
@@ -62,8 +62,8 @@ func runOAuth(codeOrURL string) {
 		fmt.Println("\033[33m  qobuz-dl --reset --token\033[0m")
 	}
 
-	client := api.New(appID, secrets)
-	dl := downloader.New(client, downloader.Options{}, context.Background())
+	client := api.New(appID, secrets, ctx)
+	dl := downloader.New(client, downloader.Options{}, ctx)
 
 	if err := dl.OAuthLogin(appID, privateKey, codeOrURL); err != nil {
 		fmt.Fprintf(os.Stderr, "\033[31m%v\033[0m\n", err)

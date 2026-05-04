@@ -1,6 +1,7 @@
 package downloader
 
 import (
+	"context"
 	"encoding/xml"
 	"fmt"
 	"net/http"
@@ -57,7 +58,7 @@ func parseLastFMURL(rawURL string) (username, listType string, err error) {
 // 1.0 API. No API key is required.
 //
 // Supported listType values: "loved", "library".
-func fetchLastFMTracks(username, listType string) ([]LastFMTrack, error) {
+func fetchLastFMTracks(ctx context.Context, username, listType string) ([]LastFMTrack, error) {
 	base := "https://ws.audioscrobbler.com/1.0/user/" + url.PathEscape(username) + "/"
 	var xspfURL string
 	switch listType {
@@ -70,7 +71,7 @@ func fetchLastFMTracks(username, listType string) ([]LastFMTrack, error) {
 	}
 
 	hc := &http.Client{Timeout: 30 * time.Second}
-	req, err := http.NewRequest(http.MethodGet, xspfURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, xspfURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +118,7 @@ func (d *Downloader) downloadLastFMPlaylist(username, listType string) error {
 	}
 
 	fmt.Printf("\033[33mFetching Last.fm %s for user %q...\033[0m\n", label, username)
-	tracks, err := fetchLastFMTracks(username, listType)
+	tracks, err := fetchLastFMTracks(d.ctx, username, listType)
 	if err != nil {
 		return err
 	}

@@ -3,6 +3,7 @@
 package bundle
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -40,10 +41,15 @@ type Bundle struct {
 }
 
 // Fetch downloads the Qobuz login page and bundle.js.
-func Fetch() (*Bundle, error) {
+// ctx is used to cancel the requests; pass context.Background() if not needed.
+func Fetch(ctx context.Context) (*Bundle, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
 
-	resp, err := client.Get(baseURL + "/login")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/login", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("get login page: %w", err)
 	}
@@ -59,7 +65,11 @@ func Fetch() (*Bundle, error) {
 	}
 	bundlePath := string(match[1])
 
-	resp2, err := client.Get(baseURL + bundlePath)
+	req2, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+bundlePath, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp2, err := client.Do(req2)
 	if err != nil {
 		return nil, fmt.Errorf("get bundle.js: %w", err)
 	}

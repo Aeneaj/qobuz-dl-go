@@ -349,7 +349,7 @@ func (d *Downloader) downloadAlbum(albumID, baseDir string) error {
 		bar      *mpb.Bar
 	}
 
-	p := mpb.New(mpb.WithRefreshRate(150 * time.Millisecond))
+	p := mpb.NewWithContext(d.ctx, mpb.WithRefreshRate(150*time.Millisecond))
 	var jobs []trackJob
 
 	for idx, t := range rawItems {
@@ -410,9 +410,14 @@ func (d *Downloader) downloadAlbum(albumID, baseDir string) error {
 	sem := make(chan struct{}, d.Opts.Workers)
 	var wg sync.WaitGroup
 
+jobLoop:
 	for _, job := range jobs {
+		select {
+		case <-d.ctx.Done():
+			break jobLoop
+		case sem <- struct{}{}:
+		}
 		wg.Add(1)
-		sem <- struct{}{}
 		go func(j trackJob) {
 			defer wg.Done()
 			defer func() { <-sem }()
@@ -509,7 +514,7 @@ func (d *Downloader) downloadTrackByID(trackID, baseDir string) error {
 	if tn, ok := meta["track_number"].(float64); ok {
 		trackNum = int(tn)
 	}
-	p := mpb.New(mpb.WithRefreshRate(150 * time.Millisecond))
+	p := mpb.NewWithContext(d.ctx, mpb.WithRefreshRate(150*time.Millisecond))
 	bar := p.New(0,
 		mpb.BarStyle().Lbound("╢").Filler("█").Tip("█").Padding("░").Rbound("╟"),
 		mpb.PrependDecorators(decor.Name(barLabel(trackNum, title))),

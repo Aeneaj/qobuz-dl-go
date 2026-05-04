@@ -1,6 +1,7 @@
 package downloader
 
 import (
+	"context"
 	"encoding/xml"
 	"net/http"
 	"net/http/httptest"
@@ -87,7 +88,7 @@ func TestFetchLastFMTracks(t *testing.T) {
 }
 
 func TestFetchLastFMTracksUnsupportedType(t *testing.T) {
-	_, err := fetchLastFMTracks("rj", "playlists")
+	_, err := fetchLastFMTracks(context.Background(), "rj", "playlists")
 	if err == nil {
 		t.Error("expected error for unsupported list type, got nil")
 	}
