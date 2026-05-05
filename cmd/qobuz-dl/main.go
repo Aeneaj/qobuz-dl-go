@@ -320,7 +320,7 @@ func initDownloader(ctx context.Context, f *cliFlags) (*downloader.Downloader, e
 		DBPath:          cfg.DBPath,
 		Workers:         f.Workers,
 	}
-	return downloader.New(client, opts, ctx), nil
+	return downloader.New(client, opts, ctx)
 }
 
 func searchByType(client *api.Client, itemType, query string, limit int) ([]string, error) {

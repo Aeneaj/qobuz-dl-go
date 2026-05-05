@@ -63,7 +63,10 @@ func runOAuth(ctx context.Context, codeOrURL string) {
 	}
 
 	client := api.New(appID, secrets, ctx)
-	dl := downloader.New(client, downloader.Options{}, ctx)
+	dl, err := downloader.New(client, downloader.Options{}, ctx)
+	if err != nil {
+		fatalf("init downloader: %v", err)
+	}
 
 	if err := dl.OAuthLogin(appID, privateKey, codeOrURL); err != nil {
 		fmt.Fprintf(os.Stderr, "\033[31m%v\033[0m\n", err)

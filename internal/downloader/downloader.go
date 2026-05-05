@@ -66,7 +66,9 @@ type Downloader struct {
 
 // New creates a Downloader. ctx is used to cancel in-flight downloads on
 // Ctrl+C; pass context.Background() if cancellation is not needed.
-func New(client *api.Client, opts Options, ctx context.Context) *Downloader {
+// Returns an error if the download directory cannot be created or the
+// downloads DB cannot be opened. OAuth callers may pass an empty Directory.
+func New(client *api.Client, opts Options, ctx context.Context) (*Downloader, error) {
 	if opts.FolderFormat == "" {
 		opts.FolderFormat = "{artist} - {album} ({year}) [{bit_depth}B-{sampling_rate}kHz]"
 	}
@@ -76,7 +78,11 @@ func New(client *api.Client, opts Options, ctx context.Context) *Downloader {
 	if opts.Workers <= 0 {
 		opts.Workers = 3
 	}
-	os.MkdirAll(opts.Directory, 0755)
+	if opts.Directory != "" {
+		if err := os.MkdirAll(opts.Directory, 0755); err != nil {
+			return nil, fmt.Errorf("create download directory %q: %w", opts.Directory, err)
+		}
+	}
 
 	dl := &Downloader{
 		Client:     client,
@@ -87,12 +93,11 @@ func New(client *api.Client, opts Options, ctx context.Context) *Downloader {
 	if !opts.NoDB && opts.DBPath != "" {
 		db, err := openDB(opts.DBPath)
 		if err != nil {
-			fmt.Printf("\033[33mWarning: could not open downloads DB: %v\033[0m\n", err)
-		} else {
-			dl.db = db
+			return nil, fmt.Errorf("open downloads DB %q: %w (use --no-db to bypass)", opts.DBPath, err)
 		}
+		dl.db = db
 	}
-	return dl
+	return dl, nil
 }
 
 // HandleURL dispatches a URL to the appropriate download flow.
@@ -167,7 +172,9 @@ func (d *Downloader) downloadArtist(pages []map[string]interface{}) error {
 	}
 
 	dir := filepath.Join(d.Opts.Directory, sanitize(name))
-	os.MkdirAll(dir, 0755)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("create artist directory %q: %w", dir, err)
+	}
 	fmt.Printf("\033[33mDownloading discography: %s (%d albums)\033[0m\n", name, len(items))
 
 	for _, item := range items {
@@ -185,7 +192,9 @@ func (d *Downloader) downloadPlaylist(pages []map[string]interface{}) error {
 	}
 	name, _ := pages[0]["name"].(string)
 	dir := filepath.Join(d.Opts.Directory, sanitize(name))
-	os.MkdirAll(dir, 0755)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("create playlist directory %q: %w", dir, err)
+	}
 
 	var items []map[string]interface{}
 	for _, page := range pages {
@@ -221,7 +230,9 @@ func (d *Downloader) downloadLabelOrArtist(pages []map[string]interface{}, itemK
 	}
 	name, _ := pages[0]["name"].(string)
 	dir := filepath.Join(d.Opts.Directory, sanitize(name))
-	os.MkdirAll(dir, 0755)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("create %s directory %q: %w", collectionType, dir, err)
+	}
 
 	var items []map[string]interface{}
 	for _, page := range pages {
@@ -298,7 +309,9 @@ func (d *Downloader) downloadAlbum(albumID, baseDir string) error {
 		"{format}":        fileFormat,
 	})
 	albumDir := filepath.Join(baseDir, sanitize(folderName))
-	os.MkdirAll(albumDir, 0755)
+	if err := os.MkdirAll(albumDir, 0755); err != nil {
+		return fmt.Errorf("create album directory %q: %w", albumDir, err)
+	}
 
 	// Cover art
 	if !d.Opts.NoCover {
@@ -385,7 +398,10 @@ func (d *Downloader) downloadAlbum(albumID, baseDir string) error {
 		if isMultiDisc {
 			mn := int(track["media_number"].(float64))
 			trackDir = filepath.Join(albumDir, fmt.Sprintf("Disc %d", mn))
-			os.MkdirAll(trackDir, 0755)
+			if err := os.MkdirAll(trackDir, 0755); err != nil {
+				fmt.Printf("\033[31mTrack %s: cannot create disc directory %q: %v. Skipping...\033[0m\n", trackID, trackDir, err)
+				continue
+			}
 		}
 
 		trackNum := 0
@@ -498,7 +514,9 @@ func (d *Downloader) downloadTrackByID(trackID, baseDir string) error {
 		"{sampling_rate}": fmt.Sprintf("%v", samplingRate),
 	})
 	trackDir := filepath.Join(baseDir, sanitize(folderName))
-	os.MkdirAll(trackDir, 0755)
+	if err := os.MkdirAll(trackDir, 0755); err != nil {
+		return fmt.Errorf("create track directory %q: %w", trackDir, err)
+	}
 
 	if !d.Opts.NoCover {
 		if imgURL := nestedStr(meta, "album", "image", "large"); imgURL != "" {

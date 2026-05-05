@@ -130,7 +130,9 @@ func (d *Downloader) downloadLastFMPlaylist(username, listType string) error {
 
 	dirName := sanitize(fmt.Sprintf("Last.fm - %s - %s", username, label))
 	dir := filepath.Join(d.Opts.Directory, dirName)
-	os.MkdirAll(dir, 0755)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("create last.fm directory %q: %w", dir, err)
+	}
 
 	found, skipped := 0, 0
 	for i, t := range tracks {

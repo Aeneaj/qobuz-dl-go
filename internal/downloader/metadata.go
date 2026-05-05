@@ -412,9 +412,15 @@ func writeID3v23(path string, tags map[string]string, embedArt bool, coverDir st
 		return err
 	}
 	defer f.Close()
-	f.Write(header)
-	f.Write(frames)
-	f.Write(audioData)
+	if _, err := f.Write(header); err != nil {
+		return fmt.Errorf("write ID3 header: %w", err)
+	}
+	if _, err := f.Write(frames); err != nil {
+		return fmt.Errorf("write ID3 frames: %w", err)
+	}
+	if _, err := f.Write(audioData); err != nil {
+		return fmt.Errorf("write MP3 audio: %w", err)
+	}
 	return nil
 }
 
@@ -479,16 +485,23 @@ func readMP3Audio(path string) ([]byte, error) {
 	// Check for existing ID3 header
 	hdr := make([]byte, 10)
 	if _, err := io.ReadFull(f, hdr); err != nil {
-		f.Seek(0, io.SeekStart)
+		// File shorter than 10 bytes — treat the whole thing as audio.
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return nil, fmt.Errorf("seek to start: %w", err)
+		}
 		return io.ReadAll(f)
 	}
 	if hdr[0] == 'I' && hdr[1] == 'D' && hdr[2] == '3' {
 		// Parse syncsafe size to skip the tag
 		size := int(hdr[6]&0x7F)<<21 | int(hdr[7]&0x7F)<<14 |
 			int(hdr[8]&0x7F)<<7 | int(hdr[9]&0x7F)
-		f.Seek(int64(10+size), io.SeekStart)
+		if _, err := f.Seek(int64(10+size), io.SeekStart); err != nil {
+			return nil, fmt.Errorf("seek past ID3 tag: %w", err)
+		}
 	} else {
-		f.Seek(0, io.SeekStart)
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return nil, fmt.Errorf("seek to start: %w", err)
+		}
 	}
 	return io.ReadAll(f)
 }
