@@ -39,6 +39,19 @@ func run(args ...string) (stdout, stderr string, code int) {
 	return out.String(), errOut.String(), code
 }
 
+// testEnv returns a clean environment that pins HOME and XDG_CONFIG_HOME
+// under tmp. Necessary because (a) os.UserConfigDir prefers $XDG_CONFIG_HOME
+// on Linux, so a HOME-only override is bypassed when CI inherits XDG vars;
+// (b) append(os.Environ(), "HOME="+tmp) leaves the original HOME earlier in
+// the slice, and Go's os.Getenv returns the first match.
+func testEnv(tmp string) []string {
+	return []string{
+		"HOME=" + tmp,
+		"XDG_CONFIG_HOME=" + filepath.Join(tmp, ".config"),
+		"PATH=" + os.Getenv("PATH"),
+	}
+}
+
 func TestNoArgs_PrintsUsage(t *testing.T) {
 	out, _, code := run()
 	if code != 0 {
@@ -91,7 +104,7 @@ func TestShowConfig_NoConfig_Exits(t *testing.T) {
 	// Either way it should not panic.
 	tmp := t.TempDir()
 	cmd := exec.Command(binaryPath, "--show-config")
-	cmd.Env = append(os.Environ(), "HOME="+tmp)
+	cmd.Env = testEnv(tmp)
 	cmd.Stdin = strings.NewReader("") // empty stdin so prompts fail fast
 	err := cmd.Run()
 	// Any exit (0 or non-0) is fine as long as it doesn't hang or panic
@@ -103,7 +116,7 @@ func TestReset_TokenFlag_CombinedWithReset(t *testing.T) {
 	// Pass empty stdin so any prompt terminates immediately
 	tmp := t.TempDir()
 	cmd := exec.Command(binaryPath, "--reset", "--token")
-	cmd.Env = append(os.Environ(), "HOME="+tmp)
+	cmd.Env = testEnv(tmp)
 	cmd.Stdin = strings.NewReader("\n\n\n\n\n") // feed blank lines to prompts
 	// This will likely fail at the bundle.Fetch() step (no network), that's fine
 	// We just verify it doesn't panic
@@ -118,7 +131,7 @@ func TestPurge_NoDatabase_Succeeds(t *testing.T) {
 	os.WriteFile(filepath.Join(cfgDir, "config.ini"), []byte("[DEFAULT]\n"), 0644)
 
 	cmd := exec.Command(binaryPath, "--purge")
-	cmd.Env = append(os.Environ(), "HOME="+tmp)
+	cmd.Env = testEnv(tmp)
 	out, err2 := cmd.CombinedOutput()
 	_ = err2
 	// Should mention "database" in output (deleted or not found)
@@ -135,7 +148,7 @@ func TestShowConfig_ExistingConfig_PrintsIt(t *testing.T) {
 	os.WriteFile(filepath.Join(cfgDir, "config.ini"), []byte(cfgContent), 0644)
 
 	cmd := exec.Command(binaryPath, "--show-config")
-	cmd.Env = append(os.Environ(), "HOME="+tmp)
+	cmd.Env = testEnv(tmp)
 	out, _ := cmd.CombinedOutput()
 
 	if !strings.Contains(string(out), "email") {
