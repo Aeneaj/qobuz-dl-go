@@ -79,8 +79,23 @@ func main() {
 		return
 	}
 
+	// Context cancelled on Ctrl+C / SIGTERM — propagated into all HTTP calls.
+	// Created early so even --reset (which calls bundle.Fetch) is cancellable.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// Second Ctrl+C → immediate exit (in case a goroutine ignores ctx).
+	go func() {
+		<-ctx.Done()
+		stop() // restore default signal behavior
+		ch := make(chan os.Signal, 1)
+		signal.Notify(ch, os.Interrupt)
+		<-ch
+		os.Exit(1)
+	}()
+
 	if doReset {
-		if err := config.Reset(); err != nil {
+		if err := config.Reset(ctx); err != nil {
 			fmt.Fprintf(os.Stderr, "\033[31mError: %v\n", err)
 			os.Exit(1)
 		}
@@ -107,20 +122,6 @@ func main() {
 		fmt.Print(usage)
 		os.Exit(0)
 	}
-
-	// Context cancelled on Ctrl+C / SIGTERM — propagated into all HTTP calls.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	// Second Ctrl+C → immediate exit (in case a goroutine ignores ctx).
-	go func() {
-		<-ctx.Done()
-		stop() // restore default signal behavior
-		ch := make(chan os.Signal, 1)
-		signal.Notify(ch, os.Interrupt)
-		<-ch
-		os.Exit(1)
-	}()
 
 	cmd := args[0]
 	cmdArgs := args[1:]
@@ -197,7 +198,7 @@ func fatalf(format string, a ...interface{}) {
 	os.Exit(1)
 }
 
-func loadOrInitConfig(skipCredentials bool) (*config.Config, error) {
+func loadOrInitConfig(ctx context.Context, skipCredentials bool) (*config.Config, error) {
 	cfgDir := config.ConfigDir()
 	cfgFile := cfgDir + "/config.ini"
 	if _, err := os.Stat(cfgFile); os.IsNotExist(err) {
@@ -206,11 +207,11 @@ func loadOrInitConfig(skipCredentials bool) (*config.Config, error) {
 		}
 		fmt.Println("\033[33mFirst run: setting up config...\033[0m")
 		if skipCredentials {
-			if err := config.InitConfig(); err != nil {
+			if err := config.InitConfig(ctx); err != nil {
 				return nil, err
 			}
 		} else {
-			if err := config.Reset(); err != nil {
+			if err := config.Reset(ctx); err != nil {
 				return nil, err
 			}
 		}
@@ -255,7 +256,7 @@ func registerDownloadFlags(fs *flag.FlagSet) *cliFlags {
 }
 
 func initDownloader(ctx context.Context, f *cliFlags) (*downloader.Downloader, error) {
-	cfg, err := loadOrInitConfig(false)
+	cfg, err := loadOrInitConfig(ctx, false)
 	if err != nil {
 		return nil, err
 	}

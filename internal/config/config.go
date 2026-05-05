@@ -140,8 +140,8 @@ func Load() (*Config, error) {
 }
 
 // setupPreferences fills kv with user preferences and fetches bundle tokens.
-// Shared by Reset and InitConfig.
-func setupPreferences(kv map[string]string) error {
+// Shared by Reset and InitConfig. ctx cancels the bundle.Fetch HTTP calls.
+func setupPreferences(ctx context.Context, kv map[string]string) error {
 	kv["download_dir"] = prompt("Enter default download directory (leave blank for ./qobuz-downloader):\n- ")
 	kv["default_folder"] = promptDefault("Folder for downloads (leave empty for 'Qobuz Downloads')\n- ", "Qobuz Downloads")
 	kv["default_quality"] = promptDefault("Download quality (5, 6, 7, 27) [320, LOSSLESS, 24B <96KHZ, 24B >96KHZ]\n(leave empty for '6')\n- ", "6")
@@ -161,7 +161,7 @@ func setupPreferences(kv map[string]string) error {
 	kv["track_format"] = DefaultTrack
 
 	fmt.Println("\033[33mFetching app tokens from Qobuz web player, please wait...\033[0m")
-	b, err := bundle.Fetch(context.Background())
+	b, err := bundle.Fetch(ctx)
 	if err != nil {
 		return fmt.Errorf("fetch bundle: %w", err)
 	}
@@ -186,8 +186,8 @@ func setupPreferences(kv map[string]string) error {
 }
 
 // Reset interactively creates a fresh config.ini including manual credentials.
-// Used by the --reset flag.
-func Reset() error {
+// Used by the --reset flag. ctx cancels the bundle.Fetch HTTP call.
+func Reset(ctx context.Context) error {
 	dir := ConfigDir()
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
@@ -202,7 +202,7 @@ func Reset() error {
 	kv["user_id"] = prompt("Enter your Qobuz user_id:\n- ")
 	kv["user_auth_token"] = prompt("Enter your Qobuz user_auth_token:\n- ")
 
-	if err := setupPreferences(kv); err != nil {
+	if err := setupPreferences(ctx, kv); err != nil {
 		return err
 	}
 
@@ -215,8 +215,8 @@ func Reset() error {
 
 // InitConfig creates a fresh config.ini with preferences but no credentials.
 // Used on first run when the oauth command is invoked, since OAuth will
-// obtain and save the token itself moments later.
-func InitConfig() error {
+// obtain and save the token itself moments later. ctx cancels bundle.Fetch.
+func InitConfig(ctx context.Context) error {
 	dir := ConfigDir()
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
@@ -229,7 +229,7 @@ func InitConfig() error {
 		"user_auth_token": "",
 	}
 
-	if err := setupPreferences(kv); err != nil {
+	if err := setupPreferences(ctx, kv); err != nil {
 		return err
 	}
 
