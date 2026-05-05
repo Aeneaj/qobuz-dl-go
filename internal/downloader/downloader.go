@@ -56,19 +56,18 @@ type Options struct {
 }
 
 // Downloader handles URL processing and downloads.
+// It does not store a context; callers pass ctx to each method.
 type Downloader struct {
 	Client     *api.Client
 	Opts       Options
 	db         *downloadDB
 	httpClient *http.Client
-	ctx        context.Context
 }
 
-// New creates a Downloader. ctx is used to cancel in-flight downloads on
-// Ctrl+C; pass context.Background() if cancellation is not needed.
-// Returns an error if the download directory cannot be created or the
-// downloads DB cannot be opened. OAuth callers may pass an empty Directory.
-func New(client *api.Client, opts Options, ctx context.Context) (*Downloader, error) {
+// New creates a Downloader. Returns an error if the download directory cannot
+// be created or the downloads DB cannot be opened. OAuth callers may pass an
+// empty Directory.
+func New(client *api.Client, opts Options) (*Downloader, error) {
 	if opts.FolderFormat == "" {
 		opts.FolderFormat = "{artist} - {album} ({year}) [{bit_depth}B-{sampling_rate}kHz]"
 	}
@@ -88,7 +87,6 @@ func New(client *api.Client, opts Options, ctx context.Context) (*Downloader, er
 		Client:     client,
 		Opts:       opts,
 		httpClient: &http.Client{Timeout: 10 * time.Minute},
-		ctx:        ctx,
 	}
 	if !opts.NoDB && opts.DBPath != "" {
 		db, err := openDB(opts.DBPath)
@@ -102,14 +100,14 @@ func New(client *api.Client, opts Options, ctx context.Context) (*Downloader, er
 
 // HandleURL dispatches a URL to the appropriate download flow.
 // Supports Qobuz URLs and Last.fm user playlist URLs.
-func (d *Downloader) HandleURL(rawURL string) error {
+func (d *Downloader) HandleURL(ctx context.Context, rawURL string) error {
 	// Last.fm user playlists (loved tracks, recent tracks)
 	if strings.Contains(rawURL, "last.fm") {
 		username, listType, err := parseLastFMURL(rawURL)
 		if err != nil {
 			return err
 		}
-		return d.downloadLastFMPlaylist(username, listType)
+		return d.downloadLastFMPlaylist(ctx, username, listType)
 	}
 
 	urlType, itemID, err := parseQobuzURL(rawURL)
@@ -119,27 +117,27 @@ func (d *Downloader) HandleURL(rawURL string) error {
 
 	switch urlType {
 	case "album":
-		return d.downloadAlbum(itemID, d.Opts.Directory)
+		return d.downloadAlbum(ctx, itemID, d.Opts.Directory)
 	case "track":
-		return d.downloadTrackByID(itemID, d.Opts.Directory)
+		return d.downloadTrackByID(ctx, itemID, d.Opts.Directory)
 	case "artist":
-		pages, err := d.Client.GetArtistMeta(itemID)
+		pages, err := d.Client.GetArtistMeta(ctx, itemID)
 		if err != nil {
 			return err
 		}
-		return d.downloadArtist(pages)
+		return d.downloadArtist(ctx, pages)
 	case "playlist":
-		pages, err := d.Client.GetPlaylistMeta(itemID)
+		pages, err := d.Client.GetPlaylistMeta(ctx, itemID)
 		if err != nil {
 			return err
 		}
-		return d.downloadPlaylist(pages)
+		return d.downloadPlaylist(ctx, pages)
 	case "label":
-		pages, err := d.Client.GetLabelMeta(itemID)
+		pages, err := d.Client.GetLabelMeta(ctx, itemID)
 		if err != nil {
 			return err
 		}
-		return d.downloadLabelOrArtist(pages, "albums", "label")
+		return d.downloadLabelOrArtist(ctx, pages, "albums", "label")
 	default:
 		return fmt.Errorf("unsupported URL type: %s", urlType)
 	}
@@ -147,7 +145,7 @@ func (d *Downloader) HandleURL(rawURL string) error {
 
 // ---- collection downloads ----
 
-func (d *Downloader) downloadArtist(pages []map[string]interface{}) error {
+func (d *Downloader) downloadArtist(ctx context.Context, pages []map[string]interface{}) error {
 	if len(pages) == 0 {
 		return nil
 	}
@@ -179,14 +177,14 @@ func (d *Downloader) downloadArtist(pages []map[string]interface{}) error {
 
 	for _, item := range items {
 		id := idStr(item["id"])
-		if err := d.downloadAlbum(id, dir); err != nil {
+		if err := d.downloadAlbum(ctx, id, dir); err != nil {
 			fmt.Printf("\033[31mError on album %s: %v. Skipping...\033[0m\n", id, err)
 		}
 	}
 	return nil
 }
 
-func (d *Downloader) downloadPlaylist(pages []map[string]interface{}) error {
+func (d *Downloader) downloadPlaylist(ctx context.Context, pages []map[string]interface{}) error {
 	if len(pages) == 0 {
 		return nil
 	}
@@ -213,7 +211,7 @@ func (d *Downloader) downloadPlaylist(pages []map[string]interface{}) error {
 	fmt.Printf("\033[33mDownloading playlist: %s (%d tracks)\033[0m\n", name, len(items))
 	for _, item := range items {
 		id := idStr(item["id"])
-		if err := d.downloadTrackByID(id, dir); err != nil {
+		if err := d.downloadTrackByID(ctx, id, dir); err != nil {
 			fmt.Printf("\033[31mError on track %s: %v. Skipping...\033[0m\n", id, err)
 		}
 	}
@@ -224,7 +222,7 @@ func (d *Downloader) downloadPlaylist(pages []map[string]interface{}) error {
 	return nil
 }
 
-func (d *Downloader) downloadLabelOrArtist(pages []map[string]interface{}, itemKey, collectionType string) error {
+func (d *Downloader) downloadLabelOrArtist(ctx context.Context, pages []map[string]interface{}, itemKey, collectionType string) error {
 	if len(pages) == 0 {
 		return nil
 	}
@@ -251,7 +249,7 @@ func (d *Downloader) downloadLabelOrArtist(pages []map[string]interface{}, itemK
 	fmt.Printf("\033[33mDownloading %s: %s (%d albums)\033[0m\n", collectionType, name, len(items))
 	for _, item := range items {
 		id := idStr(item["id"])
-		if err := d.downloadAlbum(id, dir); err != nil {
+		if err := d.downloadAlbum(ctx, id, dir); err != nil {
 			fmt.Printf("\033[31mError on album %s: %v. Skipping...\033[0m\n", id, err)
 		}
 	}
@@ -260,8 +258,8 @@ func (d *Downloader) downloadLabelOrArtist(pages []map[string]interface{}, itemK
 
 // ---- album download ----
 
-func (d *Downloader) downloadAlbum(albumID, baseDir string) error {
-	meta, err := d.Client.GetAlbumMeta(albumID)
+func (d *Downloader) downloadAlbum(ctx context.Context, albumID, baseDir string) error {
+	meta, err := d.Client.GetAlbumMeta(ctx, albumID)
 	if err != nil {
 		return fmt.Errorf("album metadata %s: %w", albumID, err)
 	}
@@ -284,7 +282,7 @@ func (d *Downloader) downloadAlbum(albumID, baseDir string) error {
 	}
 
 	// Resolve format info from first track
-	fileFormat, bitDepth, samplingRate := d.resolveFormat(meta)
+	fileFormat, bitDepth, samplingRate := d.resolveFormat(ctx, meta)
 	title := getTitle(meta)
 	artist := nestedStr(meta, "artist", "name")
 	year := releaseYear(meta)
@@ -319,7 +317,7 @@ func (d *Downloader) downloadAlbum(albumID, baseDir string) error {
 			if d.Opts.OGCover {
 				imgURL = strings.Replace(imgURL, "_600.", "_org.", 1)
 			}
-			d.downloadExtra(imgURL, filepath.Join(albumDir, coverFile))
+			d.downloadExtra(ctx, imgURL, filepath.Join(albumDir, coverFile))
 		}
 	}
 
@@ -327,7 +325,7 @@ func (d *Downloader) downloadAlbum(albumID, baseDir string) error {
 	if goodies, ok := meta["goodies"].([]interface{}); ok && len(goodies) > 0 {
 		if g, ok := goodies[0].(map[string]interface{}); ok {
 			if pdfURL, _ := g["url"].(string); pdfURL != "" {
-				d.downloadExtra(pdfURL, filepath.Join(albumDir, bookletFile))
+				d.downloadExtra(ctx, pdfURL, filepath.Join(albumDir, bookletFile))
 			}
 		}
 	}
@@ -363,7 +361,7 @@ func (d *Downloader) downloadAlbum(albumID, baseDir string) error {
 		bar      *mpb.Bar
 	}
 
-	p := mpb.NewWithContext(d.ctx, mpb.WithRefreshRate(150*time.Millisecond))
+	p := mpb.NewWithContext(ctx, mpb.WithRefreshRate(150*time.Millisecond))
 	var jobs []trackJob
 
 	for idx, t := range rawItems {
@@ -377,10 +375,10 @@ func (d *Downloader) downloadAlbum(albumID, baseDir string) error {
 			continue
 		}
 
-		trackURL, err := d.Client.GetTrackURL(trackID, d.Opts.Quality, "")
+		trackURL, err := d.Client.GetTrackURL(ctx, trackID, d.Opts.Quality, "")
 		if err != nil {
 			if d.Opts.QualityFallback {
-				trackURL, err = d.fallbackQuality(trackID)
+				trackURL, err = d.fallbackQuality(ctx, trackID)
 			}
 			if err != nil {
 				fmt.Printf("\033[31mTrack %s: cannot get URL: %v. Skipping...\033[0m\n", trackID, err)
@@ -430,7 +428,7 @@ func (d *Downloader) downloadAlbum(albumID, baseDir string) error {
 jobLoop:
 	for _, job := range jobs {
 		select {
-		case <-d.ctx.Done():
+		case <-ctx.Done():
 			break jobLoop
 		case sem <- struct{}{}:
 		}
@@ -438,7 +436,7 @@ jobLoop:
 		go func(j trackJob) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			if err := d.downloadAndTag(j.trackDir, j.idx, j.trackURL, j.track, meta, false, isMP3, trackFmt, j.bar); err != nil {
+			if err := d.downloadAndTag(ctx, j.trackDir, j.idx, j.trackURL, j.track, meta, false, isMP3, trackFmt, j.bar); err != nil {
 				j.bar.Abort(false)
 				fmt.Printf("\033[31mTrack %s failed: %v. Skipping...\033[0m\n", j.trackID, err)
 			} else if d.db != nil {
@@ -458,17 +456,17 @@ jobLoop:
 
 // ---- track download ----
 
-func (d *Downloader) downloadTrackByID(trackID, baseDir string) error {
+func (d *Downloader) downloadTrackByID(ctx context.Context, trackID, baseDir string) error {
 	// DB check
 	if d.db != nil && d.db.has(trackID) {
 		fmt.Printf("\033[90mTrack %s already in DB, skipping\033[0m\n", trackID)
 		return nil
 	}
 
-	trackURL, err := d.Client.GetTrackURL(trackID, d.Opts.Quality, "")
+	trackURL, err := d.Client.GetTrackURL(ctx, trackID, d.Opts.Quality, "")
 	if err != nil {
 		if d.Opts.QualityFallback {
-			trackURL, err = d.fallbackQuality(trackID)
+			trackURL, err = d.fallbackQuality(ctx, trackID)
 		}
 		if err != nil {
 			return fmt.Errorf("get track URL: %w", err)
@@ -480,7 +478,7 @@ func (d *Downloader) downloadTrackByID(trackID, baseDir string) error {
 		return nil
 	}
 
-	meta, err := d.Client.GetTrackMeta(trackID)
+	meta, err := d.Client.GetTrackMeta(ctx, trackID)
 	if err != nil {
 		return err
 	}
@@ -523,7 +521,7 @@ func (d *Downloader) downloadTrackByID(trackID, baseDir string) error {
 			if d.Opts.OGCover {
 				imgURL = strings.Replace(imgURL, "_600.", "_org.", 1)
 			}
-			d.downloadExtra(imgURL, filepath.Join(trackDir, coverFile))
+			d.downloadExtra(ctx, imgURL, filepath.Join(trackDir, coverFile))
 		}
 	}
 
@@ -533,7 +531,7 @@ func (d *Downloader) downloadTrackByID(trackID, baseDir string) error {
 	if tn, ok := meta["track_number"].(float64); ok {
 		trackNum = int(tn)
 	}
-	p := mpb.NewWithContext(d.ctx, mpb.WithRefreshRate(150*time.Millisecond))
+	p := mpb.NewWithContext(ctx, mpb.WithRefreshRate(150*time.Millisecond))
 	bar := p.New(0,
 		mpb.BarStyle().Lbound("╢").Filler("█").Tip("█").Padding("░").Rbound("╟"),
 		mpb.PrependDecorators(decor.Name(barLabel(trackNum, title))),
@@ -546,7 +544,7 @@ func (d *Downloader) downloadTrackByID(trackID, baseDir string) error {
 
 	isMP3 := d.Opts.Quality == 5
 	trackFmt := cleanFormatStr(d.Opts.TrackFormat, fileFormat)
-	if err := d.downloadAndTag(trackDir, 1, trackURL, meta, meta, true, isMP3, trackFmt, bar); err != nil {
+	if err := d.downloadAndTag(ctx, trackDir, 1, trackURL, meta, meta, true, isMP3, trackFmt, bar); err != nil {
 		bar.Abort(false)
 		p.Wait()
 		return err
@@ -565,6 +563,7 @@ func (d *Downloader) downloadTrackByID(trackID, baseDir string) error {
 // ---- core download + tag ----
 
 func (d *Downloader) downloadAndTag(
+	ctx context.Context,
 	dir string,
 	idx int,
 	trackURLDict map[string]interface{},
@@ -624,7 +623,7 @@ func (d *Downloader) downloadAndTag(
 
 	// Download to .tmp file first
 	tmpFile := filepath.Join(dir, fmt.Sprintf(".%02d.tmp", idx))
-	if err := d.downloadWithProgress(fileURL, tmpFile, bar); err != nil {
+	if err := d.downloadWithProgress(ctx, fileURL, tmpFile, bar); err != nil {
 		os.Remove(tmpFile)
 		return fmt.Errorf("download: %w", err)
 	}
@@ -648,13 +647,13 @@ func (d *Downloader) downloadAndTag(
 
 // ---- quality fallback ----
 
-func (d *Downloader) fallbackQuality(trackID string) (map[string]interface{}, error) {
+func (d *Downloader) fallbackQuality(ctx context.Context, trackID string) (map[string]interface{}, error) {
 	fallbacks := []int{27, 7, 6, 5}
 	for _, q := range fallbacks {
 		if q == d.Opts.Quality {
 			continue
 		}
-		info, err := d.Client.GetTrackURL(trackID, q, "")
+		info, err := d.Client.GetTrackURL(ctx, trackID, q, "")
 		if err == nil {
 			fmt.Printf("\033[33mQuality fallback to %s for track %s\033[0m\n", qualities[q], trackID)
 			return info, nil
@@ -665,7 +664,7 @@ func (d *Downloader) fallbackQuality(trackID string) (map[string]interface{}, er
 
 // ---- format helpers ----
 
-func (d *Downloader) resolveFormat(albumMeta map[string]interface{}) (fileFormat string, bitDepth, samplingRate interface{}) {
+func (d *Downloader) resolveFormat(ctx context.Context, albumMeta map[string]interface{}) (fileFormat string, bitDepth, samplingRate interface{}) {
 	if d.Opts.Quality == 5 {
 		return "MP3", nil, nil
 	}
@@ -682,7 +681,7 @@ func (d *Downloader) resolveFormat(albumMeta map[string]interface{}) (fileFormat
 		return "Unknown", nil, nil
 	}
 	trackID := idStr(firstTrack["id"])
-	info, err := d.Client.GetTrackURL(trackID, d.Opts.Quality, "")
+	info, err := d.Client.GetTrackURL(ctx, trackID, d.Opts.Quality, "")
 	if err != nil {
 		return "Unknown", nil, nil
 	}
@@ -706,7 +705,7 @@ func (d *Downloader) resolveFormat(albumMeta map[string]interface{}) (fileFormat
 // cancellation (e.g. Ctrl+C).
 const maxDownloadRetries = 5
 
-func (d *Downloader) downloadWithProgress(rawURL, dest string, bar *mpb.Bar) error {
+func (d *Downloader) downloadWithProgress(ctx context.Context, rawURL, dest string, bar *mpb.Bar) error {
 	var (
 		totalSize   int64 = -1 // full file size, resolved from Content-Length or Content-Range
 		barCredited int64      // bytes already reflected in the bar across all attempts
@@ -716,8 +715,8 @@ func (d *Downloader) downloadWithProgress(rawURL, dest string, bar *mpb.Bar) err
 		if attempt > 0 {
 			delay := time.Duration(1<<(attempt-1)) * time.Second // 1s, 2s, 4s, 8s
 			select {
-			case <-d.ctx.Done():
-				return d.ctx.Err()
+			case <-ctx.Done():
+				return ctx.Err()
 			case <-time.After(delay):
 			}
 		}
@@ -728,7 +727,7 @@ func (d *Downloader) downloadWithProgress(rawURL, dest string, bar *mpb.Bar) err
 			offset = fi.Size()
 		}
 
-		req, err := http.NewRequestWithContext(d.ctx, http.MethodGet, rawURL, nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 		if err != nil {
 			return err
 		}
@@ -865,13 +864,13 @@ func isRecoverableErr(err error) bool {
 // downloadExtra fetches a supplementary file (cover art, booklet PDF).
 // Uses the shared httpClient and context; logs errors instead of silently
 // ignoring them.
-func (d *Downloader) downloadExtra(rawURL, dest string) {
+func (d *Downloader) downloadExtra(ctx context.Context, rawURL, dest string) {
 	if _, err := os.Stat(dest); err == nil {
 		fmt.Printf("\033[90m%s already downloaded\033[0m\n", filepath.Base(dest))
 		return
 	}
 	fmt.Printf("\033[90mDownloading %s...\033[0m\n", filepath.Base(dest))
-	req, err := http.NewRequestWithContext(d.ctx, http.MethodGet, rawURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		fmt.Printf("\033[31mCould not create request for %s: %v\033[0m\n", filepath.Base(dest), err)
 		return
@@ -940,12 +939,12 @@ func makeM3U(dir string) {
 
 // ---- DownloadURLs (batch entry point) ----
 
-func (d *Downloader) DownloadURLs(urls []string) {
+func (d *Downloader) DownloadURLs(ctx context.Context, urls []string) {
 	for _, u := range urls {
 		if isLocalFile(u) {
-			d.downloadFromFile(u)
+			d.downloadFromFile(ctx, u)
 		} else {
-			if err := d.HandleURL(u); err != nil {
+			if err := d.HandleURL(ctx, u); err != nil {
 				fmt.Printf("\033[31mError: %v\033[0m\n", err)
 			}
 		}
@@ -954,7 +953,7 @@ func (d *Downloader) DownloadURLs(urls []string) {
 	cleanTmp(d.Opts.Directory)
 }
 
-func (d *Downloader) downloadFromFile(path string) {
+func (d *Downloader) downloadFromFile(ctx context.Context, path string) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		fmt.Printf("\033[31mCannot read file %s: %v\033[0m\n", path, err)
@@ -968,7 +967,7 @@ func (d *Downloader) downloadFromFile(path string) {
 		}
 	}
 	fmt.Printf("\033[33mDownloading %d URLs from %s\033[0m\n", len(urls), path)
-	d.DownloadURLs(urls)
+	d.DownloadURLs(ctx, urls)
 }
 
 func cleanTmp(dir string) {
@@ -1216,7 +1215,7 @@ type SearchResult struct {
 }
 
 // Search performs a typed search and returns display items.
-func Search(client *api.Client, itemType, query string, limit int) ([]SearchResult, error) {
+func Search(ctx context.Context, client *api.Client, itemType, query string, limit int) ([]SearchResult, error) {
 	var rawResults map[string]interface{}
 	var err error
 	var itemsKey, format string
@@ -1224,21 +1223,21 @@ func Search(client *api.Client, itemType, query string, limit int) ([]SearchResu
 
 	switch itemType {
 	case "album":
-		rawResults, err = client.SearchAlbums(query, limit)
+		rawResults, err = client.SearchAlbums(ctx, query, limit)
 		itemsKey = "albums"
 		format = "{artist[name]} - {title}"
 		requiresExtra = true
 	case "track":
-		rawResults, err = client.SearchTracks(query, limit)
+		rawResults, err = client.SearchTracks(ctx, query, limit)
 		itemsKey = "tracks"
 		format = "{performer[name]} - {title}"
 		requiresExtra = true
 	case "artist":
-		rawResults, err = client.SearchArtists(query, limit)
+		rawResults, err = client.SearchArtists(ctx, query, limit)
 		itemsKey = "artists"
 		format = "{name} - ({albums_count} releases)"
 	case "playlist":
-		rawResults, err = client.SearchPlaylists(query, limit)
+		rawResults, err = client.SearchPlaylists(ctx, query, limit)
 		itemsKey = "playlists"
 		format = "{name} - ({tracks_count} releases)"
 	default:
@@ -1316,8 +1315,8 @@ func getFloat(m map[string]interface{}, key string) float64 {
 
 // ---- lucky search helper used by CLI ----
 
-func SearchURLs(client *api.Client, itemType, query string, limit int) ([]string, error) {
-	results, err := Search(client, itemType, query, limit)
+func SearchURLs(ctx context.Context, client *api.Client, itemType, query string, limit int) ([]string, error) {
+	results, err := Search(ctx, client, itemType, query, limit)
 	if err != nil {
 		return nil, err
 	}

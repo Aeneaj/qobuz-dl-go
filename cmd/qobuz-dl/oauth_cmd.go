@@ -62,13 +62,13 @@ func runOAuth(ctx context.Context, codeOrURL string) {
 		fmt.Println("\033[33m  qobuz-dl --reset --token\033[0m")
 	}
 
-	client := api.New(appID, secrets, ctx)
-	dl, err := downloader.New(client, downloader.Options{}, ctx)
+	client := api.New(appID, secrets)
+	dl, err := downloader.New(client, downloader.Options{})
 	if err != nil {
 		fatalf("init downloader: %v", err)
 	}
 
-	if err := dl.OAuthLogin(appID, privateKey, codeOrURL); err != nil {
+	if err := dl.OAuthLogin(ctx, appID, privateKey, codeOrURL); err != nil {
 		fmt.Fprintf(os.Stderr, "\033[31m%v\033[0m\n", err)
 		os.Exit(1)
 	}

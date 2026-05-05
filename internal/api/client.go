@@ -21,7 +21,8 @@ const (
 	resetMsg  = "Reset your credentials with 'qobuz-dl --reset'"
 )
 
-// Client is a Qobuz API client.
+// Client is a Qobuz API client. Methods accept ctx as their first parameter
+// for cancellation; the Client itself does not store a context.
 type Client struct {
 	AppID   string
 	Secrets []string
@@ -30,35 +31,32 @@ type Client struct {
 	Label   string // subscription tier
 	Secret  string // validated app secret
 	http    *http.Client
-	ctx     context.Context
 }
 
-// New creates a Client without authenticating. ctx is used to cancel in-flight
-// API requests on Ctrl+C; pass context.Background() if cancellation is not needed.
-func New(appID string, secrets []string, ctx context.Context) *Client {
+// New creates a Client without authenticating.
+func New(appID string, secrets []string) *Client {
 	return &Client{
 		AppID:   appID,
 		Secrets: secrets,
 		http:    &http.Client{Timeout: 30 * time.Second},
-		ctx:     ctx,
 	}
 }
 
-func (c *Client) doGet(endpoint string, params url.Values) (map[string]interface{}, error) {
-	return c.doRequest("GET", endpoint, params, "")
+func (c *Client) doGet(ctx context.Context, endpoint string, params url.Values) (map[string]interface{}, error) {
+	return c.doRequest(ctx, "GET", endpoint, params, "")
 }
 
-func (c *Client) doPost(endpoint, body string) (map[string]interface{}, error) {
-	return c.doRequest("POST", endpoint, nil, body)
+func (c *Client) doPost(ctx context.Context, endpoint, body string) (map[string]interface{}, error) {
+	return c.doRequest(ctx, "POST", endpoint, nil, body)
 }
 
-func (c *Client) doRequest(method, endpoint string, params url.Values, body string) (map[string]interface{}, error) {
+func (c *Client) doRequest(ctx context.Context, method, endpoint string, params url.Values, body string) (map[string]interface{}, error) {
 	fullURL := baseURL + endpoint
 	var reqBody io.Reader
 	if body != "" {
 		reqBody = strings.NewReader(body)
 	}
-	req, err := http.NewRequestWithContext(c.ctx, method, fullURL, reqBody)
+	req, err := http.NewRequestWithContext(ctx, method, fullURL, reqBody)
 	if err != nil {
 		return nil, err
 	}
@@ -113,13 +111,13 @@ func md5hex(s string) string {
 }
 
 // AuthWithToken authenticates using user_id + user_auth_token obtained via OAuth.
-func (c *Client) AuthWithToken(userID, userAuthToken string) error {
+func (c *Client) AuthWithToken(ctx context.Context, userID, userAuthToken string) error {
 	params := url.Values{
 		"user_id":         {userID},
 		"user_auth_token": {userAuthToken},
 		"app_id":          {c.AppID},
 	}
-	info, err := c.doGet("user/login", params)
+	info, err := c.doGet(ctx, "user/login", params)
 	if err != nil {
 		return err
 	}
@@ -171,14 +169,14 @@ type OAuthResult struct {
 // Qobuz may send either:
 //   - A code (code= or code_autorisation=) that must be exchanged via /oauth/callback
 //   - A token (user_auth_token=) directly usable with /user/login
-func (c *Client) LoginWithOAuthResult(result OAuthResult, privateKey string) (map[string]interface{}, error) {
+func (c *Client) LoginWithOAuthResult(ctx context.Context, result OAuthResult, privateKey string) (map[string]interface{}, error) {
 	// Case 1: Qobuz sent a token directly in the redirect
 	if result.Token != "" {
 		c.UAT = result.Token
 		if result.UserID != "" {
 			c.UserID = result.UserID
 		}
-		info, err := c.doPost("user/login", "extra=partner")
+		info, err := c.doPost(ctx, "user/login", "extra=partner")
 		if err != nil {
 			return nil, fmt.Errorf("user/login with OAuth token: %w", err)
 		}
@@ -190,7 +188,7 @@ func (c *Client) LoginWithOAuthResult(result OAuthResult, privateKey string) (ma
 
 	// Case 2: We have a code that needs to be exchanged
 	if result.Code != "" {
-		return c.exchangeOAuthCode(result.Code, privateKey)
+		return c.exchangeOAuthCode(ctx, result.Code, privateKey)
 	}
 
 	return nil, &AuthenticationError{"OAuth redirect contained neither token nor code"}
@@ -199,7 +197,7 @@ func (c *Client) LoginWithOAuthResult(result OAuthResult, privateKey string) (ma
 // exchangeOAuthCode tries to exchange a code for a token via /oauth/callback.
 // Qobuz has used different parameter names and HTTP methods over time, so we
 // try all combinations: (GET|POST) × ("code"|"code_autorisation").
-func (c *Client) exchangeOAuthCode(code, privateKey string) (map[string]interface{}, error) {
+func (c *Client) exchangeOAuthCode(ctx context.Context, code, privateKey string) (map[string]interface{}, error) {
 	type attempt struct {
 		method    string
 		paramName string
@@ -227,9 +225,9 @@ func (c *Client) exchangeOAuthCode(code, privateKey string) (map[string]interfac
 			err  error
 		)
 		if a.method == "GET" {
-			resp, err = c.doGet("oauth/callback", params)
+			resp, err = c.doGet(ctx, "oauth/callback", params)
 		} else {
-			resp, err = c.doPost("oauth/callback", params.Encode())
+			resp, err = c.doPost(ctx, "oauth/callback", params.Encode())
 		}
 
 		if err != nil {
@@ -252,7 +250,7 @@ func (c *Client) exchangeOAuthCode(code, privateKey string) (map[string]interfac
 		}
 
 		c.UAT = token
-		info, err := c.doPost("user/login", "extra=partner")
+		info, err := c.doPost(ctx, "user/login", "extra=partner")
 		if err != nil {
 			return nil, fmt.Errorf("user/login after OAuth: %w", err)
 		}
@@ -266,12 +264,12 @@ func (c *Client) exchangeOAuthCode(code, privateKey string) (map[string]interfac
 }
 
 // CfgSetup validates secrets and picks the first working one.
-func (c *Client) CfgSetup() error {
+func (c *Client) CfgSetup(ctx context.Context) error {
 	for _, secret := range c.Secrets {
 		if secret == "" {
 			continue
 		}
-		if c.testSecret(secret) {
+		if c.testSecret(ctx, secret) {
 			c.Secret = secret
 			return nil
 		}
@@ -279,23 +277,23 @@ func (c *Client) CfgSetup() error {
 	return &InvalidAppSecretError{"Can't find any valid app secret. " + resetMsg}
 }
 
-func (c *Client) testSecret(secret string) bool {
-	_, err := c.GetTrackURL("5966783", 5, secret)
+func (c *Client) testSecret(ctx context.Context, secret string) bool {
+	_, err := c.GetTrackURL(ctx, "5966783", 5, secret)
 	return err == nil
 }
 
 // GetAlbumMeta returns album metadata.
-func (c *Client) GetAlbumMeta(id string) (map[string]interface{}, error) {
-	return c.doGet("album/get", url.Values{"album_id": {id}})
+func (c *Client) GetAlbumMeta(ctx context.Context, id string) (map[string]interface{}, error) {
+	return c.doGet(ctx, "album/get", url.Values{"album_id": {id}})
 }
 
 // GetTrackMeta returns track metadata.
-func (c *Client) GetTrackMeta(id string) (map[string]interface{}, error) {
-	return c.doGet("track/get", url.Values{"track_id": {id}})
+func (c *Client) GetTrackMeta(ctx context.Context, id string) (map[string]interface{}, error) {
+	return c.doGet(ctx, "track/get", url.Values{"track_id": {id}})
 }
 
 // GetTrackURL returns a signed download URL for a track.
-func (c *Client) GetTrackURL(trackID string, fmtID int, secretOverride string) (map[string]interface{}, error) {
+func (c *Client) GetTrackURL(ctx context.Context, trackID string, fmtID int, secretOverride string) (map[string]interface{}, error) {
 	if fmtID != 5 && fmtID != 6 && fmtID != 7 && fmtID != 27 {
 		return nil, &InvalidQualityError{"choose between 5, 6, 7 or 27"}
 	}
@@ -307,7 +305,7 @@ func (c *Client) GetTrackURL(trackID string, fmtID int, secretOverride string) (
 	rawSig := fmt.Sprintf("trackgetFileUrlformat_id%dintentstreamtrack_id%s%s%s",
 		fmtID, trackID, unix, secret)
 	sig := md5hex(rawSig)
-	return c.doGet("track/getFileUrl", url.Values{
+	return c.doGet(ctx, "track/getFileUrl", url.Values{
 		"request_ts":  {unix},
 		"request_sig": {sig},
 		"track_id":    {trackID},
@@ -317,11 +315,11 @@ func (c *Client) GetTrackURL(trackID string, fmtID int, secretOverride string) (
 }
 
 // GetFavoriteAlbums returns the user's favorite albums.
-func (c *Client) GetFavoriteAlbums(offset, limit int) (map[string]interface{}, error) {
+func (c *Client) GetFavoriteAlbums(ctx context.Context, offset, limit int) (map[string]interface{}, error) {
 	unix := strconv.FormatInt(time.Now().Unix(), 10)
 	rawSig := "favoritegetUserFavorites" + unix + c.Secret
 	sig := md5hex(rawSig)
-	return c.doGet("favorite/getUserFavorites", url.Values{
+	return c.doGet(ctx, "favorite/getUserFavorites", url.Values{
 		"app_id":          {c.AppID},
 		"user_auth_token": {c.UAT},
 		"type":            {"albums"},
@@ -333,28 +331,28 @@ func (c *Client) GetFavoriteAlbums(offset, limit int) (map[string]interface{}, e
 }
 
 // SearchAlbums searches for albums.
-func (c *Client) SearchAlbums(query string, limit int) (map[string]interface{}, error) {
-	return c.doGet("album/search", url.Values{"query": {query}, "limit": {strconv.Itoa(limit)}})
+func (c *Client) SearchAlbums(ctx context.Context, query string, limit int) (map[string]interface{}, error) {
+	return c.doGet(ctx, "album/search", url.Values{"query": {query}, "limit": {strconv.Itoa(limit)}})
 }
 
 // SearchTracks searches for tracks.
-func (c *Client) SearchTracks(query string, limit int) (map[string]interface{}, error) {
-	return c.doGet("track/search", url.Values{"query": {query}, "limit": {strconv.Itoa(limit)}})
+func (c *Client) SearchTracks(ctx context.Context, query string, limit int) (map[string]interface{}, error) {
+	return c.doGet(ctx, "track/search", url.Values{"query": {query}, "limit": {strconv.Itoa(limit)}})
 }
 
 // SearchArtists searches for artists.
-func (c *Client) SearchArtists(query string, limit int) (map[string]interface{}, error) {
-	return c.doGet("artist/search", url.Values{"query": {query}, "limit": {strconv.Itoa(limit)}})
+func (c *Client) SearchArtists(ctx context.Context, query string, limit int) (map[string]interface{}, error) {
+	return c.doGet(ctx, "artist/search", url.Values{"query": {query}, "limit": {strconv.Itoa(limit)}})
 }
 
 // SearchPlaylists searches for playlists.
-func (c *Client) SearchPlaylists(query string, limit int) (map[string]interface{}, error) {
-	return c.doGet("playlist/search", url.Values{"query": {query}, "limit": {strconv.Itoa(limit)}})
+func (c *Client) SearchPlaylists(ctx context.Context, query string, limit int) (map[string]interface{}, error) {
+	return c.doGet(ctx, "playlist/search", url.Values{"query": {query}, "limit": {strconv.Itoa(limit)}})
 }
 
 // GetArtistMeta returns paginated artist metadata.
-func (c *Client) GetArtistMeta(id string) ([]map[string]interface{}, error) {
-	return c.multiMeta("artist/get", "albums_count", url.Values{
+func (c *Client) GetArtistMeta(ctx context.Context, id string) ([]map[string]interface{}, error) {
+	return c.multiMeta(ctx, "artist/get", "albums_count", url.Values{
 		"app_id":    {c.AppID},
 		"artist_id": {id},
 		"extra":     {"albums"},
@@ -362,22 +360,22 @@ func (c *Client) GetArtistMeta(id string) ([]map[string]interface{}, error) {
 }
 
 // GetPlaylistMeta returns paginated playlist metadata.
-func (c *Client) GetPlaylistMeta(id string) ([]map[string]interface{}, error) {
-	return c.multiMeta("playlist/get", "tracks_count", url.Values{
+func (c *Client) GetPlaylistMeta(ctx context.Context, id string) ([]map[string]interface{}, error) {
+	return c.multiMeta(ctx, "playlist/get", "tracks_count", url.Values{
 		"extra":       {"tracks"},
 		"playlist_id": {id},
 	})
 }
 
 // GetLabelMeta returns paginated label metadata.
-func (c *Client) GetLabelMeta(id string) ([]map[string]interface{}, error) {
-	return c.multiMeta("label/get", "albums_count", url.Values{
+func (c *Client) GetLabelMeta(ctx context.Context, id string) ([]map[string]interface{}, error) {
+	return c.multiMeta(ctx, "label/get", "albums_count", url.Values{
 		"label_id": {id},
 		"extra":    {"albums"},
 	})
 }
 
-func (c *Client) multiMeta(endpoint, countKey string, baseParams url.Values) ([]map[string]interface{}, error) {
+func (c *Client) multiMeta(ctx context.Context, endpoint, countKey string, baseParams url.Values) ([]map[string]interface{}, error) {
 	const pageSize = 500
 
 	fetchPage := func(offset int) (map[string]interface{}, error) {
@@ -387,7 +385,7 @@ func (c *Client) multiMeta(endpoint, countKey string, baseParams url.Values) ([]
 		}
 		params.Set("limit", strconv.Itoa(pageSize))
 		params.Set("offset", strconv.Itoa(offset))
-		return c.doGet(endpoint, params)
+		return c.doGet(ctx, endpoint, params)
 	}
 
 	// First page also gives us the total item count.

@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"strconv"
@@ -25,7 +26,7 @@ Commands:
 
 // Interactive runs a REPL that lets the user search, build a queue, and
 // download — all without leaving the session. No external dependencies.
-func (d *Downloader) Interactive() {
+func (d *Downloader) Interactive(ctx context.Context) {
 	reader := bufio.NewReader(os.Stdin)
 	var queue []SearchResult
 
@@ -49,13 +50,13 @@ func (d *Downloader) Interactive() {
 		switch strings.ToLower(cmd) {
 
 		case "sa":
-			queue = interactiveSearch(d, "album", arg, queue)
+			queue = interactiveSearch(ctx, d, "album", arg, queue)
 		case "st":
-			queue = interactiveSearch(d, "track", arg, queue)
+			queue = interactiveSearch(ctx, d, "track", arg, queue)
 		case "sr":
-			queue = interactiveSearch(d, "artist", arg, queue)
+			queue = interactiveSearch(ctx, d, "artist", arg, queue)
 		case "sp":
-			queue = interactiveSearch(d, "playlist", arg, queue)
+			queue = interactiveSearch(ctx, d, "playlist", arg, queue)
 
 		case "dl":
 			if arg == "" {
@@ -85,7 +86,7 @@ func (d *Downloader) Interactive() {
 				urls[i] = r.URL
 			}
 			queue = nil
-			d.DownloadURLs(urls)
+			d.DownloadURLs(ctx, urls)
 
 		case "help":
 			fmt.Print(interactiveHelp)
@@ -102,13 +103,13 @@ func (d *Downloader) Interactive() {
 
 // interactiveSearch runs a search, prints numbered results, and lets the user
 // pick items to add to the queue. Returns the updated queue.
-func interactiveSearch(d *Downloader, itemType, query string, queue []SearchResult) []SearchResult {
+func interactiveSearch(ctx context.Context, d *Downloader, itemType, query string, queue []SearchResult) []SearchResult {
 	if query == "" {
 		fmt.Printf("\033[31m  Usage: s%s <query>\033[0m\n", string(itemType[0]))
 		return queue
 	}
 
-	results, err := Search(d.Client, itemType, query, 20)
+	results, err := Search(ctx, d.Client, itemType, query, 20)
 	if err != nil {
 		fmt.Printf("\033[31m  Search error: %v\033[0m\n", err)
 		return queue

@@ -82,7 +82,7 @@ loop:
 			continue
 		}
 
-		content, fetchErr := client.FetchWithRetry(f)
+		content, fetchErr := client.FetchWithRetry(ctx, f)
 		switch {
 		case fetchErr != nil:
 			warnings = append(warnings,

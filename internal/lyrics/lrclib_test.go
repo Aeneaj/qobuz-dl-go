@@ -1,6 +1,7 @@
 package lyrics
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -36,7 +37,7 @@ func TestFetch_SyncedLyricsPreferred(t *testing.T) {
 	})
 	defer close()
 
-	got, err := client.Fetch(AudioInfo{Title: "T", Artist: "A"})
+	got, err := client.Fetch(context.Background(), AudioInfo{Title: "T", Artist: "A"})
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
@@ -54,7 +55,7 @@ func TestFetch_PlainFallback(t *testing.T) {
 	})
 	defer close()
 
-	got, err := client.Fetch(AudioInfo{Title: "T", Artist: "A"})
+	got, err := client.Fetch(context.Background(), AudioInfo{Title: "T", Artist: "A"})
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
@@ -69,7 +70,7 @@ func TestFetch_NeitherLyricsFieldSet(t *testing.T) {
 	})
 	defer close()
 
-	got, err := client.Fetch(AudioInfo{Title: "T", Artist: "A"})
+	got, err := client.Fetch(context.Background(), AudioInfo{Title: "T", Artist: "A"})
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
@@ -84,7 +85,7 @@ func TestFetch_NotFound(t *testing.T) {
 	})
 	defer close()
 
-	got, err := client.Fetch(AudioInfo{Title: "Unknown", Artist: "Nobody"})
+	got, err := client.Fetch(context.Background(), AudioInfo{Title: "Unknown", Artist: "Nobody"})
 	if err != nil {
 		t.Fatalf("404 must not produce an error; got %v", err)
 	}
@@ -99,7 +100,7 @@ func TestFetch_RateLimited(t *testing.T) {
 	})
 	defer close()
 
-	_, err := client.Fetch(AudioInfo{Title: "T", Artist: "A"})
+	_, err := client.Fetch(context.Background(), AudioInfo{Title: "T", Artist: "A"})
 	if err == nil {
 		t.Fatal("expected error for HTTP 429")
 	}
@@ -122,7 +123,7 @@ func TestFetch_QueryParams(t *testing.T) {
 	})
 	defer close()
 
-	client.Fetch(AudioInfo{
+	client.Fetch(context.Background(), AudioInfo{
 		Title:    "My Song",
 		Artist:   "My Artist",
 		Album:    "My Album",
@@ -150,7 +151,7 @@ func TestFetch_OmitsDurationWhenZero(t *testing.T) {
 	})
 	defer close()
 
-	client.Fetch(AudioInfo{Title: "T", Artist: "A", Duration: 0})
+	client.Fetch(context.Background(), AudioInfo{Title: "T", Artist: "A", Duration: 0})
 
 	if durationParam != "" {
 		t.Errorf("duration param should be absent when Duration=0; got %q", durationParam)
@@ -171,7 +172,7 @@ func TestFetchWithRetry_RetriesOn429(t *testing.T) {
 	})
 	defer close()
 
-	got, err := client.FetchWithRetry(AudioInfo{Title: "T", Artist: "A"})
+	got, err := client.FetchWithRetry(context.Background(), AudioInfo{Title: "T", Artist: "A"})
 	if err != nil {
 		t.Fatalf("FetchWithRetry: %v", err)
 	}
@@ -191,7 +192,7 @@ func TestFetchWithRetry_NoRetryOn404(t *testing.T) {
 	})
 	defer close()
 
-	got, err := client.FetchWithRetry(AudioInfo{Title: "T", Artist: "A"})
+	got, err := client.FetchWithRetry(context.Background(), AudioInfo{Title: "T", Artist: "A"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

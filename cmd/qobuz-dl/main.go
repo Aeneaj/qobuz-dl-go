@@ -131,7 +131,7 @@ func main() {
 		if err != nil {
 			fatalf("%v", err)
 		}
-		dl.Interactive()
+		dl.Interactive(ctx)
 
 	case "dl":
 		if len(cmdArgs) == 0 {
@@ -142,7 +142,7 @@ func main() {
 		if err != nil {
 			fatalf("%v", err)
 		}
-		dl.DownloadURLs(cmdArgs)
+		dl.DownloadURLs(ctx, cmdArgs)
 
 	case "lucky":
 		if len(cmdArgs) == 0 {
@@ -158,11 +158,11 @@ func main() {
 			fatalf("%v", err)
 		}
 		fmt.Printf("\033[33mSearching %ss for \"%s\" (top %d)...\033[0m\n", *luckyType, query, *luckyN)
-		urls, err := searchByType(dl.Client, *luckyType, query, *luckyN)
+		urls, err := searchByType(ctx, dl.Client, *luckyType, query, *luckyN)
 		if err != nil {
 			fatalf("%v", err)
 		}
-		dl.DownloadURLs(urls)
+		dl.DownloadURLs(ctx, urls)
 
 	case "csv":
 		if len(cmdArgs) == 0 {
@@ -173,7 +173,7 @@ func main() {
 		if err != nil {
 			fatalf("%v", err)
 		}
-		dl.DownloadCSV(cmdArgs[0], *failed)
+		dl.DownloadCSV(ctx, cmdArgs[0], *failed)
 
 	case "oauth":
 		codeOrURL := ""
@@ -287,17 +287,17 @@ func initDownloader(ctx context.Context, f *cliFlags) (*downloader.Downloader, e
 		trackFmt = cfg.TrackFormat
 	}
 
-	client := api.New(cfg.AppID, cfg.Secrets, ctx)
+	client := api.New(cfg.AppID, cfg.Secrets)
 
 	if cfg.UserID == "" || cfg.UserAuthToken == "" {
 		return nil, fmt.Errorf("no credentials found — run 'qobuz-dl oauth' to log in, or 'qobuz-dl --reset' to set up manually")
 	}
 	fmt.Println("\033[33mLogging in...\033[0m")
-	if err := client.AuthWithToken(cfg.UserID, cfg.UserAuthToken); err != nil {
+	if err := client.AuthWithToken(ctx, cfg.UserID, cfg.UserAuthToken); err != nil {
 		return nil, err
 	}
 
-	if err := client.CfgSetup(); err != nil {
+	if err := client.CfgSetup(ctx); err != nil {
 		return nil, err
 	}
 
@@ -320,9 +320,9 @@ func initDownloader(ctx context.Context, f *cliFlags) (*downloader.Downloader, e
 		DBPath:          cfg.DBPath,
 		Workers:         f.Workers,
 	}
-	return downloader.New(client, opts, ctx)
+	return downloader.New(client, opts)
 }
 
-func searchByType(client *api.Client, itemType, query string, limit int) ([]string, error) {
-	return downloader.SearchURLs(client, itemType, query, limit)
+func searchByType(ctx context.Context, client *api.Client, itemType, query string, limit int) ([]string, error) {
+	return downloader.SearchURLs(ctx, client, itemType, query, limit)
 }

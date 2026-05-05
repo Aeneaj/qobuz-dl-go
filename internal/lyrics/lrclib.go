@@ -1,6 +1,7 @@
 package lyrics
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -37,7 +38,8 @@ func NewClient() *Client {
 // Fetch retrieves lyrics for info from LRCLIB.
 // Returns ("", nil) when the track is not found (HTTP 404).
 // Synced lyrics (with timestamps) are preferred over plain lyrics.
-func (c *Client) Fetch(info AudioInfo) (string, error) {
+// ctx is used to cancel the in-flight request.
+func (c *Client) Fetch(ctx context.Context, info AudioInfo) (string, error) {
 	q := url.Values{}
 	q.Set("track_name", info.Title)
 	q.Set("artist_name", info.Artist)
@@ -48,7 +50,7 @@ func (c *Client) Fetch(info AudioInfo) (string, error) {
 		q.Set("duration", fmt.Sprintf("%d", info.Duration))
 	}
 
-	req, err := http.NewRequest(http.MethodGet, c.baseURL+"?"+q.Encode(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"?"+q.Encode(), nil)
 	if err != nil {
 		return "", err
 	}
@@ -83,12 +85,17 @@ func (c *Client) Fetch(info AudioInfo) (string, error) {
 }
 
 // FetchWithRetry wraps Fetch with a single retry after retryDelay when
-// LRCLIB returns HTTP 429 (rate limited).
-func (c *Client) FetchWithRetry(info AudioInfo) (string, error) {
-	content, err := c.Fetch(info)
+// LRCLIB returns HTTP 429 (rate limited). The retry wait is also cancellable
+// via ctx, so Ctrl+C aborts immediately instead of sleeping the full backoff.
+func (c *Client) FetchWithRetry(ctx context.Context, info AudioInfo) (string, error) {
+	content, err := c.Fetch(ctx, info)
 	if err != nil && strings.Contains(err.Error(), "429") {
-		time.Sleep(c.retryDelay)
-		return c.Fetch(info)
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(c.retryDelay):
+		}
+		return c.Fetch(ctx, info)
 	}
 	return content, err
 }

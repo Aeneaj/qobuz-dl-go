@@ -17,14 +17,14 @@ import (
 //     waits for the redirect, captures ALL params Qobuz sends back.
 //  2. Exchanges the captured result for a user_auth_token and authenticates.
 //  3. The token is saved in c.Client.UAT / c.Client.UserID for the caller to persist.
-func (d *Downloader) OAuthLogin(appID, privateKey string, codeOrURL string) error {
+func (d *Downloader) OAuthLogin(ctx context.Context, appID, privateKey string, codeOrURL string) error {
 	var result api.OAuthResult
 
 	if codeOrURL != "" {
 		result = parseRedirectURL(codeOrURL)
 	} else {
 		var err error
-		result, err = d.captureOAuthRedirect(appID)
+		result, err = d.captureOAuthRedirect(ctx, appID)
 		if err != nil {
 			return err
 		}
@@ -41,7 +41,7 @@ func (d *Downloader) OAuthLogin(appID, privateKey string, codeOrURL string) erro
 		)
 	}
 
-	if _, err := d.Client.LoginWithOAuthResult(result, privateKey); err != nil {
+	if _, err := d.Client.LoginWithOAuthResult(ctx, result, privateKey); err != nil {
 		return fmt.Errorf("OAuth login: %w\n\nIf this keeps failing, use token auth instead:\n  qobuz-dl --reset --token", err)
 	}
 
@@ -51,7 +51,8 @@ func (d *Downloader) OAuthLogin(appID, privateKey string, codeOrURL string) erro
 
 // captureOAuthRedirect starts a local HTTP server, shows the Qobuz OAuth URL,
 // waits for the browser redirect, and captures ALL query parameters.
-func (d *Downloader) captureOAuthRedirect(appID string) (api.OAuthResult, error) {
+// ctx cancels the wait if the parent context is cancelled (e.g. Ctrl+C).
+func (d *Downloader) captureOAuthRedirect(ctx context.Context, appID string) (api.OAuthResult, error) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return api.OAuthResult{}, fmt.Errorf("could not open local port: %w", err)
@@ -103,27 +104,30 @@ func (d *Downloader) captureOAuthRedirect(appID string) (api.OAuthResult, error)
 		enterCh <- struct{}{}
 	}()
 
+	shutdown := func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		srv.Shutdown(shutCtx) //nolint:errcheck
+	}
+
 	select {
 	case result := <-resultCh:
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		srv.Shutdown(ctx) //nolint:errcheck
+		shutdown()
 		return result, nil
 	case <-enterCh:
 		// User pressed Enter before redirect arrived
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		srv.Shutdown(ctx) //nolint:errcheck
+		shutdown()
 		select {
 		case result := <-resultCh:
 			return result, nil
 		default:
 			return api.OAuthResult{}, fmt.Errorf("no OAuth redirect received before Enter was pressed")
 		}
+	case <-ctx.Done():
+		shutdown()
+		return api.OAuthResult{}, ctx.Err()
 	case <-time.After(5 * time.Minute):
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		srv.Shutdown(ctx) //nolint:errcheck
+		shutdown()
 		return api.OAuthResult{}, fmt.Errorf("timed out waiting for OAuth redirect")
 	}
 }

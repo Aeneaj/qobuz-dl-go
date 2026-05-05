@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"bufio"
+	"context"
 	"encoding/csv"
 	"fmt"
 	"io"
@@ -124,7 +125,7 @@ type failedEntry struct {
 
 // DownloadCSV parses the CSV at csvPath and downloads each track via Qobuz.
 // If failedPath is non-empty, writes a CSV report of skipped/failed tracks there.
-func (d *Downloader) DownloadCSV(csvPath, failedPath string) {
+func (d *Downloader) DownloadCSV(ctx context.Context, csvPath, failedPath string) {
 	tracks, err := ParseCSV(csvPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\033[31mCSV parse error: %v\033[0m\n", err)
@@ -143,9 +144,13 @@ func (d *Downloader) DownloadCSV(csvPath, failedPath string) {
 	dir := d.Opts.Directory
 
 	for i, t := range tracks {
+		if err := ctx.Err(); err != nil {
+			fmt.Printf("\033[33m\nInterrupted at row %d/%d.\033[0m\n", i, total)
+			break
+		}
 		fmt.Printf("\033[33m[%d/%d] %s\033[0m\n", i+1, total, t.Query)
 
-		trackID, err := d.searchFirstTrackID(t.Query)
+		trackID, err := d.searchFirstTrackID(ctx, t.Query)
 		if err != nil {
 			fmt.Printf("  \033[31m✗ Search error: %v\033[0m\n", err)
 			failures = append(failures, failedEntry{t, fmt.Sprintf("search error: %v", err)})
@@ -158,7 +163,7 @@ func (d *Downloader) DownloadCSV(csvPath, failedPath string) {
 		}
 
 		fmt.Printf("  \033[32m→ id=%s, downloading...\033[0m\n", trackID)
-		if err := d.downloadTrackByID(trackID, dir); err != nil {
+		if err := d.downloadTrackByID(ctx, trackID, dir); err != nil {
 			fmt.Printf("  \033[31m✗ Download error: %v\033[0m\n", err)
 			failures = append(failures, failedEntry{t, fmt.Sprintf("download error: %v", err)})
 			continue

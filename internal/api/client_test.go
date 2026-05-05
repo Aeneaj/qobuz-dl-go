@@ -17,7 +17,6 @@ func mockServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *Clie
 		AppID:   "123456789",
 		Secrets: []string{"testsecret"},
 		http:    srv.Client(),
-		ctx:     context.Background(),
 	}
 	// Point baseURL at mock — we override via the transport
 	// Instead, use a wrapper that redirects calls
@@ -139,7 +138,7 @@ func TestDoGet_401_ReturnsAuthError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := &Client{AppID: "123", http: srv.Client(), ctx: context.Background()}
+	c := &Client{AppID: "123", http: srv.Client()}
 	// Temporarily repoint base
 	origBase := baseURL
 	_ = origBase // read to satisfy linter if baseURL were a var; it's a const so we use a shim
@@ -222,7 +221,7 @@ func TestGetAlbumMeta_MockServer(t *testing.T) {
 	defer srv.Close()
 
 	c := clientForServer(t, srv)
-	meta, err := c.GetAlbumMeta("abc123")
+	meta, err := c.GetAlbumMeta(context.Background(), "abc123")
 	if err != nil {
 		t.Fatalf("GetAlbumMeta: %v", err)
 	}
@@ -240,7 +239,7 @@ func TestGetTrackMeta_MockServer(t *testing.T) {
 	defer srv.Close()
 
 	c := clientForServer(t, srv)
-	meta, err := c.GetTrackMeta("t1")
+	meta, err := c.GetTrackMeta(context.Background(), "t1")
 	if err != nil {
 		t.Fatalf("GetTrackMeta: %v", err)
 	}
@@ -272,7 +271,7 @@ func TestAuthWithToken_MockServer(t *testing.T) {
 	defer srv.Close()
 
 	c := clientForServer(t, srv)
-	if err := c.AuthWithToken("99", "mytoken"); err != nil {
+	if err := c.AuthWithToken(context.Background(), "99", "mytoken"); err != nil {
 		t.Fatalf("AuthWithToken: %v", err)
 	}
 	if c.Label != "Sublime" {
@@ -291,7 +290,7 @@ func TestAuthWithToken_WrongToken_Returns401(t *testing.T) {
 	defer srv.Close()
 
 	c := clientForServer(t, srv)
-	err := c.AuthWithToken("1", "badtoken")
+	err := c.AuthWithToken(context.Background(), "1", "badtoken")
 	if err == nil {
 		t.Fatal("expected error for 401")
 	}
@@ -317,7 +316,7 @@ func TestSearchAlbums_MockServer(t *testing.T) {
 	defer srv.Close()
 
 	c := clientForServer(t, srv)
-	results, err := c.SearchAlbums("radiohead", 5)
+	results, err := c.SearchAlbums(context.Background(), "radiohead", 5)
 	if err != nil {
 		t.Fatalf("SearchAlbums: %v", err)
 	}
@@ -329,8 +328,8 @@ func TestSearchAlbums_MockServer(t *testing.T) {
 }
 
 func TestGetTrackURL_InvalidQuality(t *testing.T) {
-	c := New("123", nil, context.Background())
-	_, err := c.GetTrackURL("t1", 99, "")
+	c := New("123", nil)
+	_, err := c.GetTrackURL(context.Background(), "t1", 99, "")
 	if err == nil {
 		t.Fatal("expected error for invalid quality")
 	}
@@ -356,7 +355,7 @@ func TestGetTrackURL_MockServer(t *testing.T) {
 
 	c := clientForServer(t, srv)
 	c.Secret = "mysecret"
-	result, err := c.GetTrackURL("t1", 6, "")
+	result, err := c.GetTrackURL(context.Background(), "t1", 6, "")
 	if err != nil {
 		t.Fatalf("GetTrackURL: %v", err)
 	}
@@ -373,7 +372,7 @@ func TestHTTP500_ReturnsError(t *testing.T) {
 	defer srv.Close()
 
 	c := clientForServer(t, srv)
-	_, err := c.GetAlbumMeta("any")
+	_, err := c.GetAlbumMeta(context.Background(), "any")
 	if err == nil {
 		t.Fatal("expected error for 500")
 	}
@@ -386,7 +385,6 @@ func clientForServer(t *testing.T, srv *httptest.Server) *Client {
 		AppID:   "123456789",
 		Secrets: []string{"testsecret"},
 		http:    srv.Client(),
-		ctx:     context.Background(),
 	}
 	// Monkey-patch baseURL by wrapping the transport to rewrite URLs
 	origTransport := srv.Client().Transport

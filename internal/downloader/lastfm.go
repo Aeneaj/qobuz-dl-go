@@ -108,7 +108,7 @@ func fetchLastFMTracks(ctx context.Context, username, listType string) ([]LastFM
 
 // downloadLastFMPlaylist fetches a Last.fm user playlist (loved or recent
 // tracks), searches each track on Qobuz, and downloads the top result.
-func (d *Downloader) downloadLastFMPlaylist(username, listType string) error {
+func (d *Downloader) downloadLastFMPlaylist(ctx context.Context, username, listType string) error {
 	label := listType
 	switch listType {
 	case "loved":
@@ -118,7 +118,7 @@ func (d *Downloader) downloadLastFMPlaylist(username, listType string) error {
 	}
 
 	fmt.Printf("\033[33mFetching Last.fm %s for user %q...\033[0m\n", label, username)
-	tracks, err := fetchLastFMTracks(d.ctx, username, listType)
+	tracks, err := fetchLastFMTracks(ctx, username, listType)
 	if err != nil {
 		return err
 	}
@@ -137,13 +137,13 @@ func (d *Downloader) downloadLastFMPlaylist(username, listType string) error {
 	found, skipped := 0, 0
 	for i, t := range tracks {
 		fmt.Printf("\033[33m[%d/%d] %s — %s\033[0m\n", i+1, len(tracks), t.Artist, t.Title)
-		trackID, err := d.searchFirstTrackID(t.Artist + " " + t.Title)
+		trackID, err := d.searchFirstTrackID(ctx, t.Artist+" "+t.Title)
 		if err != nil || trackID == "" {
 			fmt.Printf("\033[31m  ✗ No Qobuz match found\033[0m\n")
 			skipped++
 			continue
 		}
-		if err := d.downloadTrackByID(trackID, dir); err != nil {
+		if err := d.downloadTrackByID(ctx, trackID, dir); err != nil {
 			fmt.Printf("\033[31m  ✗ Download error: %v\033[0m\n", err)
 			skipped++
 		} else {
@@ -160,8 +160,8 @@ func (d *Downloader) downloadLastFMPlaylist(username, listType string) error {
 
 // searchFirstTrackID searches Qobuz for the given query (typically "artist title")
 // and returns the track ID of the top result, or "" if nothing was found.
-func (d *Downloader) searchFirstTrackID(query string) (string, error) {
-	raw, err := d.Client.SearchTracks(query, 1)
+func (d *Downloader) searchFirstTrackID(ctx context.Context, query string) (string, error) {
+	raw, err := d.Client.SearchTracks(ctx, query, 1)
 	if err != nil {
 		return "", err
 	}
