@@ -65,10 +65,11 @@ func TestReadINI_CaseInsensitiveKeys(t *testing.T) {
 func TestLoad_ParsesSecretsCSV(t *testing.T) {
 	dir := t.TempDir()
 
-	// Override ConfigDir by setting HOME
-	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", dir)
-	defer os.Setenv("HOME", origHome)
+	// os.UserConfigDir prefers $XDG_CONFIG_HOME on Linux and falls back to
+	// $HOME/.config. CI runners may have XDG_CONFIG_HOME set, so overriding
+	// HOME alone is not enough — pin both for test isolation.
+	t.Setenv("HOME", dir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, ".config"))
 
 	cfgDir := filepath.Join(dir, ".config", "qobuz-dl")
 	os.MkdirAll(cfgDir, 0755)
