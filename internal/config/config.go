@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 
@@ -69,9 +68,11 @@ type Config struct {
 }
 
 // ConfigDir returns the OS config directory for qobuz-dl.
+// Uses os.UserConfigDir which respects $XDG_CONFIG_HOME on Linux,
+// %AppData% on Windows, and ~/Library/Application Support on macOS.
 func ConfigDir() string {
-	if runtime.GOOS == "windows" {
-		return filepath.Join(os.Getenv("APPDATA"), "qobuz-dl")
+	if dir, err := os.UserConfigDir(); err == nil {
+		return filepath.Join(dir, "qobuz-dl")
 	}
 	return filepath.Join(os.Getenv("HOME"), ".config", "qobuz-dl")
 }

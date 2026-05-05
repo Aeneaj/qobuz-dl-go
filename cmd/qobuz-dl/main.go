@@ -63,19 +63,7 @@ func main() {
 	showVer := fs.Bool("v", false, "")
 	showVerLong := fs.Bool("version", false, "")
 
-	dir := fs.String("d", "", "download directory")
-	quality := fs.Int("q", 0, "quality")
-	embedArt := fs.Bool("embed-art", false, "")
-	albumsOnly := fs.Bool("albums-only", false, "")
-	noM3U := fs.Bool("no-m3u", false, "")
-	noFallback := fs.Bool("no-fallback", false, "")
-	ogCover := fs.Bool("og-cover", false, "")
-	noCover := fs.Bool("no-cover", false, "")
-	noDB := fs.Bool("no-db", false, "")
-	workers := fs.Int("workers", 0, "")
-	folderFmt := fs.String("folder-format", "", "")
-	trackFmt := fs.String("track-format", "", "")
-	smartDiscog := fs.Bool("smart-discog", false, "")
+	flags := registerDownloadFlags(fs)
 	luckyType := fs.String("lucky-type", "album", "")
 	luckyN := fs.Int("lucky-n", 1, "")
 	failed := fs.String("failed", "failed_downloads.csv", "")
@@ -139,7 +127,7 @@ func main() {
 
 	switch cmd {
 	case "fun":
-		dl, err := initDownloader(ctx, *dir, *quality, *embedArt, *albumsOnly, *noM3U, *noFallback, *ogCover, *noCover, *noDB, *workers, *folderFmt, *trackFmt, *smartDiscog)
+		dl, err := initDownloader(ctx, flags)
 		if err != nil {
 			fatalf("%v", err)
 		}
@@ -150,7 +138,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "dl: provide at least one URL")
 			os.Exit(1)
 		}
-		dl, err := initDownloader(ctx, *dir, *quality, *embedArt, *albumsOnly, *noM3U, *noFallback, *ogCover, *noCover, *noDB, *workers, *folderFmt, *trackFmt, *smartDiscog)
+		dl, err := initDownloader(ctx, flags)
 		if err != nil {
 			fatalf("%v", err)
 		}
@@ -165,7 +153,7 @@ func main() {
 		if len(query) < 3 {
 			fatalf("search query too short")
 		}
-		dl, err := initDownloader(ctx, *dir, *quality, *embedArt, *albumsOnly, *noM3U, *noFallback, *ogCover, *noCover, *noDB, *workers, *folderFmt, *trackFmt, *smartDiscog)
+		dl, err := initDownloader(ctx, flags)
 		if err != nil {
 			fatalf("%v", err)
 		}
@@ -181,7 +169,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "csv: provide path to a TuneMyMusic CSV file")
 			os.Exit(1)
 		}
-		dl, err := initDownloader(ctx, *dir, *quality, *embedArt, *albumsOnly, *noM3U, *noFallback, *ogCover, *noCover, *noDB, *workers, *folderFmt, *trackFmt, *smartDiscog)
+		dl, err := initDownloader(ctx, flags)
 		if err != nil {
 			fatalf("%v", err)
 		}
@@ -230,13 +218,50 @@ func loadOrInitConfig(skipCredentials bool) (*config.Config, error) {
 	return config.Load()
 }
 
-func initDownloader(ctx context.Context, dir string, quality int, embedArt, albumsOnly, noM3U, noFallback, ogCover, noCover, noDB bool, workers int, folderFmt, trackFmt string, smartDiscog bool) (*downloader.Downloader, error) {
+// cliFlags groups the download-related flags shared by dl/lucky/csv/fun.
+// Lucky/CSV-specific flags (lucky-type, lucky-n, failed) stay separate.
+type cliFlags struct {
+	Dir          string
+	Quality      int
+	EmbedArt     bool
+	AlbumsOnly   bool
+	NoM3U        bool
+	NoFallback   bool
+	OGCover      bool
+	NoCover      bool
+	NoDB         bool
+	Workers      int
+	FolderFormat string
+	TrackFormat  string
+	SmartDiscog  bool
+}
+
+func registerDownloadFlags(fs *flag.FlagSet) *cliFlags {
+	f := &cliFlags{}
+	fs.StringVar(&f.Dir, "d", "", "download directory")
+	fs.IntVar(&f.Quality, "q", 0, "quality")
+	fs.BoolVar(&f.EmbedArt, "embed-art", false, "")
+	fs.BoolVar(&f.AlbumsOnly, "albums-only", false, "")
+	fs.BoolVar(&f.NoM3U, "no-m3u", false, "")
+	fs.BoolVar(&f.NoFallback, "no-fallback", false, "")
+	fs.BoolVar(&f.OGCover, "og-cover", false, "")
+	fs.BoolVar(&f.NoCover, "no-cover", false, "")
+	fs.BoolVar(&f.NoDB, "no-db", false, "")
+	fs.IntVar(&f.Workers, "workers", 0, "")
+	fs.StringVar(&f.FolderFormat, "folder-format", "", "")
+	fs.StringVar(&f.TrackFormat, "track-format", "", "")
+	fs.BoolVar(&f.SmartDiscog, "smart-discog", false, "")
+	return f
+}
+
+func initDownloader(ctx context.Context, f *cliFlags) (*downloader.Downloader, error) {
 	cfg, err := loadOrInitConfig(false)
 	if err != nil {
 		return nil, err
 	}
 
 	// Directory resolution hierarchy: flag -d → config download_dir → default.
+	dir := f.Dir
 	if dir == "" {
 		dir = cfg.DownloadDir
 	}
@@ -249,12 +274,15 @@ func initDownloader(ctx context.Context, dir string, quality int, embedArt, albu
 	}
 	dir = resolvedDir
 
+	quality := f.Quality
 	if quality == 0 {
 		quality = cfg.DefaultQuality
 	}
+	folderFmt := f.FolderFormat
 	if folderFmt == "" {
 		folderFmt = cfg.FolderFormat
 	}
+	trackFmt := f.TrackFormat
 	if trackFmt == "" {
 		trackFmt = cfg.TrackFormat
 	}
@@ -279,18 +307,18 @@ func initDownloader(ctx context.Context, dir string, quality int, embedArt, albu
 	opts := downloader.Options{
 		Directory:       dir,
 		Quality:         quality,
-		EmbedArt:        embedArt || cfg.EmbedArt,
-		IgnoreSingles:   albumsOnly || cfg.AlbumsOnly,
-		NoM3U:           noM3U || cfg.NoM3U,
-		QualityFallback: !noFallback && !cfg.NoFallback,
-		OGCover:         ogCover || cfg.OGCover,
-		NoCover:         noCover || cfg.NoCover,
+		EmbedArt:        f.EmbedArt || cfg.EmbedArt,
+		IgnoreSingles:   f.AlbumsOnly || cfg.AlbumsOnly,
+		NoM3U:           f.NoM3U || cfg.NoM3U,
+		QualityFallback: !f.NoFallback && !cfg.NoFallback,
+		OGCover:         f.OGCover || cfg.OGCover,
+		NoCover:         f.NoCover || cfg.NoCover,
 		FolderFormat:    folderFmt,
 		TrackFormat:     trackFmt,
-		SmartDiscog:     smartDiscog || cfg.SmartDiscog,
-		NoDB:            noDB || cfg.NoDatabase,
+		SmartDiscog:     f.SmartDiscog || cfg.SmartDiscog,
+		NoDB:            f.NoDB || cfg.NoDatabase,
 		DBPath:          cfg.DBPath,
-		Workers:         workers,
+		Workers:         f.Workers,
 	}
 	return downloader.New(client, opts, ctx), nil
 }

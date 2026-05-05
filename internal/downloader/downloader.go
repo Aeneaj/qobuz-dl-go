@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -569,7 +570,7 @@ func (d *Downloader) downloadAndTag(
 
 	// Build filename from track metadata
 	trackTitle := getTitle(trackMeta)
-	performer := safeGet(trackMeta, "performer", "name")
+	performer := nestedStr(trackMeta, "performer", "name")
 	if performer == "" {
 		performer = nestedStr(albumMeta, "artist", "name")
 	}
@@ -884,8 +885,8 @@ func makeM3U(dir string) {
 	sb.WriteString("#EXTM3U")
 	entries := 0
 
-	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error { //nolint:errcheck
-		if err != nil || info.IsDir() {
+	filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error { //nolint:errcheck
+		if err != nil || d.IsDir() {
 			return nil
 		}
 		ext := strings.ToLower(filepath.Ext(path))
@@ -896,8 +897,9 @@ func makeM3U(dir string) {
 		if err != nil {
 			return nil
 		}
+		name := d.Name()
 		fmt.Fprintf(&sb, "\n\n#EXTINF:-1,%s\n%s",
-			strings.TrimSuffix(info.Name(), filepath.Ext(info.Name())), rel)
+			strings.TrimSuffix(name, filepath.Ext(name)), rel)
 		entries++
 		return nil
 	})
@@ -952,9 +954,12 @@ func (d *Downloader) downloadFromFile(path string) {
 }
 
 func cleanTmp(dir string) {
-	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err == nil && !info.IsDir() && strings.HasPrefix(info.Name(), ".") && strings.HasSuffix(info.Name(), ".tmp") {
-			os.Remove(path)
+	filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error { //nolint:errcheck
+		if err == nil && !d.IsDir() {
+			name := d.Name()
+			if strings.HasPrefix(name, ".") && strings.HasSuffix(name, ".tmp") {
+				os.Remove(path)
+			}
 		}
 		return nil
 	})
@@ -1169,10 +1174,6 @@ func nestedStr(m map[string]interface{}, keys ...string) string {
 	}
 	s, _ := cur.(string)
 	return s
-}
-
-func safeGet(d map[string]interface{}, keys ...string) string {
-	return nestedStr(d, keys...)
 }
 
 func releaseYear(meta map[string]interface{}) string {

@@ -501,8 +501,6 @@ func formatCopyright(s string) string {
 	return s
 }
 
-var reGenreArrow = strings.NewReplacer()
-
 func formatGenres(genres []string) string {
 	// API returns e.g. ["Pop/Rock", "Pop/Rock→Rock", "Pop/Rock→Rock→Alternatif"]
 	// We want unique leaf tokens
