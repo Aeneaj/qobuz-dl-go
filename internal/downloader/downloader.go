@@ -741,27 +741,16 @@ func (d *Downloader) downloadWithProgress(ctx context.Context, rawURL, dest stri
 	)
 
 	for attempt := 0; attempt < maxDownloadRetries; attempt++ {
-		if attempt > 0 {
-			delay := time.Duration(1<<(attempt-1)) * time.Second // 1s, 2s, 4s, 8s
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(delay):
-			}
+		if err := waitBeforeRetry(ctx, attempt); err != nil {
+			return err
 		}
 
 		// Bytes already saved from a previous attempt.
-		var offset int64
-		if fi, err := os.Stat(dest); err == nil {
-			offset = fi.Size()
-		}
+		offset := currentOffset(dest)
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+		req, err := buildRangeRequest(ctx, rawURL, offset)
 		if err != nil {
 			return err
-		}
-		if offset > 0 {
-			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 		}
 
 		resp, err := d.httpClient.Do(req)
@@ -788,19 +777,7 @@ func (d *Downloader) downloadWithProgress(ctx context.Context, rawURL, dest stri
 
 		// Resolve total file size once.
 		if totalSize <= 0 {
-			if resp.StatusCode == http.StatusPartialContent {
-				// Content-Range: bytes N-M/TOTAL
-				if cr := resp.Header.Get("Content-Range"); cr != "" {
-					if idx := strings.LastIndex(cr, "/"); idx >= 0 {
-						if t, err2 := strconv.ParseInt(cr[idx+1:], 10, 64); err2 == nil && t > 0 {
-							totalSize = t
-						}
-					}
-				}
-			}
-			if totalSize <= 0 && resp.ContentLength > 0 {
-				totalSize = offset + resp.ContentLength
-			}
+			totalSize = resolveTotalSize(resp, offset)
 		}
 
 		// Set bar total for display only — do NOT trigger auto-completion here.
@@ -816,33 +793,15 @@ func (d *Downloader) downloadWithProgress(ctx context.Context, rawURL, dest stri
 			barCredited = offset
 		}
 
-		// Open file: create fresh on first write, append on resume.
-		var f *os.File
-		if offset == 0 {
-			f, err = os.Create(dest)
-		} else {
-			f, err = os.OpenFile(dest, os.O_APPEND|os.O_WRONLY, 0644)
-		}
+		f, err := openOutput(dest, offset)
 		if err != nil {
 			resp.Body.Close()
 			return err
 		}
 
-		var reader io.Reader
-		var pr io.ReadCloser
-		if bar != nil {
-			pr = bar.ProxyReader(resp.Body)
-			reader = pr
-		} else {
-			reader = resp.Body
-		}
-
-		n, copyErr := io.Copy(f, reader)
+		n, copyErr := copyAndCommit(f, resp.Body, bar)
 
 		// Always close all handles before deciding what to do next.
-		if pr != nil {
-			pr.Close()
-		}
 		resp.Body.Close()
 		f.Close()
 
@@ -853,16 +812,7 @@ func (d *Downloader) downloadWithProgress(ctx context.Context, rawURL, dest stri
 			if totalSize > 0 && written != totalSize {
 				return fmt.Errorf("incomplete download: got %d of %d bytes", written, totalSize)
 			}
-			// Explicitly mark bar complete now that io.Copy has fully returned.
-			// Doing this here (not during SetTotal) prevents mpb from closing its
-			// internal operateState channel while ProxyReader is still reading.
-			if bar != nil {
-				completedAt := totalSize
-				if completedAt <= 0 {
-					completedAt = written
-				}
-				bar.SetTotal(completedAt, true)
-			}
+			finalizeBar(bar, totalSize, written)
 			return nil
 		}
 
@@ -876,6 +826,107 @@ func (d *Downloader) downloadWithProgress(ctx context.Context, rawURL, dest stri
 	}
 
 	return fmt.Errorf("download failed after %d attempts", maxDownloadRetries)
+}
+
+// waitBeforeRetry sleeps with exponential backoff (1s, 2s, 4s, 8s) before a
+// retry attempt. attempt 0 is the first try and returns immediately. Returns
+// ctx.Err() if the context is cancelled while sleeping.
+func waitBeforeRetry(ctx context.Context, attempt int) error {
+	if attempt == 0 {
+		return nil
+	}
+	delay := time.Duration(1<<(attempt-1)) * time.Second
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(delay):
+		return nil
+	}
+}
+
+// currentOffset reports the size of an existing partial file at dest, or 0 if
+// the file does not exist or cannot be stat'd. Used to seed the Range header
+// when resuming a download.
+func currentOffset(dest string) int64 {
+	if fi, err := os.Stat(dest); err == nil {
+		return fi.Size()
+	}
+	return 0
+}
+
+// buildRangeRequest builds a GET request for rawURL, adding a "Range:
+// bytes=offset-" header when offset > 0 to resume a partial download.
+func buildRangeRequest(ctx context.Context, rawURL string, offset int64) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	if offset > 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
+	}
+	return req, nil
+}
+
+// resolveTotalSize derives the full file size from a response. It prefers the
+// "Content-Range: bytes N-M/TOTAL" trailer on a 206 reply, falls back to
+// offset + Content-Length, and returns -1 when neither yields a positive
+// value.
+func resolveTotalSize(resp *http.Response, offset int64) int64 {
+	if resp.StatusCode == http.StatusPartialContent {
+		if cr := resp.Header.Get("Content-Range"); cr != "" {
+			if idx := strings.LastIndex(cr, "/"); idx >= 0 {
+				if t, err := strconv.ParseInt(cr[idx+1:], 10, 64); err == nil && t > 0 {
+					return t
+				}
+			}
+		}
+	}
+	if resp.ContentLength > 0 {
+		return offset + resp.ContentLength
+	}
+	return -1
+}
+
+// openOutput opens the destination file for writing. When offset == 0 it
+// creates a fresh file (truncating any leftover); otherwise it opens the
+// existing file in append-only mode to resume.
+func openOutput(dest string, offset int64) (*os.File, error) {
+	if offset == 0 {
+		return os.Create(dest)
+	}
+	return os.OpenFile(dest, os.O_APPEND|os.O_WRONLY, 0644)
+}
+
+// copyAndCommit pipes body into f, optionally wrapping body in bar's
+// ProxyReader so the progress bar advances live as bytes arrive. The proxy
+// reader is closed before returning so its goroutine settles; the caller
+// retains ownership of body and f.
+func copyAndCommit(f *os.File, body io.Reader, bar *mpb.Bar) (int64, error) {
+	reader := body
+	var pr io.ReadCloser
+	if bar != nil {
+		pr = bar.ProxyReader(body)
+		reader = pr
+	}
+	n, err := io.Copy(f, reader)
+	if pr != nil {
+		pr.Close()
+	}
+	return n, err
+}
+
+// finalizeBar marks bar complete after io.Copy has fully returned. Doing it
+// here (and not during SetTotal) prevents mpb from closing its internal
+// operateState channel while ProxyReader is still active.
+func finalizeBar(bar *mpb.Bar, totalSize, written int64) {
+	if bar == nil {
+		return
+	}
+	completedAt := totalSize
+	if completedAt <= 0 {
+		completedAt = written
+	}
+	bar.SetTotal(completedAt, true)
 }
 
 func isContextError(err error) bool {
