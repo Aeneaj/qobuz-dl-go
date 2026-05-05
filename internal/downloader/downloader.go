@@ -258,27 +258,25 @@ func (d *Downloader) downloadLabelOrArtist(ctx context.Context, pages []map[stri
 
 // ---- album download ----
 
+// trackJob bundles per-track info collected in Phase 1 and consumed in Phase 2
+// of an album download.
+type trackJob struct {
+	idx      int
+	trackURL map[string]interface{}
+	track    map[string]interface{}
+	trackDir string
+	trackID  string
+	bar      *mpb.Bar
+}
+
 func (d *Downloader) downloadAlbum(ctx context.Context, albumID, baseDir string) error {
 	meta, err := d.Client.GetAlbumMeta(ctx, albumID)
 	if err != nil {
 		return fmt.Errorf("album metadata %s: %w", albumID, err)
 	}
 
-	// Streamable check
-	if streamable, ok := meta["streamable"].(bool); ok && !streamable {
-		fmt.Printf("\033[90mAlbum %s is not streamable, skipping\033[0m\n", albumID)
+	if d.shouldSkipAlbum(meta, albumID) {
 		return nil
-	}
-
-	// albums_only filter
-	if d.Opts.IgnoreSingles {
-		releaseType, _ := meta["release_type"].(string)
-		artistName := nestedStr(meta, "artist", "name")
-		if releaseType != "album" || artistName == "Various Artists" {
-			title, _ := meta["title"].(string)
-			fmt.Printf("\033[90mIgnoring Single/EP/VA: %s\033[0m\n", title)
-			return nil
-		}
 	}
 
 	// Resolve format info from first track
@@ -311,24 +309,7 @@ func (d *Downloader) downloadAlbum(ctx context.Context, albumID, baseDir string)
 		return fmt.Errorf("create album directory %q: %w", albumDir, err)
 	}
 
-	// Cover art
-	if !d.Opts.NoCover {
-		if imgURL := nestedStr(meta, "image", "large"); imgURL != "" {
-			if d.Opts.OGCover {
-				imgURL = strings.Replace(imgURL, "_600.", "_org.", 1)
-			}
-			d.downloadExtra(ctx, imgURL, filepath.Join(albumDir, coverFile))
-		}
-	}
-
-	// Booklet PDF
-	if goodies, ok := meta["goodies"].([]interface{}); ok && len(goodies) > 0 {
-		if g, ok := goodies[0].(map[string]interface{}); ok {
-			if pdfURL, _ := g["url"].(string); pdfURL != "" {
-				d.downloadExtra(ctx, pdfURL, filepath.Join(albumDir, bookletFile))
-			}
-		}
-	}
+	d.downloadAlbumExtras(ctx, meta, albumDir)
 
 	// Tracks
 	tracklist, _ := meta["tracks"].(map[string]interface{})
@@ -337,7 +318,61 @@ func (d *Downloader) downloadAlbum(ctx context.Context, albumID, baseDir string)
 	}
 	rawItems, _ := tracklist["items"].([]interface{})
 
-	// Detect multi-disc
+	isMultiDisc := detectMultiDisc(rawItems)
+	trackFmt := cleanFormatStr(d.Opts.TrackFormat, fileFormat)
+	isMP3 := d.Opts.Quality == 5
+
+	p := mpb.NewWithContext(ctx, mpb.WithRefreshRate(150*time.Millisecond))
+	jobs := d.collectTrackJobs(ctx, p, rawItems, albumDir, isMultiDisc)
+	d.runTrackJobs(ctx, jobs, meta, isMP3, trackFmt)
+	p.Wait()
+
+	fmt.Printf("\033[32m✓  Completed: %s\033[0m\n\n", title)
+	return nil
+}
+
+// shouldSkipAlbum applies the early validation gates (streamable flag and the
+// IgnoreSingles filter). When the album must be skipped it prints the reason
+// and returns true.
+func (d *Downloader) shouldSkipAlbum(meta map[string]interface{}, albumID string) bool {
+	if streamable, ok := meta["streamable"].(bool); ok && !streamable {
+		fmt.Printf("\033[90mAlbum %s is not streamable, skipping\033[0m\n", albumID)
+		return true
+	}
+	if d.Opts.IgnoreSingles {
+		releaseType, _ := meta["release_type"].(string)
+		artistName := nestedStr(meta, "artist", "name")
+		if releaseType != "album" || artistName == "Various Artists" {
+			title, _ := meta["title"].(string)
+			fmt.Printf("\033[90mIgnoring Single/EP/VA: %s\033[0m\n", title)
+			return true
+		}
+	}
+	return false
+}
+
+// downloadAlbumExtras fetches the cover image and booklet PDF when present and
+// not disabled by Options.
+func (d *Downloader) downloadAlbumExtras(ctx context.Context, meta map[string]interface{}, albumDir string) {
+	if !d.Opts.NoCover {
+		if imgURL := nestedStr(meta, "image", "large"); imgURL != "" {
+			if d.Opts.OGCover {
+				imgURL = strings.Replace(imgURL, "_600.", "_org.", 1)
+			}
+			d.downloadExtra(ctx, imgURL, filepath.Join(albumDir, coverFile))
+		}
+	}
+	if goodies, ok := meta["goodies"].([]interface{}); ok && len(goodies) > 0 {
+		if g, ok := goodies[0].(map[string]interface{}); ok {
+			if pdfURL, _ := g["url"].(string); pdfURL != "" {
+				d.downloadExtra(ctx, pdfURL, filepath.Join(albumDir, bookletFile))
+			}
+		}
+	}
+}
+
+// detectMultiDisc reports whether the tracklist spans more than one disc.
+func detectMultiDisc(rawItems []interface{}) bool {
 	mediaNumbers := map[float64]bool{}
 	for _, t := range rawItems {
 		if track, ok := t.(map[string]interface{}); ok {
@@ -346,24 +381,16 @@ func (d *Downloader) downloadAlbum(ctx context.Context, albumID, baseDir string)
 			}
 		}
 	}
-	isMultiDisc := len(mediaNumbers) > 1
+	return len(mediaNumbers) > 1
+}
 
-	trackFmt := cleanFormatStr(d.Opts.TrackFormat, fileFormat)
-	isMP3 := d.Opts.Quality == 5
-
-	// Phase 1: resolve URLs and collect jobs, skipping ineligible tracks.
-	type trackJob struct {
-		idx      int
-		trackURL map[string]interface{}
-		track    map[string]interface{}
-		trackDir string
-		trackID  string
-		bar      *mpb.Bar
-	}
-
-	p := mpb.NewWithContext(ctx, mpb.WithRefreshRate(150*time.Millisecond))
+// collectTrackJobs is Phase 1 of an album download: it resolves track URLs,
+// filters ineligible items (already in the DB, samples, zero-rate), creates
+// per-track disc subdirectories on multi-disc albums, and registers a progress
+// bar on p for each surviving track. Tracks whose URL cannot be resolved or
+// whose disc directory cannot be created are reported and skipped.
+func (d *Downloader) collectTrackJobs(ctx context.Context, p *mpb.Progress, rawItems []interface{}, albumDir string, isMultiDisc bool) []trackJob {
 	var jobs []trackJob
-
 	for idx, t := range rawItems {
 		track, ok := t.(map[string]interface{})
 		if !ok {
@@ -420,8 +447,14 @@ func (d *Downloader) downloadAlbum(ctx context.Context, albumID, baseDir string)
 
 		jobs = append(jobs, trackJob{idx, trackURL, track, trackDir, trackID, bar})
 	}
+	return jobs
+}
 
-	// Phase 2: download concurrently, each job with its own progress bar.
+// runTrackJobs is Phase 2 of an album download: it dispatches the collected
+// jobs to a worker pool of size d.Opts.Workers, tags each track and records it
+// in the DB on success. Cancellation aborts the dispatch loop without
+// launching new goroutines; in-flight downloads observe ctx via downloadAndTag.
+func (d *Downloader) runTrackJobs(ctx context.Context, jobs []trackJob, meta map[string]interface{}, isMP3 bool, trackFmt string) {
 	sem := make(chan struct{}, d.Opts.Workers)
 	var wg sync.WaitGroup
 
@@ -448,10 +481,6 @@ jobLoop:
 	}
 
 	wg.Wait()
-	p.Wait()
-
-	fmt.Printf("\033[32m✓  Completed: %s\033[0m\n\n", title)
-	return nil
 }
 
 // ---- track download ----
