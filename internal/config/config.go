@@ -71,6 +71,9 @@ type Config struct {
 // Uses os.UserConfigDir which respects $XDG_CONFIG_HOME on Linux,
 // %AppData% on Windows, and ~/Library/Application Support on macOS.
 func ConfigDir() string {
+	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
+		return filepath.Join(dir, "qobuz-dl")
+	}
 	if dir, err := os.UserConfigDir(); err == nil {
 		return filepath.Join(dir, "qobuz-dl")
 	}
@@ -142,9 +145,17 @@ func Load() (*Config, error) {
 // setupPreferences fills kv with user preferences and fetches bundle tokens.
 // Shared by Reset and InitConfig. ctx cancels the bundle.Fetch HTTP calls.
 func setupPreferences(ctx context.Context, kv map[string]string) error {
-	kv["download_dir"] = prompt("Enter default download directory (leave blank for ./qobuz-downloader):\n- ")
-	kv["default_folder"] = promptDefault("Folder for downloads (leave empty for 'Qobuz Downloads')\n- ", "Qobuz Downloads")
-	kv["default_quality"] = promptDefault("Download quality (5, 6, 7, 27) [320, LOSSLESS, 24B <96KHZ, 24B >96KHZ]\n(leave empty for '6')\n- ", "6")
+	kv["download_dir"] = prompt(
+		"Enter default download directory (leave blank for ./qobuz-downloader):\n- ",
+	)
+	kv["default_folder"] = promptDefault(
+		"Folder for downloads (leave empty for 'Qobuz Downloads')\n- ",
+		"Qobuz Downloads",
+	)
+	kv["default_quality"] = promptDefault(
+		"Download quality (5, 6, 7, 27) [320, LOSSLESS, 24B <96KHZ, 24B >96KHZ]\n(leave empty for '6')\n- ",
+		"6",
+	)
 	kv["default_limit"] = "20"
 	kv["no_m3u"] = "false"
 	kv["albums_only"] = "false"
@@ -289,7 +300,8 @@ func readINI(path string) (map[string]string, error) {
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "[") {
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") ||
+			strings.HasPrefix(line, "[") {
 			continue
 		}
 		idx := strings.IndexByte(line, '=')
