@@ -9,8 +9,9 @@ import (
 )
 
 // downloadDB tracks successfully downloaded track IDs in a plain-text file
-// (one ID per line). It avoids re-downloading when files have been moved or
-// renamed, complementing the path-based check in downloadAndTag.
+// (one ID per line). It complements the on-disk existence check: a track is
+// skipped only when it is recorded here AND its file is still present (see
+// Downloader.alreadyHave), so deleting a file lets it be re-downloaded.
 type downloadDB struct {
 	mu   sync.Mutex
 	path string

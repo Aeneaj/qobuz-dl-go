@@ -323,7 +323,7 @@ func (d *Downloader) downloadAlbum(ctx context.Context, albumID, baseDir string)
 	isMP3 := d.Opts.Quality == 5
 
 	p := mpb.NewWithContext(ctx, mpb.WithRefreshRate(150*time.Millisecond))
-	jobs := d.collectTrackJobs(ctx, p, rawItems, albumDir, isMultiDisc)
+	jobs := d.collectTrackJobs(ctx, p, rawItems, albumDir, isMultiDisc, meta, trackFmt, isMP3)
 	d.runTrackJobs(ctx, jobs, meta, isMP3, trackFmt)
 	p.Wait()
 
@@ -385,11 +385,11 @@ func detectMultiDisc(rawItems []interface{}) bool {
 }
 
 // collectTrackJobs is Phase 1 of an album download: it resolves track URLs,
-// filters ineligible items (already in the DB, samples, zero-rate), creates
+// filters ineligible items (already downloaded, samples, zero-rate), creates
 // per-track disc subdirectories on multi-disc albums, and registers a progress
 // bar on p for each surviving track. Tracks whose URL cannot be resolved or
 // whose disc directory cannot be created are reported and skipped.
-func (d *Downloader) collectTrackJobs(ctx context.Context, p *mpb.Progress, rawItems []interface{}, albumDir string, isMultiDisc bool) []trackJob {
+func (d *Downloader) collectTrackJobs(ctx context.Context, p *mpb.Progress, rawItems []interface{}, albumDir string, isMultiDisc bool, albumMeta map[string]interface{}, trackFmt string, isMP3 bool) []trackJob {
 	var jobs []trackJob
 	for idx, t := range rawItems {
 		track, ok := t.(map[string]interface{})
@@ -398,7 +398,15 @@ func (d *Downloader) collectTrackJobs(ctx context.Context, p *mpb.Progress, rawI
 		}
 		trackID := idStr(track["id"])
 
-		if d.db != nil && d.db.has(trackID) {
+		trackDir := albumDir
+		if isMultiDisc {
+			mn := int(track["media_number"].(float64))
+			trackDir = filepath.Join(albumDir, fmt.Sprintf("Disc %d", mn))
+		}
+
+		// Skip only if the track is recorded in the DB AND its file is still on
+		// disk. If the file was deleted, fall through and re-download it.
+		if d.alreadyHave(trackID, finalTrackPath(trackDir, track, albumMeta, trackFmt, isMP3)) {
 			continue
 		}
 
@@ -419,10 +427,7 @@ func (d *Downloader) collectTrackJobs(ctx context.Context, p *mpb.Progress, rawI
 			continue
 		}
 
-		trackDir := albumDir
 		if isMultiDisc {
-			mn := int(track["media_number"].(float64))
-			trackDir = filepath.Join(albumDir, fmt.Sprintf("Disc %d", mn))
 			if err := os.MkdirAll(trackDir, 0755); err != nil {
 				fmt.Printf("\033[31mTrack %s: cannot create disc directory %q: %v. Skipping...\033[0m\n", trackID, trackDir, err)
 				continue
@@ -486,12 +491,6 @@ jobLoop:
 // ---- track download ----
 
 func (d *Downloader) downloadTrackByID(ctx context.Context, trackID, baseDir string) error {
-	// DB check
-	if d.db != nil && d.db.has(trackID) {
-		fmt.Printf("\033[90mTrack %s already in DB, skipping\033[0m\n", trackID)
-		return nil
-	}
-
 	trackURL, err := d.Client.GetTrackURL(ctx, trackID, d.Opts.Quality, "")
 	if err != nil {
 		if d.Opts.QualityFallback {
@@ -545,6 +544,14 @@ func (d *Downloader) downloadTrackByID(ctx context.Context, trackID, baseDir str
 		return fmt.Errorf("create track directory %q: %w", trackDir, err)
 	}
 
+	isMP3 := d.Opts.Quality == 5
+	trackFmt := cleanFormatStr(d.Opts.TrackFormat, fileFormat)
+	// Skip only if recorded in the DB AND still on disk; otherwise re-download.
+	if d.alreadyHave(trackID, finalTrackPath(trackDir, meta, meta, trackFmt, isMP3)) {
+		fmt.Printf("\033[90mTrack %s already downloaded, skipping\033[0m\n", trackID)
+		return nil
+	}
+
 	if !d.Opts.NoCover {
 		if imgURL := nestedStr(meta, "album", "image", "large"); imgURL != "" {
 			if d.Opts.OGCover {
@@ -571,8 +578,6 @@ func (d *Downloader) downloadTrackByID(ctx context.Context, trackID, baseDir str
 		),
 	)
 
-	isMP3 := d.Opts.Quality == 5
-	trackFmt := cleanFormatStr(d.Opts.TrackFormat, fileFormat)
 	if err := d.downloadAndTag(ctx, trackDir, 1, trackURL, meta, meta, true, isMP3, trackFmt, bar); err != nil {
 		bar.Abort(false)
 		p.Wait()
@@ -591,30 +596,15 @@ func (d *Downloader) downloadTrackByID(ctx context.Context, trackID, baseDir str
 
 // ---- core download + tag ----
 
-func (d *Downloader) downloadAndTag(
-	ctx context.Context,
-	dir string,
-	idx int,
-	trackURLDict map[string]interface{},
-	trackMeta map[string]interface{},
-	albumMeta map[string]interface{},
-	isTrack bool,
-	isMP3 bool,
-	trackFmt string,
-	bar *mpb.Bar,
-) error {
-	fileURL, _ := trackURLDict["url"].(string)
-	if fileURL == "" {
-		fmt.Printf("\033[90mTrack not available for download\033[0m\n")
-		return nil
-	}
-
+// finalTrackPath computes the output path for a track, identical to the path
+// downloadAndTag writes to. Centralising it lets callers check whether a track
+// already exists on disk before re-fetching it from the API.
+func finalTrackPath(dir string, trackMeta, albumMeta map[string]interface{}, trackFmt string, isMP3 bool) string {
 	ext := ".flac"
 	if isMP3 {
 		ext = ".mp3"
 	}
 
-	// Build filename from track metadata
 	trackTitle := getTitle(trackMeta)
 	performer := nestedStr(trackMeta, "performer", "name")
 	if performer == "" {
@@ -641,7 +631,40 @@ func (d *Downloader) downloadAndTag(
 	if runes := []rune(finalFile); len(runes) > 250 {
 		finalFile = string(runes[:250])
 	}
-	finalFile += ext
+	return finalFile + ext
+}
+
+// alreadyHave reports whether a track may be skipped: it must be recorded in
+// the downloads DB AND its file must still be present on disk. A track that is
+// in the DB but whose file was deleted (e.g. the user removed the album)
+// returns false so it is re-downloaded instead of silently skipped.
+func (d *Downloader) alreadyHave(trackID, finalFile string) bool {
+	if d.db == nil || !d.db.has(trackID) {
+		return false
+	}
+	_, err := os.Stat(finalFile)
+	return err == nil
+}
+
+func (d *Downloader) downloadAndTag(
+	ctx context.Context,
+	dir string,
+	idx int,
+	trackURLDict map[string]interface{},
+	trackMeta map[string]interface{},
+	albumMeta map[string]interface{},
+	isTrack bool,
+	isMP3 bool,
+	trackFmt string,
+	bar *mpb.Bar,
+) error {
+	fileURL, _ := trackURLDict["url"].(string)
+	if fileURL == "" {
+		fmt.Printf("\033[90mTrack not available for download\033[0m\n")
+		return nil
+	}
+
+	finalFile := finalTrackPath(dir, trackMeta, albumMeta, trackFmt, isMP3)
 
 	if _, err := os.Stat(finalFile); err == nil {
 		if bar != nil {
