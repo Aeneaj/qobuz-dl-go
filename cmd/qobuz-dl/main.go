@@ -15,7 +15,7 @@ import (
 )
 
 // version is set at build time via -ldflags "-X main.version=v1.x.x".
-var version = "v1.3.0"
+var version = "v1.4.1"
 
 const usage = `Usage: qobuz-dl [options] <command> [args]
 

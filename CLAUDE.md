@@ -88,7 +88,7 @@ No añadir dependencias nuevas sin discusión. En particular no añadir librerí
 2. Preferir extender una tabla existente antes de crear nueva función de test.
 3. Asegurarse de que `go fmt ./...` no cambia nada antes de commit.
 
-## Estado actual (v1.4.0)
+## Estado actual (v1.4.1)
 
 - `go build ./...` ✅
 - `go vet ./...` ✅
