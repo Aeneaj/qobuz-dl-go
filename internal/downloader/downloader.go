@@ -1153,38 +1153,33 @@ func smartDiscogFilter(requestedArtist string, items []map[string]interface{}) [
 	for _, key := range order {
 		albums := grouped[key]
 
-		// Find best bit depth
-		bestBD := 0.0
-		for _, a := range albums {
-			bd, _ := a["maximum_bit_depth"].(float64)
-			if bd > bestBD {
-				bestBD = bd
-			}
-		}
-		// Find best (or most space-saving) sampling rate at that bit depth
-		bestSR := 0.0
-		for _, a := range albums {
+		// Single pass: best bit depth, best sampling rate at that depth, and
+		// cache each album's "is remaster" flag so the regex runs once per
+		// album instead of once here and again in the selection loop below.
+		bestBD, bestSR := 0.0, 0.0
+		isRemaster := make([]bool, len(albums))
+		remasterExists := false
+		for i, a := range albums {
 			bd, _ := a["maximum_bit_depth"].(float64)
 			sr, _ := a["maximum_sampling_rate"].(float64)
-			if bd == bestBD && sr > bestSR {
+			switch {
+			case bd > bestBD:
+				bestBD, bestSR = bd, sr // a higher depth resets the sampling-rate race
+			case bd == bestBD && sr > bestSR:
 				bestSR = sr
 			}
-		}
-
-		remasterExists := false
-		for _, a := range albums {
 			if isAlbumType("remaster", a) {
+				isRemaster[i] = true
 				remasterExists = true
-				break
 			}
 		}
 
-		for _, a := range albums {
+		for i, a := range albums {
 			bd, _ := a["maximum_bit_depth"].(float64)
 			sr, _ := a["maximum_sampling_rate"].(float64)
 			aName := nestedStr(a, "artist", "name")
 			if bd == bestBD && sr == bestSR && aName == requestedArtist &&
-				!(remasterExists && !isAlbumType("remaster", a)) {
+				!(remasterExists && !isRemaster[i]) {
 				result = append(result, a)
 				break
 			}
