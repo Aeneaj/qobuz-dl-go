@@ -63,6 +63,7 @@ type Config struct {
 	FolderFormat   string
 	TrackFormat    string
 	SmartDiscog    bool
+	Workers        int // concurrent track downloads per album (0 = use downloader default)
 	FilePath       string
 	DBPath         string
 }
@@ -144,6 +145,7 @@ func Load() (*Config, error) {
 		FolderFormat:   get("folder_format", DefaultFolder),
 		TrackFormat:    get("track_format", DefaultTrack),
 		SmartDiscog:    getBool("smart_discography"),
+		Workers:        getInt("workers", 0),
 		FilePath:       cfgFile,
 		DBPath:         filepath.Join(dir, "qobuz_dl.db"),
 	}, nil
@@ -164,6 +166,7 @@ func setupPreferences(ctx context.Context, kv map[string]string) error {
 	kv["no_cover"] = "false"
 	kv["no_database"] = "false"
 	kv["smart_discography"] = "false"
+	kv["workers"] = "3"
 	// Kept for backward compat reading old configs; never written by Reset
 	kv["email"] = ""
 	kv["password"] = ""
@@ -320,6 +323,7 @@ func writeINI(path string, kv map[string]string) error {
 		"download_dir", "default_folder", "default_quality", "default_limit",
 		"no_m3u", "albums_only", "no_fallback", "og_cover",
 		"embed_art", "no_cover", "no_database", "smart_discography",
+		"workers",
 		"app_id", "secrets", "private_key",
 		"folder_format", "track_format",
 	}

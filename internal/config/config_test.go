@@ -172,6 +172,41 @@ func TestConfigDir_XDGPrecedence(t *testing.T) {
 	})
 }
 
+func TestLoad_Workers(t *testing.T) {
+	// Fresh config: 'workers' is written on setup and must round-trip so
+	// the value survives a Load() call. Also verifies missing/absent values
+	// fall back to 0 (letting the downloader apply its own default).
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, ".config"))
+	cfgDir := filepath.Join(dir, ".config", "qobuz-dl")
+	os.MkdirAll(cfgDir, 0755)
+	cfgFile := filepath.Join(cfgDir, "config.ini")
+
+	cases := []struct {
+		name    string
+		content string
+		want    int
+	}{
+		{"explicit value is parsed", "[DEFAULT]\nworkers = 8\n", 8},
+		{"absent key falls back to 0", "[DEFAULT]\nno_m3u = false\n", 0},
+		{"invalid value falls back to 0", "[DEFAULT]\nworkers = abc\n", 0},
+		{"zero is accepted (downloader will default)", "[DEFAULT]\nworkers = 0\n", 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			os.WriteFile(cfgFile, []byte(c.content), 0644)
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.Workers != c.want {
+				t.Errorf("Workers = %d, want %d", cfg.Workers, c.want)
+			}
+		})
+	}
+}
+
 func TestWriteINI_StableKeyOrder(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.ini")
