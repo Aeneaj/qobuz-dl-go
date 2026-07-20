@@ -328,7 +328,7 @@ func (d *Downloader) downloadAlbum(ctx context.Context, albumID, baseDir string)
 	isMP3 := d.Opts.Quality == 5
 
 	p := mpb.NewWithContext(ctx, mpb.WithRefreshRate(150*time.Millisecond))
-	jobs := d.collectTrackJobs(ctx, p, rawItems, albumDir, isMultiDisc)
+	jobs := d.collectTrackJobs(ctx, p, rawItems, albumDir, isMultiDisc, meta, trackFmt, isMP3)
 	d.runTrackJobs(ctx, jobs, meta, isMP3, trackFmt)
 	p.Wait()
 
@@ -390,11 +390,15 @@ func detectMultiDisc(rawItems []interface{}) bool {
 }
 
 // collectTrackJobs is Phase 1 of an album download: it resolves track URLs,
-// filters ineligible items (already in the DB, samples, zero-rate), creates
+// filters ineligible items (already downloaded, samples, zero-rate), creates
 // per-track disc subdirectories on multi-disc albums, and registers a progress
 // bar on p for each surviving track. Tracks whose URL cannot be resolved or
 // whose disc directory cannot be created are reported and skipped.
-func (d *Downloader) collectTrackJobs(ctx context.Context, p *mpb.Progress, rawItems []interface{}, albumDir string, isMultiDisc bool) []trackJob {
+//
+// The skip check requires BOTH a DB entry and the file present on disk — this
+// way, deleting an album from disk causes it to be re-downloaded on the next
+// run instead of silently skipped (only the cover would end up recreated).
+func (d *Downloader) collectTrackJobs(ctx context.Context, p *mpb.Progress, rawItems []interface{}, albumDir string, isMultiDisc bool, albumMeta map[string]interface{}, trackFmt string, isMP3 bool) []trackJob {
 	var jobs []trackJob
 	for idx, t := range rawItems {
 		track, ok := t.(map[string]interface{})
@@ -403,8 +407,19 @@ func (d *Downloader) collectTrackJobs(ctx context.Context, p *mpb.Progress, rawI
 		}
 		trackID := idStr(track["id"])
 
-		if d.db != nil && d.db.has(trackID) {
-			continue
+		// Compute the disc-aware directory before the skip check so the
+		// existence probe looks at the exact path downloadAndTag will write.
+		// MkdirAll for multi-disc dirs is deferred until we know we need it.
+		trackDir := albumDir
+		if isMultiDisc {
+			mn := int(track["media_number"].(float64))
+			trackDir = filepath.Join(albumDir, fmt.Sprintf("Disc %d", mn))
+		}
+
+		if finalPath, err := finalTrackPath(trackDir, track, albumMeta, trackFmt, isMP3); err == nil {
+			if d.alreadyHave(trackID, finalPath) {
+				continue
+			}
 		}
 
 		trackURL, err := d.Client.GetTrackURL(ctx, trackID, d.Opts.Quality, "")
@@ -424,10 +439,7 @@ func (d *Downloader) collectTrackJobs(ctx context.Context, p *mpb.Progress, rawI
 			continue
 		}
 
-		trackDir := albumDir
 		if isMultiDisc {
-			mn := int(track["media_number"].(float64))
-			trackDir = filepath.Join(albumDir, fmt.Sprintf("Disc %d", mn))
 			if err := os.MkdirAll(trackDir, 0755); err != nil {
 				fmt.Printf("\033[31mTrack %s: cannot create disc directory %q: %v. Skipping...\033[0m\n", trackID, trackDir, err)
 				continue
@@ -491,12 +503,8 @@ jobLoop:
 // ---- track download ----
 
 func (d *Downloader) downloadTrackByID(ctx context.Context, trackID, baseDir string) error {
-	// DB check
-	if d.db != nil && d.db.has(trackID) {
-		fmt.Printf("\033[90mTrack %s already in DB, skipping\033[0m\n", trackID)
-		return nil
-	}
-
+	// The skip check is deferred until trackDir + trackFmt are known so it
+	// can look at the exact output path; see the alreadyHave call below.
 	trackURL, err := d.Client.GetTrackURL(ctx, trackID, d.Opts.Quality, "")
 	if err != nil {
 		if d.Opts.QualityFallback {
@@ -553,6 +561,19 @@ func (d *Downloader) downloadTrackByID(ctx context.Context, trackID, baseDir str
 		return fmt.Errorf("create track directory %q: %w", trackDir, err)
 	}
 
+	isMP3 := d.Opts.Quality == 5
+	trackFmt := cleanFormatStr(d.Opts.TrackFormat, fileFormat)
+
+	// Skip only if recorded in the DB AND the file is still on disk. Done
+	// here (after trackDir + trackFmt are known) so the on-disk probe hits
+	// the exact path downloadAndTag will write.
+	if finalPath, err := finalTrackPath(trackDir, meta, meta, trackFmt, isMP3); err == nil {
+		if d.alreadyHave(trackID, finalPath) {
+			fmt.Printf("\033[90mTrack %s already downloaded, skipping\033[0m\n", trackID)
+			return nil
+		}
+	}
+
 	if !d.Opts.NoCover {
 		if imgURL := nestedStr(meta, "album", "image", "large"); imgURL != "" {
 			if d.Opts.OGCover {
@@ -579,8 +600,6 @@ func (d *Downloader) downloadTrackByID(ctx context.Context, trackID, baseDir str
 		),
 	)
 
-	isMP3 := d.Opts.Quality == 5
-	trackFmt := cleanFormatStr(d.Opts.TrackFormat, fileFormat)
 	if err := d.downloadAndTag(ctx, trackDir, 1, trackURL, meta, meta, true, isMP3, trackFmt, bar); err != nil {
 		bar.Abort(false)
 		p.Wait()
@@ -599,30 +618,18 @@ func (d *Downloader) downloadTrackByID(ctx context.Context, trackID, baseDir str
 
 // ---- core download + tag ----
 
-func (d *Downloader) downloadAndTag(
-	ctx context.Context,
-	dir string,
-	idx int,
-	trackURLDict map[string]interface{},
-	trackMeta map[string]interface{},
-	albumMeta map[string]interface{},
-	isTrack bool,
-	isMP3 bool,
-	trackFmt string,
-	bar *mpb.Bar,
-) error {
-	fileURL, _ := trackURLDict["url"].(string)
-	if fileURL == "" {
-		fmt.Printf("\033[90mTrack not available for download\033[0m\n")
-		return nil
-	}
-
+// finalTrackPath computes the on-disk path a track will be written to. It is
+// the single source of truth for track output naming: downloadAndTag calls it
+// when writing, and callers call it before the skip check so alreadyHave looks
+// at the same path. Uses safeJoin + filepath.FromSlash so subfolder templates
+// (e.g. "{albumartist}/{album}/{tracktitle}") work portably and cannot escape
+// dir via path traversal.
+func finalTrackPath(dir string, trackMeta, albumMeta map[string]interface{}, trackFmt string, isMP3 bool) (string, error) {
 	ext := ".flac"
 	if isMP3 {
 		ext = ".mp3"
 	}
 
-	// Build filename from track metadata
 	trackTitle := getTitle(trackMeta)
 	performer := nestedStr(trackMeta, "performer", "name")
 	if performer == "" {
@@ -645,17 +652,57 @@ func (d *Downloader) downloadAndTag(
 	formatted := expandPlaceholders(trackFmt, filenameAttrs)
 	finalFile, err := safeJoin(dir, filepath.FromSlash(formatted))
 	if err != nil {
-		return fmt.Errorf("resolve track path: %w", err)
+		return "", fmt.Errorf("resolve track path: %w", err)
 	}
 	// Trim to 250 runes to stay within filesystem limits without splitting
 	// multi-byte UTF-8 characters (e.g. CJK, Arabic, emoji in track titles).
 	if runes := []rune(finalFile); len(runes) > 250 {
 		finalFile = string(runes[:250])
 	}
-	finalFile += ext
+	return finalFile + ext, nil
+}
+
+// alreadyHave reports whether a track may be skipped: it must be recorded in
+// the downloads DB AND its file must still be present on disk. When the DB
+// has the entry but the file is gone (e.g. the user deleted the album), we
+// print a note so it is clear why a "previously downloaded" track is being
+// re-fetched, then return false so the caller re-downloads it.
+func (d *Downloader) alreadyHave(trackID, finalFile string) bool {
+	if d.db == nil || !d.db.has(trackID) {
+		return false
+	}
+	if _, err := os.Stat(finalFile); err == nil {
+		return true
+	}
+	fmt.Printf("\033[90mTrack %s in DB but file is missing — re-downloading\033[0m\n", trackID)
+	return false
+}
+
+func (d *Downloader) downloadAndTag(
+	ctx context.Context,
+	dir string,
+	idx int,
+	trackURLDict map[string]interface{},
+	trackMeta map[string]interface{},
+	albumMeta map[string]interface{},
+	isTrack bool,
+	isMP3 bool,
+	trackFmt string,
+	bar *mpb.Bar,
+) error {
+	fileURL, _ := trackURLDict["url"].(string)
+	if fileURL == "" {
+		fmt.Printf("\033[90mTrack not available for download\033[0m\n")
+		return nil
+	}
+
+	finalFile, err := finalTrackPath(dir, trackMeta, albumMeta, trackFmt, isMP3)
+	if err != nil {
+		return err
+	}
 
 	// Support subfolder templates in track_format (e.g. "{albumartist}/{album}/...").
-	// safeJoin already guaranteed the parent is inside dir, so MkdirAll is safe.
+	// safeJoin (inside finalTrackPath) already guaranteed the parent is inside dir.
 	if parent := filepath.Dir(finalFile); parent != dir {
 		if err := os.MkdirAll(parent, 0755); err != nil {
 			return fmt.Errorf("create track parent directory %q: %w", parent, err)
