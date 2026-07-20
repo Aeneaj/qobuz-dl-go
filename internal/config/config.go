@@ -68,9 +68,19 @@ type Config struct {
 }
 
 // ConfigDir returns the OS config directory for qobuz-dl.
-// Uses os.UserConfigDir which respects $XDG_CONFIG_HOME on Linux,
-// %AppData% on Windows, and ~/Library/Application Support on macOS.
+//
+// Resolution order:
+//  1. $XDG_CONFIG_HOME, if set to an absolute path. The XDG Base Directory
+//     Spec requires the value to be absolute; relative paths are ignored.
+//     This gives CLI-oriented users the same override on macOS and Windows
+//     that Go's os.UserConfigDir already honours on Linux.
+//  2. os.UserConfigDir — %AppData% on Windows, ~/Library/Application Support
+//     on macOS, and $HOME/.config on Linux (when XDG_CONFIG_HOME is unset).
+//  3. $HOME/.config as a last-resort fallback.
 func ConfigDir() string {
+	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" && filepath.IsAbs(dir) {
+		return filepath.Join(dir, "qobuz-dl")
+	}
 	if dir, err := os.UserConfigDir(); err == nil {
 		return filepath.Join(dir, "qobuz-dl")
 	}

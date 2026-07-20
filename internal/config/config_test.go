@@ -130,6 +130,48 @@ func TestSaveToken(t *testing.T) {
 	}
 }
 
+func TestConfigDir_XDGPrecedence(t *testing.T) {
+	// Isolate HOME so os.UserConfigDir's platform-specific fallback is
+	// deterministic across CI runners.
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	t.Run("absolute XDG_CONFIG_HOME takes precedence", func(t *testing.T) {
+		xdg := t.TempDir()
+		t.Setenv("XDG_CONFIG_HOME", xdg)
+
+		got := ConfigDir()
+		want := filepath.Join(xdg, "qobuz-dl")
+		if got != want {
+			t.Errorf("ConfigDir() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("relative XDG_CONFIG_HOME is ignored per spec", func(t *testing.T) {
+		// The XDG Base Directory Spec requires absolute paths — a relative
+		// value must be treated as unset. ConfigDir should fall through to
+		// os.UserConfigDir, which under an isolated HOME lives inside homeDir.
+		t.Setenv("XDG_CONFIG_HOME", "relative/path")
+
+		got := ConfigDir()
+		if strings.Contains(got, "relative/path") {
+			t.Fatalf("ConfigDir() honoured a relative XDG value: %q", got)
+		}
+		if !strings.HasPrefix(got, homeDir) {
+			t.Errorf("ConfigDir() = %q, expected fallback under HOME %q", got, homeDir)
+		}
+	})
+
+	t.Run("empty XDG_CONFIG_HOME falls through", func(t *testing.T) {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		got := ConfigDir()
+		if !strings.HasPrefix(got, homeDir) {
+			t.Errorf("ConfigDir() = %q, expected fallback under HOME %q", got, homeDir)
+		}
+	})
+}
+
 func TestWriteINI_StableKeyOrder(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.ini")
