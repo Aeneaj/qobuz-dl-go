@@ -294,17 +294,22 @@ func (d *Downloader) downloadAlbum(ctx context.Context, albumID, baseDir string)
 	fmt.Printf("\n\033[1m♫  %s\033[0m  ·  \033[33m%s %v/%v\033[0m  ·  %d tracks\n\n",
 		title, fileFormat, bitDepth, samplingRate, trackCount)
 
-	// Build folder name
+	// Build folder name. Individual values are sanitised inside
+	// expandPlaceholders, so literal "/" written in FolderFormat survives as a
+	// subfolder separator (translated to the OS separator by filepath.FromSlash).
 	folderFmt := cleanFormatStr(d.Opts.FolderFormat, fileFormat)
 	folderName := expandPlaceholders(folderFmt, map[string]string{
-		"{artist}":        sanitize(artist),
-		"{album}":         sanitize(title),
+		"{artist}":        artist,
+		"{album}":         title,
 		"{year}":          year,
 		"{bit_depth}":     fmt.Sprintf("%v", bitDepth),
 		"{sampling_rate}": fmt.Sprintf("%v", samplingRate),
 		"{format}":        fileFormat,
 	})
-	albumDir := filepath.Join(baseDir, sanitize(folderName))
+	albumDir, err := safeJoin(baseDir, filepath.FromSlash(folderName))
+	if err != nil {
+		return fmt.Errorf("resolve album directory: %w", err)
+	}
 	if err := os.MkdirAll(albumDir, 0755); err != nil {
 		return fmt.Errorf("create album directory %q: %w", albumDir, err)
 	}
@@ -534,13 +539,16 @@ func (d *Downloader) downloadTrackByID(ctx context.Context, trackID, baseDir str
 
 	folderFmt := cleanFormatStr(d.Opts.FolderFormat, fileFormat)
 	folderName := expandPlaceholders(folderFmt, map[string]string{
-		"{artist}":        sanitize(albumArtist),
-		"{album}":         sanitize(albumTitle),
+		"{artist}":        albumArtist,
+		"{album}":         albumTitle,
 		"{year}":          year,
 		"{bit_depth}":     fmt.Sprintf("%v", int(bitDepth)),
 		"{sampling_rate}": fmt.Sprintf("%v", samplingRate),
 	})
-	trackDir := filepath.Join(baseDir, sanitize(folderName))
+	trackDir, err := safeJoin(baseDir, filepath.FromSlash(folderName))
+	if err != nil {
+		return fmt.Errorf("resolve track directory: %w", err)
+	}
 	if err := os.MkdirAll(trackDir, 0755); err != nil {
 		return fmt.Errorf("create track directory %q: %w", trackDir, err)
 	}
@@ -635,13 +643,24 @@ func (d *Downloader) downloadAndTag(
 		"{version}":       fmt.Sprintf("%v", trackMeta["version"]),
 	}
 	formatted := expandPlaceholders(trackFmt, filenameAttrs)
-	finalFile := filepath.Join(dir, sanitize(formatted))
+	finalFile, err := safeJoin(dir, filepath.FromSlash(formatted))
+	if err != nil {
+		return fmt.Errorf("resolve track path: %w", err)
+	}
 	// Trim to 250 runes to stay within filesystem limits without splitting
 	// multi-byte UTF-8 characters (e.g. CJK, Arabic, emoji in track titles).
 	if runes := []rune(finalFile); len(runes) > 250 {
 		finalFile = string(runes[:250])
 	}
 	finalFile += ext
+
+	// Support subfolder templates in track_format (e.g. "{albumartist}/{album}/...").
+	// safeJoin already guaranteed the parent is inside dir, so MkdirAll is safe.
+	if parent := filepath.Dir(finalFile); parent != dir {
+		if err := os.MkdirAll(parent, 0755); err != nil {
+			return fmt.Errorf("create track parent directory %q: %w", parent, err)
+		}
+	}
 
 	if _, err := os.Stat(finalFile); err == nil {
 		if bar != nil {
@@ -1175,13 +1194,18 @@ func cleanFormatStr(format, fileFormat string) string {
 	return format
 }
 
+// expandPlaceholders substitutes {placeholder} tokens in format with values
+// from attrs. Each value is passed through sanitize so illegal path characters
+// (including "/" and "\") are neutralised before insertion — this lets a
+// format string like "{artist}/{album}" contain real subfolder separators
+// while metadata values (e.g. an artist named "AC/DC") cannot inject them.
 func expandPlaceholders(format string, attrs map[string]string) string {
 	result := format
 	for k, v := range attrs {
 		if v == "" || v == "<nil>" || v == "%!v(MISSING)" {
 			v = "n_a"
 		}
-		result = strings.ReplaceAll(result, k, v)
+		result = strings.ReplaceAll(result, k, sanitize(v))
 	}
 	return result
 }
@@ -1258,6 +1282,19 @@ var reUnsafe = regexp.MustCompile(`[<>:"/\\|?*\x00-\x1f]`)
 func sanitize(s string) string {
 	s = reUnsafe.ReplaceAllString(s, "_")
 	return strings.TrimSpace(s)
+}
+
+// safeJoin joins base with elem, cleans the result, and verifies it still
+// lives under base. Callers must pre-translate user-format separators with
+// filepath.FromSlash so subfolder templates work on Windows. Guards against
+// path traversal from malicious templates or metadata (e.g. "../../etc").
+func safeJoin(base, elem string) (string, error) {
+	cleanBase := filepath.Clean(base)
+	joined := filepath.Clean(filepath.Join(cleanBase, elem))
+	if joined != cleanBase && !strings.HasPrefix(joined, cleanBase+string(filepath.Separator)) {
+		return "", fmt.Errorf("path %q escapes base directory %q", elem, cleanBase)
+	}
+	return joined, nil
 }
 
 func nestedStr(m map[string]interface{}, keys ...string) string {
