@@ -41,7 +41,7 @@ Options:
   --og-cover         Use original cover quality
   --no-cover         Skip cover art download
   --no-db            Bypass downloads database
-  --workers N        Concurrent track downloads per album (default 3)
+  --workers N        Concurrent track downloads per album (overrides 'workers' in config.ini; default 3)
   --folder-format    Folder naming format string
   --track-format     Track naming format string
   --smart-discog     Smart discography filter
@@ -287,6 +287,11 @@ func initDownloader(ctx context.Context, f *cliFlags) (*downloader.Downloader, e
 	if trackFmt == "" {
 		trackFmt = cfg.TrackFormat
 	}
+	// Workers hierarchy: CLI flag > config > downloader default (applied in New()).
+	workers := f.Workers
+	if workers == 0 {
+		workers = cfg.Workers
+	}
 
 	client := api.New(cfg.AppID, cfg.Secrets)
 
@@ -319,7 +324,7 @@ func initDownloader(ctx context.Context, f *cliFlags) (*downloader.Downloader, e
 		SmartDiscog:     f.SmartDiscog || cfg.SmartDiscog,
 		NoDB:            f.NoDB || cfg.NoDatabase,
 		DBPath:          cfg.DBPath,
-		Workers:         f.Workers,
+		Workers:         workers,
 	}
 	return downloader.New(client, opts)
 }
