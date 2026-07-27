@@ -11,7 +11,12 @@ import (
 	"github.com/Aeneaj/qobuz-dl-go/internal/downloader"
 )
 
-func runOAuth(ctx context.Context, codeOrURL string) {
+func runOAuth(ctx context.Context, args []string) {
+	codeOrURL := ""
+	if len(args) > 0 {
+		codeOrURL = args[0]
+	}
+
 	cfg, err := loadOrInitConfig(ctx, true)
 	if err != nil {
 		fatalf("load config: %v", err)

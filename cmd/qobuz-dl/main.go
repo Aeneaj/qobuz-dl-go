@@ -9,7 +9,6 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/Aeneaj/qobuz-dl-go/internal/api"
 	"github.com/Aeneaj/qobuz-dl-go/internal/config"
 	"github.com/Aeneaj/qobuz-dl-go/internal/downloader"
 )
@@ -70,10 +69,6 @@ func main() {
 
 	fs.Parse(os.Args[1:])
 
-	doReset := *reset || *resetLong
-	doShow := *showCfg || *showCfgLong
-	doPurge := *purge || *purgeLong
-
 	if *showVer || *showVerLong {
 		fmt.Println("qobuz-dl", version)
 		return
@@ -83,37 +78,18 @@ func main() {
 	// Created early so even --reset (which calls bundle.Fetch) is cancellable.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go exitOnSecondInterrupt(ctx, stop)
 
-	// Second Ctrl+C → immediate exit (in case a goroutine ignores ctx).
-	go func() {
-		<-ctx.Done()
-		stop() // restore default signal behavior
-		ch := make(chan os.Signal, 1)
-		signal.Notify(ch, os.Interrupt)
-		<-ch
-		os.Exit(1)
-	}()
-
-	if doReset {
-		if err := config.Reset(ctx); err != nil {
-			fmt.Fprintf(os.Stderr, "\033[31mError: %v\n", err)
-			os.Exit(1)
-		}
+	// Config actions need no credentials and never fall through to a command.
+	switch {
+	case *reset || *resetLong:
+		runReset(ctx)
 		return
-	}
-
-	if doShow {
-		cfgFile := config.ConfigDir() + "/config.ini"
-		fmt.Printf("Configuration: %s\n---\n", cfgFile)
-		data, _ := os.ReadFile(cfgFile)
-		fmt.Println(string(data))
+	case *showCfg || *showCfgLong:
+		showConfig()
 		return
-	}
-
-	if doPurge {
-		dbPath := config.ConfigDir() + "/qobuz_dl.db"
-		os.Remove(dbPath)
-		fmt.Println("\033[32mThe database was deleted.\033[0m")
+	case *purge || *purgeLong:
+		purgeDB()
 		return
 	}
 
@@ -122,213 +98,101 @@ func main() {
 		fmt.Print(usage)
 		os.Exit(0)
 	}
-
-	cmd := args[0]
 	cmdArgs := args[1:]
 
-	switch cmd {
+	switch args[0] {
 	case "fun":
-		dl, err := initDownloader(ctx, flags)
-		if err != nil {
-			fatalf("%v", err)
-		}
-		dl.Interactive(ctx)
-
+		mustDownloader(ctx, flags).Interactive(ctx)
 	case "dl":
-		if len(cmdArgs) == 0 {
-			fmt.Fprintln(os.Stderr, "dl: provide at least one URL")
-			os.Exit(1)
-		}
-		dl, err := initDownloader(ctx, flags)
-		if err != nil {
-			fatalf("%v", err)
-		}
-		dl.DownloadURLs(ctx, cmdArgs)
-
+		runDL(ctx, cmdArgs, flags)
 	case "lucky":
-		if len(cmdArgs) == 0 {
-			fmt.Fprintln(os.Stderr, "lucky: provide a search query")
-			os.Exit(1)
-		}
-		query := strings.Join(cmdArgs, " ")
-		if len(query) < 3 {
-			fatalf("search query too short")
-		}
-		dl, err := initDownloader(ctx, flags)
-		if err != nil {
-			fatalf("%v", err)
-		}
-		fmt.Printf("\033[33mSearching %ss for \"%s\" (top %d)...\033[0m\n", *luckyType, query, *luckyN)
-		urls, err := searchByType(ctx, dl.Client, *luckyType, query, *luckyN)
-		if err != nil {
-			fatalf("%v", err)
-		}
-		dl.DownloadURLs(ctx, urls)
-
+		runLucky(ctx, cmdArgs, flags, *luckyType, *luckyN)
 	case "csv":
-		if len(cmdArgs) == 0 {
-			fmt.Fprintln(os.Stderr, "csv: provide path to a TuneMyMusic CSV file")
-			os.Exit(1)
-		}
-		dl, err := initDownloader(ctx, flags)
-		if err != nil {
-			fatalf("%v", err)
-		}
-		dl.DownloadCSV(ctx, cmdArgs[0], *failed)
-
+		runCSV(ctx, cmdArgs, flags, *failed)
 	case "oauth":
-		codeOrURL := ""
-		if len(cmdArgs) > 0 {
-			codeOrURL = cmdArgs[0]
-		}
-		runOAuth(ctx, codeOrURL)
-
+		runOAuth(ctx, cmdArgs)
 	case "lyrics":
 		runLyrics(ctx, cmdArgs)
-
 	default:
-		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
+		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", args[0])
 		fmt.Print(usage)
 		os.Exit(1)
 	}
 }
 
-func fatalf(format string, a ...interface{}) {
-	fmt.Fprintf(os.Stderr, "\033[31m"+format+"\033[0m\n", a...)
+// exitOnSecondInterrupt restores default signal handling once ctx is
+// cancelled, so a second Ctrl+C kills the process even if a goroutine
+// ignores ctx.
+func exitOnSecondInterrupt(ctx context.Context, stop context.CancelFunc) {
+	<-ctx.Done()
+	stop()
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, os.Interrupt)
+	<-ch
 	os.Exit(1)
 }
 
-func loadOrInitConfig(ctx context.Context, skipCredentials bool) (*config.Config, error) {
-	cfgDir := config.ConfigDir()
-	cfgFile := cfgDir + "/config.ini"
-	if _, err := os.Stat(cfgFile); os.IsNotExist(err) {
-		if err := os.MkdirAll(cfgDir, 0755); err != nil {
-			return nil, err
-		}
-		fmt.Println("\033[33mFirst run: setting up config...\033[0m")
-		if skipCredentials {
-			if err := config.InitConfig(ctx); err != nil {
-				return nil, err
-			}
-		} else {
-			if err := config.Reset(ctx); err != nil {
-				return nil, err
-			}
-		}
+func runReset(ctx context.Context) {
+	if err := config.Reset(ctx); err != nil {
+		fatalf("Error: %v", err)
 	}
-	return config.Load()
 }
 
-// cliFlags groups the download-related flags shared by dl/lucky/csv/fun.
-// Lucky/CSV-specific flags (lucky-type, lucky-n, failed) stay separate.
-type cliFlags struct {
-	Dir          string
-	Quality      int
-	EmbedArt     bool
-	AlbumsOnly   bool
-	NoM3U        bool
-	NoFallback   bool
-	OGCover      bool
-	NoCover      bool
-	NoDB         bool
-	Workers      int
-	FolderFormat string
-	TrackFormat  string
-	SmartDiscog  bool
+func showConfig() {
+	cfgFile := config.ConfigDir() + "/config.ini"
+	fmt.Printf("Configuration: %s\n---\n", cfgFile)
+	data, _ := os.ReadFile(cfgFile)
+	fmt.Println(string(data))
 }
 
-func registerDownloadFlags(fs *flag.FlagSet) *cliFlags {
-	f := &cliFlags{}
-	fs.StringVar(&f.Dir, "d", "", "download directory")
-	fs.IntVar(&f.Quality, "q", 0, "quality")
-	fs.BoolVar(&f.EmbedArt, "embed-art", false, "")
-	fs.BoolVar(&f.AlbumsOnly, "albums-only", false, "")
-	fs.BoolVar(&f.NoM3U, "no-m3u", false, "")
-	fs.BoolVar(&f.NoFallback, "no-fallback", false, "")
-	fs.BoolVar(&f.OGCover, "og-cover", false, "")
-	fs.BoolVar(&f.NoCover, "no-cover", false, "")
-	fs.BoolVar(&f.NoDB, "no-db", false, "")
-	fs.IntVar(&f.Workers, "workers", 0, "")
-	fs.StringVar(&f.FolderFormat, "folder-format", "", "")
-	fs.StringVar(&f.TrackFormat, "track-format", "", "")
-	fs.BoolVar(&f.SmartDiscog, "smart-discog", false, "")
-	return f
+func purgeDB() {
+	os.Remove(config.ConfigDir() + "/qobuz_dl.db")
+	fmt.Println("\033[32mThe database was deleted.\033[0m")
 }
 
-func initDownloader(ctx context.Context, f *cliFlags) (*downloader.Downloader, error) {
-	cfg, err := loadOrInitConfig(ctx, false)
+// requireArgs exits with "<cmd>: <hint>" when a command got no arguments.
+func requireArgs(args []string, cmd, hint string) {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "%s: %s\n", cmd, hint)
+		os.Exit(1)
+	}
+}
+
+// mustDownloader builds the downloader shared by dl/lucky/csv/fun, or exits.
+func mustDownloader(ctx context.Context, f *cliFlags) *downloader.Downloader {
+	dl, err := initDownloader(ctx, f)
 	if err != nil {
-		return nil, err
+		fatalf("%v", err)
 	}
-
-	// Directory resolution hierarchy: flag -d → config download_dir → default.
-	dir := f.Dir
-	if dir == "" {
-		dir = cfg.DownloadDir
-	}
-	if dir == "" {
-		dir = "./qobuz-downloader"
-	}
-	resolvedDir, err := config.ResolveDir(dir)
-	if err != nil {
-		return nil, fmt.Errorf("download directory: %w", err)
-	}
-	dir = resolvedDir
-
-	quality := f.Quality
-	if quality == 0 {
-		quality = cfg.DefaultQuality
-	}
-	folderFmt := f.FolderFormat
-	if folderFmt == "" {
-		folderFmt = cfg.FolderFormat
-	}
-	trackFmt := f.TrackFormat
-	if trackFmt == "" {
-		trackFmt = cfg.TrackFormat
-	}
-	// Workers hierarchy: CLI flag > config > downloader default (applied in New()).
-	workers := f.Workers
-	if workers == 0 {
-		workers = cfg.Workers
-	}
-
-	client := api.New(cfg.AppID, cfg.Secrets)
-
-	if cfg.UserID == "" || cfg.UserAuthToken == "" {
-		return nil, fmt.Errorf("no credentials found — run 'qobuz-dl oauth' to log in, or 'qobuz-dl --reset' to set up manually")
-	}
-	fmt.Println("\033[33mLogging in...\033[0m")
-	if err := client.AuthWithToken(ctx, cfg.UserID, cfg.UserAuthToken); err != nil {
-		return nil, err
-	}
-
-	if err := client.CfgSetup(ctx); err != nil {
-		return nil, err
-	}
-
-	qualityNames := map[int]string{5: "5 - MP3", 6: "6 - 16 bit, 44.1kHz", 7: "7 - 24 bit, <96kHz", 27: "27 - 24 bit, >96kHz"}
-	fmt.Printf("\033[33mSet max quality: %s\033[0m\n", qualityNames[quality])
-
-	opts := downloader.Options{
-		Directory:       dir,
-		Quality:         quality,
-		EmbedArt:        f.EmbedArt || cfg.EmbedArt,
-		IgnoreSingles:   f.AlbumsOnly || cfg.AlbumsOnly,
-		NoM3U:           f.NoM3U || cfg.NoM3U,
-		QualityFallback: !f.NoFallback && !cfg.NoFallback,
-		OGCover:         f.OGCover || cfg.OGCover,
-		NoCover:         f.NoCover || cfg.NoCover,
-		FolderFormat:    folderFmt,
-		TrackFormat:     trackFmt,
-		SmartDiscog:     f.SmartDiscog || cfg.SmartDiscog,
-		NoDB:            f.NoDB || cfg.NoDatabase,
-		DBPath:          cfg.DBPath,
-		Workers:         workers,
-	}
-	return downloader.New(client, opts)
+	return dl
 }
 
-func searchByType(ctx context.Context, client *api.Client, itemType, query string, limit int) ([]string, error) {
-	return downloader.SearchURLs(ctx, client, itemType, query, limit)
+func runDL(ctx context.Context, args []string, f *cliFlags) {
+	requireArgs(args, "dl", "provide at least one URL")
+	mustDownloader(ctx, f).DownloadURLs(ctx, args)
+}
+
+func runLucky(ctx context.Context, args []string, f *cliFlags, itemType string, n int) {
+	requireArgs(args, "lucky", "provide a search query")
+	query := strings.Join(args, " ")
+	if len(query) < 3 {
+		fatalf("search query too short")
+	}
+	dl := mustDownloader(ctx, f)
+	fmt.Printf("\033[33mSearching %ss for \"%s\" (top %d)...\033[0m\n", itemType, query, n)
+	urls, err := downloader.SearchURLs(ctx, dl.Client, itemType, query, n)
+	if err != nil {
+		fatalf("%v", err)
+	}
+	dl.DownloadURLs(ctx, urls)
+}
+
+func runCSV(ctx context.Context, args []string, f *cliFlags, failedCSV string) {
+	requireArgs(args, "csv", "provide path to a TuneMyMusic CSV file")
+	mustDownloader(ctx, f).DownloadCSV(ctx, args[0], failedCSV)
+}
+
+func fatalf(format string, a ...interface{}) {
+	fmt.Fprintf(os.Stderr, "\033[31m"+format+"\033[0m\n", a...)
+	os.Exit(1)
 }

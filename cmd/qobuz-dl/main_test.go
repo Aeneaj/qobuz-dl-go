@@ -81,20 +81,24 @@ func TestUnknownCommand_ExitsNonZero(t *testing.T) {
 	}
 }
 
-func TestDL_NoURL_ExitsNonZero(t *testing.T) {
-	_, stderr, code := run("dl")
-	if code == 0 {
-		t.Error("expected non-zero exit when no URL given to dl")
+// TestMissingArgs_ExitsNonZero covers requireArgs, shared by dl/lucky/csv.
+// These must bail out before any config load, so they stay offline.
+func TestMissingArgs_ExitsNonZero(t *testing.T) {
+	cases := []struct{ cmd, wantStderr string }{
+		{"dl", "dl: provide at least one URL"},
+		{"lucky", "lucky: provide a search query"},
+		{"csv", "csv: provide path to a TuneMyMusic CSV file"},
 	}
-	if !strings.Contains(stderr, "dl:") && !strings.Contains(stderr, "URL") {
-		t.Errorf("expected error message, got stderr: %q", stderr)
-	}
-}
-
-func TestLucky_NoQuery_ExitsNonZero(t *testing.T) {
-	_, _, code := run("lucky")
-	if code == 0 {
-		t.Error("expected non-zero exit when no query given to lucky")
+	for _, c := range cases {
+		t.Run(c.cmd, func(t *testing.T) {
+			_, stderr, code := run(c.cmd)
+			if code == 0 {
+				t.Errorf("exit code = 0, want non-zero")
+			}
+			if !strings.Contains(stderr, c.wantStderr) {
+				t.Errorf("stderr = %q, want it to contain %q", stderr, c.wantStderr)
+			}
+		})
 	}
 }
 
