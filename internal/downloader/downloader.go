@@ -1136,8 +1136,24 @@ var (
 	reEssence  = regexp.MustCompile(`^([^(]+)`)
 )
 
+// smartDiscogFilter keeps one release per album title: the highest quality
+// one credited to the requested artist, preferring remasters when the
+// discography offers any.
 func smartDiscogFilter(requestedArtist string, items []map[string]interface{}) []map[string]interface{} {
-	// Group by normalised title
+	grouped, order := groupByEssence(items)
+
+	var result []map[string]interface{}
+	for _, key := range order {
+		if best, ok := pickBest(requestedArtist, grouped[key]); ok {
+			result = append(result, best)
+		}
+	}
+	return result
+}
+
+// groupByEssence buckets albums by normalised title, returning the buckets
+// plus the keys in first-seen order so the output stays deterministic.
+func groupByEssence(items []map[string]interface{}) (map[string][]map[string]interface{}, []string) {
 	grouped := map[string][]map[string]interface{}{}
 	order := []string{}
 	for _, item := range items {
@@ -1148,44 +1164,59 @@ func smartDiscogFilter(requestedArtist string, items []map[string]interface{}) [
 		}
 		grouped[key] = append(grouped[key], item)
 	}
+	return grouped, order
+}
 
-	var result []map[string]interface{}
-	for _, key := range order {
-		albums := grouped[key]
+// groupQuality is what a group of same-title releases is judged against:
+// the best audio quality on offer, and whether any of them is a remaster.
+type groupQuality struct {
+	bestBitDepth   float64
+	bestSampleRate float64 // measured at bestBitDepth, not overall
+	hasRemaster    bool
+}
 
-		// Single pass: best bit depth, best sampling rate at that depth, and
-		// cache each album's "is remaster" flag so the regex runs once per
-		// album instead of once here and again in the selection loop below.
-		bestBD, bestSR := 0.0, 0.0
-		isRemaster := make([]bool, len(albums))
-		remasterExists := false
-		for i, a := range albums {
-			bd, _ := a["maximum_bit_depth"].(float64)
-			sr, _ := a["maximum_sampling_rate"].(float64)
-			switch {
-			case bd > bestBD:
-				bestBD, bestSR = bd, sr // a higher depth resets the sampling-rate race
-			case bd == bestBD && sr > bestSR:
-				bestSR = sr
-			}
-			if isAlbumType("remaster", a) {
-				isRemaster[i] = true
-				remasterExists = true
-			}
+// pickBest returns the release representing a group, and whether any
+// release qualified at all.
+func pickBest(requestedArtist string, albums []map[string]interface{}) (map[string]interface{}, bool) {
+	// One pass for the aggregates, caching each album's "is remaster" flag so
+	// the regex runs once per album rather than again in the selection loop.
+	var q groupQuality
+	isRemaster := make([]bool, len(albums))
+	for i, a := range albums {
+		bd, _ := a["maximum_bit_depth"].(float64)
+		sr, _ := a["maximum_sampling_rate"].(float64)
+		switch {
+		case bd > q.bestBitDepth:
+			q.bestBitDepth, q.bestSampleRate = bd, sr // a higher depth resets the sampling-rate race
+		case bd == q.bestBitDepth && sr > q.bestSampleRate:
+			q.bestSampleRate = sr
 		}
-
-		for i, a := range albums {
-			bd, _ := a["maximum_bit_depth"].(float64)
-			sr, _ := a["maximum_sampling_rate"].(float64)
-			aName := nestedStr(a, "artist", "name")
-			if bd == bestBD && sr == bestSR && aName == requestedArtist &&
-				!(remasterExists && !isRemaster[i]) {
-				result = append(result, a)
-				break
-			}
+		if isAlbumType("remaster", a) {
+			isRemaster[i] = true
+			q.hasRemaster = true
 		}
 	}
-	return result
+
+	for i, a := range albums {
+		if qualifies(a, q, isRemaster[i], requestedArtist) {
+			return a, true
+		}
+	}
+	return nil, false
+}
+
+// qualifies reports whether an album is the one to keep for its group.
+func qualifies(a map[string]interface{}, q groupQuality, isRemaster bool, requestedArtist string) bool {
+	bd, _ := a["maximum_bit_depth"].(float64)
+	sr, _ := a["maximum_sampling_rate"].(float64)
+	if bd != q.bestBitDepth || sr != q.bestSampleRate {
+		return false
+	}
+	if nestedStr(a, "artist", "name") != requestedArtist {
+		return false
+	}
+	// Once a group contains a remaster, only remasters are eligible.
+	return isRemaster || !q.hasRemaster
 }
 
 func essenceTitle(title string) string {

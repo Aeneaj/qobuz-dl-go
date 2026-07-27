@@ -253,6 +253,44 @@ func TestParseQobuzURL_Invalid(t *testing.T) {
 
 // ---- Smart discography filter tests ----
 
+// TestQualifies pins the selection rule that decides which release survives
+// smartDiscogFilter. It is the semantically risky part: getting it wrong
+// silently swaps which album gets downloaded.
+func TestQualifies(t *testing.T) {
+	album := func(bd, sr float64, artist, title string) map[string]interface{} {
+		return map[string]interface{}{
+			"title":                 title,
+			"artist":                map[string]interface{}{"name": artist},
+			"maximum_bit_depth":     bd,
+			"maximum_sampling_rate": sr,
+		}
+	}
+	hires := groupQuality{bestBitDepth: 24, bestSampleRate: 96}
+	withRemaster := groupQuality{bestBitDepth: 24, bestSampleRate: 96, hasRemaster: true}
+
+	cases := []struct {
+		name       string
+		album      map[string]interface{}
+		q          groupQuality
+		isRemaster bool
+		want       bool
+	}{
+		{"best quality, right artist", album(24, 96, "Pink Floyd", "Animals"), hires, false, true},
+		{"lower bit depth", album(16, 96, "Pink Floyd", "Animals"), hires, false, false},
+		{"lower sample rate", album(24, 44.1, "Pink Floyd", "Animals"), hires, false, false},
+		{"other artist", album(24, 96, "Roger Waters", "Animals"), hires, false, false},
+		{"remaster in a group that has one", album(24, 96, "Pink Floyd", "Animals"), withRemaster, true, true},
+		{"non-remaster loses to remaster", album(24, 96, "Pink Floyd", "Animals"), withRemaster, false, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := qualifies(c.album, c.q, c.isRemaster, "Pink Floyd"); got != c.want {
+				t.Errorf("qualifies() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
 func TestSmartDiscogFilter_RemovesDuplicates(t *testing.T) {
 	items := []map[string]interface{}{
 		{
