@@ -42,6 +42,18 @@ func New(appID string, secrets []string) *Client {
 	}
 }
 
+// NewWithHTTP is New with a caller-supplied HTTP client. baseURL is a
+// constant, so tests in other packages need this to reach an httptest server:
+// they pass a client whose Transport rewrites the Qobuz host. Production code
+// should call New.
+func NewWithHTTP(appID string, secrets []string, hc *http.Client) *Client {
+	c := New(appID, secrets)
+	if hc != nil {
+		c.http = hc
+	}
+	return c
+}
+
 func (c *Client) doGet(ctx context.Context, endpoint string, params url.Values) (map[string]interface{}, error) {
 	return c.doRequest(ctx, "GET", endpoint, params, "")
 }

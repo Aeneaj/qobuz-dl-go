@@ -92,16 +92,26 @@ Medido con `go test -cover ./...` el 2026-07-27:
 
 | Paquete | Cobertura | Archivos de test |
 |---|---|---|
-| api | 43.3% | client_test.go |
+| api | 42.3% | client_test.go |
 | bundle | 59.7% | bundle_test.go |
 | config | 37.9% | config_test.go |
-| downloader | 24.3% | metadata_test.go, db_test.go, lastfm_test.go, helpers_test.go, redownload_test.go |
+| downloader | 39.5% | integration_test.go, metadata_test.go, db_test.go, lastfm_test.go, helpers_test.go, redownload_test.go |
 | lyrics | 74.1% | metadata_test.go, lrclib_test.go, lyrics_test.go |
 | cmd/qobuz-dl | 0% | main_test.go |
 
 `cmd/qobuz-dl` marca 0% porque sus tests son **black-box**: compilan el binario en `TestMain` y lo ejecutan como subproceso, así que la cobertura no se instrumenta. No es falta de tests.
 
 `helpers_test.go` en downloader cubre: `sanitize`, `expandPlaceholders`, `renderFormat`, `formatDuration`, `idStr`, `nestedStr`, `releaseYear`, `essenceTitle`, `isAlbumType`.
+
+### Tests de integración del downloader (`integration_test.go`)
+
+Servidor Qobuz falso (`album/get`, `track/getFileUrl`, bytes de audio, carátula) más un `rewriteTransport` que redirige el host de Qobuz al `httptest.Server`. Las URLs de fichero ya son absolutas del servidor de test, así que pasan sin tocar.
+
+El seam es `api.NewWithHTTP(appID, secrets, hc)`: `baseURL` es const, así que desde otro paquete la única forma de alcanzar el mock es inyectar un `*http.Client` con Transport propio. Producción sigue usando `api.New`.
+
+Cubren el flujo completo — metadatos, construcción de rutas, pool de workers, tagging y DB — con **aserciones sobre el efecto observable correcto**, que no siempre es el evidente. Ejemplo: para verificar que la DB salta un track ya descargado **no** basta comprobar que no se re-descarga el audio, porque `downloadAndTag` ya corta con un `os.Stat` del fichero final y eso se cumple igual con la DB desactivada. El efecto propio de la DB es que no se llama a `track/getFileUrl`.
+
+**Valida los tests nuevos con mutaciones**: rompe la línea a propósito (numeración `%02d`→`%d`, `Disc %d`→`CD%d`, desactivar un guard) y comprueba que el test falla. Un test que sigue verde con el código roto no prueba nada — así se detectó justo el fallo de aserción de arriba.
 
 ### Refactors que deben preservar semántica exacta
 
@@ -260,8 +270,13 @@ lyrics_test.go    — buildLabel (formato, ancho fijo, truncado), lrcPathFor, sc
 
 ## Pendiente / Ideas
 
-- [ ] **Único ítem abierto de peso**: tests de integración con servidor mock completo para `downloader`
-      (es el paquete con menos cobertura, 24.3%)
+- [x] Tests de integración con servidor mock completo para `downloader` — `integration_test.go`
+      8 tests (11 con subtests): álbum completo, tagging real, tracks no disponibles, multi-disco,
+      salto por DB entre ejecuciones, paridad con 1/2/3/8 workers, contexto cancelado, `HandleURL`.
+      Cobertura del paquete 24.1% → 39.5%. Validados con 6 mutaciones, todas detectadas.
+- [ ] Partir `downloader.go` (~1550 líneas). Ahora que hay red de tests de integración, el riesgo
+      bajó lo suficiente para plantearlo. Costuras naturales según el grafo: los helpers de
+      `downloadWithProgress` y el filtro de discografía.
 - [x] Deuda de complejidad cognitiva — cerrada 2026-07-27 (ver tabla arriba):
       `main()` repartido en dispatcher + `flags.go`; `decodeID3Text` partido por codificación
       (y arreglado el bug de Latin-1); `smartDiscogFilter` partido en
