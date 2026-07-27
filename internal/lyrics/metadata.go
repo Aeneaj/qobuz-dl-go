@@ -220,61 +220,68 @@ func parseID3Frames(data []byte, info *AudioInfo, version byte) int {
 	return ms
 }
 
+// decodeID3Text decodes an ID3v2 text frame: one encoding byte followed by
+// the payload. Unknown encodings fall back to Latin-1, which is what the
+// spec designates as encoding 0x00.
 func decodeID3Text(data []byte) string {
 	if len(data) == 0 {
 		return ""
 	}
-	enc := data[0]
 	payload := data[1:]
-
-	stripNulUTF8 := func(s string) string { return strings.TrimRight(s, "\x00") }
-
-	switch enc {
+	switch data[0] {
 	case 0x01: // UTF-16 with BOM
-		if len(payload) < 2 {
-			return ""
-		}
-		bigEndian := payload[0] == 0xFE && payload[1] == 0xFF
-		// advance past BOM if present (FF FE or FE FF)
-		if (payload[0] == 0xFF && payload[1] == 0xFE) || bigEndian {
-			payload = payload[2:]
-		}
-		// strip trailing UTF-16 null terminator
-		for len(payload) >= 2 && payload[len(payload)-2] == 0 && payload[len(payload)-1] == 0 {
-			payload = payload[:len(payload)-2]
-		}
-		if len(payload)%2 != 0 && len(payload) > 0 {
-			payload = payload[:len(payload)-1]
-		}
-		u16 := make([]uint16, len(payload)/2)
-		for i := range u16 {
-			if bigEndian {
-				u16[i] = uint16(payload[2*i])<<8 | uint16(payload[2*i+1])
-			} else {
-				u16[i] = uint16(payload[2*i]) | uint16(payload[2*i+1])<<8
-			}
-		}
-		return string(utf16.Decode(u16))
-
+		return decodeUTF16BOM(payload)
 	case 0x02: // UTF-16BE without BOM
-		for len(payload) >= 2 && payload[len(payload)-2] == 0 && payload[len(payload)-1] == 0 {
-			payload = payload[:len(payload)-2]
-		}
-		if len(payload)%2 != 0 && len(payload) > 0 {
-			payload = payload[:len(payload)-1]
-		}
-		u16 := make([]uint16, len(payload)/2)
-		for i := range u16 {
-			u16[i] = uint16(payload[2*i])<<8 | uint16(payload[2*i+1])
-		}
-		return string(utf16.Decode(u16))
-
+		return decodeUTF16(payload, true)
 	case 0x03: // UTF-8
-		return stripNulUTF8(string(payload))
-
+		return strings.TrimRight(string(payload), "\x00")
 	default: // 0x00 Latin-1
-		return stripNulUTF8(string(payload))
+		return decodeLatin1(payload)
 	}
+}
+
+// decodeUTF16BOM consumes the leading byte order mark and decodes the rest.
+// Encoding 0x01 requires a BOM, but taggers in the wild omit it; those are
+// read as little-endian, the far more common case.
+func decodeUTF16BOM(payload []byte) string {
+	if len(payload) < 2 {
+		return ""
+	}
+	bigEndian := payload[0] == 0xFE && payload[1] == 0xFF
+	if bigEndian || (payload[0] == 0xFF && payload[1] == 0xFE) {
+		payload = payload[2:]
+	}
+	return decodeUTF16(payload, bigEndian)
+}
+
+// decodeUTF16 decodes UTF-16 code units, dropping any trailing NUL
+// terminator and a dangling odd byte.
+func decodeUTF16(payload []byte, bigEndian bool) string {
+	for len(payload) >= 2 && payload[len(payload)-2] == 0 && payload[len(payload)-1] == 0 {
+		payload = payload[:len(payload)-2]
+	}
+	payload = payload[:len(payload)-len(payload)%2]
+
+	u16 := make([]uint16, len(payload)/2)
+	for i := range u16 {
+		hi, lo := payload[2*i+1], payload[2*i]
+		if bigEndian {
+			hi, lo = payload[2*i], payload[2*i+1]
+		}
+		u16[i] = uint16(hi)<<8 | uint16(lo)
+	}
+	return string(utf16.Decode(u16))
+}
+
+// decodeLatin1 maps ISO-8859-1 bytes onto the identical Unicode code
+// points. Converting with string(payload) instead would read them as UTF-8
+// and mangle every byte above 0x7F — "Café" would come out as "Caf\xe9".
+func decodeLatin1(payload []byte) string {
+	runes := make([]rune, len(payload))
+	for i, b := range payload {
+		runes[i] = rune(b)
+	}
+	return strings.TrimRight(string(runes), "\x00")
 }
 
 // ---- MPEG duration helpers ----------------------------------------------

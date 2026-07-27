@@ -330,6 +330,83 @@ func TestDecodeID3Text_EmptyInput(t *testing.T) {
 	}
 }
 
+// ---- per-encoding decoder unit tests ------------------------------------
+
+// TestDecodeLatin1 pins the ISO-8859-1 mapping. A string(payload)
+// conversion passes the ASCII rows and mangles every other one.
+func TestDecodeLatin1(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []byte
+		want string
+	}{
+		{"ascii", []byte("Hello"), "Hello"},
+		{"trailing nul", []byte{'H', 'i', 0x00}, "Hi"},
+		{"e acute", []byte{'C', 'a', 'f', 0xE9}, "Café"},
+		{"n tilde", []byte{'N', 'i', 0xF1, 'o'}, "Niño"},
+		{"high byte", []byte{0xFF}, "ÿ"},
+		{"empty", nil, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := decodeLatin1(c.in); got != c.want {
+				t.Errorf("decodeLatin1(% x) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+func TestDecodeUTF16(t *testing.T) {
+	cases := []struct {
+		name      string
+		in        []byte
+		bigEndian bool
+		want      string
+	}{
+		{"le", []byte{'H', 0x00, 'i', 0x00}, false, "Hi"},
+		{"be", []byte{0x00, 'H', 0x00, 'i'}, true, "Hi"},
+		{"le trailing nul", []byte{'H', 0x00, 0x00, 0x00}, false, "H"},
+		{"dangling odd byte", []byte{'H', 0x00, 'i'}, false, "H"},
+		{"empty", nil, false, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := decodeUTF16(c.in, c.bigEndian); got != c.want {
+				t.Errorf("decodeUTF16(% x, %v) = %q, want %q", c.in, c.bigEndian, got, c.want)
+			}
+		})
+	}
+}
+
+func TestDecodeUTF16BOM(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []byte
+		want string
+	}{
+		{"le bom", []byte{0xFF, 0xFE, 'H', 0x00, 'i', 0x00}, "Hi"},
+		{"be bom", []byte{0xFE, 0xFF, 0x00, 'H', 0x00, 'i'}, "Hi"},
+		{"no bom falls back to le", []byte{'H', 0x00, 'i', 0x00}, "Hi"},
+		{"too short", []byte{0xFF}, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := decodeUTF16BOM(c.in); got != c.want {
+				t.Errorf("decodeUTF16BOM(% x) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+// TestDecodeID3Text_Latin1Accented is the end-to-end regression for the
+// mangling above: this text is used verbatim as the LRCLIB artist_name.
+func TestDecodeID3Text_Latin1Accented(t *testing.T) {
+	data := append([]byte{0x00}, []byte{'C', 'a', 'f', 0xE9}...)
+	if got := decodeID3Text(data); got != "Café" {
+		t.Errorf("got %q, want %q", got, "Café")
+	}
+}
+
 // ---- ReadAudio unsupported format ---------------------------------------
 
 func TestReadAudio_UnsupportedFormat(t *testing.T) {
