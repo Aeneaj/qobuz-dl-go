@@ -7,6 +7,11 @@ Original Python: https://github.com/vitiko98/qobuz-dl/pull/331
 
 ```
 cmd/qobuz-dl/        CLI entry point (flag stdlib, sin dependencias externas)
+  main.go            const usage, main() como dispatcher, handlers cortos, helpers
+  flags.go           wiring CLI→downloader: cliFlags, registerDownloadFlags,
+                     loadOrInitConfig, initDownloader
+  oauth_cmd.go       runOAuth
+  lyrics_cmd.go      runLyrics, resolveScanDir
 internal/api/        Cliente HTTP Qobuz API (qopy.py)
 internal/bundle/     Scraper de app_id/secrets/private_key de bundle.js
 internal/config/     Lector/escritor de config.ini (INI casero, sin deps)
@@ -25,6 +30,8 @@ El tagging y la lectura de metadatos FLAC y MP3 están implementados en **Go pur
 
 No añadir dependencias de parseo de audio externas. Si necesitas leer o escribir un campo nuevo de metadatos, impleméntalo en pure Go.
 
+**Trampa ya pisada una vez**: en Go, `string(payload)` sobre un `[]byte` lo **reinterpreta como UTF-8**, no lo convierte desde otra codificación. La rama Latin-1 de `decodeID3Text` hacía eso y corrompía todo byte por encima de 0x7F — `Café` en ISO-8859-1 salía como `"Caf\xe9"`, UTF-8 inválido, que iba tal cual a la query de LRCLIB. La conversión correcta es rune a rune: `rune(b)` da U+0000–U+00FF, que *es* ISO-8859-1. Sobrevivió porque los tests solo usaban ASCII, idéntico en ambas codificaciones — **al testear codificaciones, usar siempre al menos un carácter no ASCII**.
+
 ### UI de Terminal: siempre `mpb`
 
 Todas las barras de progreso y el feedback visual se implementan con `github.com/vbauerster/mpb/v8`. Patrones establecidos:
@@ -36,6 +43,19 @@ Todas las barras de progreso y el feedback visual se implementan con `github.com
 - Refresh: `mpb.WithRefreshRate(150 * time.Millisecond)`
 
 Cualquier nueva feature con feedback visual debe reutilizar este patrón para consistencia.
+
+### CLI: `main()` solo despacha
+
+`main()` hace exactamente cuatro cosas: registrar flags, atajos de config (`--version`/`--reset`/`--show-config`/`--purge`), montar el contexto cancelable por señal, y despachar. **Cero lógica de comando inline.**
+
+Un subcomando nuevo es una función `run<Name>(ctx, args, ...)` más una línea en el switch. Usa los helpers compartidos en vez de repetirlos:
+
+- `requireArgs(args, cmd, hint)` — sale con `"<cmd>: <hint>"` si faltan argumentos
+- `mustDownloader(ctx, flags)` — construye el downloader o sale
+
+Un comando se lleva su propio `<name>_cmd.go` **cuando tiene sustancia** (~80 líneas, como `runOAuth` y `runLyrics`). Los de 4 líneas viven en `main.go`: en Go, partir archivos dentro del mismo paquete no añade encapsulación, solo orden.
+
+No meter cobra ni urfave/cli — el proyecto usa `flag` de stdlib a propósito.
 
 ## Dependencias externas
 
@@ -61,15 +81,24 @@ No añadir dependencias nuevas sin discusión. En particular no añadir librerí
 
 ### Cobertura por paquete
 
-| Paquete | Tests | Cobertura | Archivos de test |
-|---|---|---|---|
-| api | — | ~42% | api_test.go |
-| bundle | — | ~64% | bundle_test.go |
-| config | — | ~46% | config_test.go |
-| downloader | 30+ | ~35% | metadata_test.go, db_test.go, lastfm_test.go, helpers_test.go |
-| lyrics | 42 | ~100% | metadata_test.go, lrclib_test.go, lyrics_test.go |
+Medido con `go test -cover ./...` el 2026-07-27:
+
+| Paquete | Cobertura | Archivos de test |
+|---|---|---|
+| api | 43.3% | client_test.go |
+| bundle | 59.7% | bundle_test.go |
+| config | 37.9% | config_test.go |
+| downloader | 24.3% | metadata_test.go, db_test.go, lastfm_test.go, helpers_test.go, redownload_test.go |
+| lyrics | 74.1% | metadata_test.go, lrclib_test.go, lyrics_test.go |
+| cmd/qobuz-dl | 0% | main_test.go |
+
+`cmd/qobuz-dl` marca 0% porque sus tests son **black-box**: compilan el binario en `TestMain` y lo ejecutan como subproceso, así que la cobertura no se instrumenta. No es falta de tests.
 
 `helpers_test.go` en downloader cubre: `sanitize`, `expandPlaceholders`, `renderFormat`, `formatDuration`, `idStr`, `nestedStr`, `releaseYear`, `essenceTitle`, `isAlbumType`.
+
+### Refactors que deben preservar semántica exacta
+
+Cuando cambies una función cuyo resultado es silenciosamente rompible (qué álbum gana un filtro, qué codificación se elige), escribe un **test diferencial desechable**: copia la implementación vieja como `xxxOld` en un `zz_diff_test.go` temporal, genera entradas aleatorias, compara salidas, y **borra el archivo antes de commitear**. En `smartDiscogFilter` fueron 20.000 discografías aleatorias. Es más barato y más convincente que razonar sobre los casos borde.
 
 ### CI (`.github/workflows/ci.yml`)
 
@@ -94,7 +123,21 @@ No añadir dependencias nuevas sin discusión. En particular no añadir librerí
 - `go vet ./...` ✅
 - `go fmt ./...` ✅ (CI falla si hay archivos sin formatear)
 - `go test -cover ./...` ✅ (todos los paquetes pasan)
-- Cobertura: api 42%, bundle 64%, config 46%, downloader ~35% (30+ tests), lyrics 100% (42 tests)
+- Cobertura: ver la tabla de la sección anterior
+
+### Complejidad cognitiva (codebase-memory, 2026-07-27)
+
+Los tres focos históricos están cerrados:
+
+| Función | Antes | Ahora |
+|---|---|---|
+| `main()` | 54 | 26 |
+| `decodeID3Text` | 38 | 10 |
+| `smartDiscogFilter` | 25 | 3 |
+
+Lección de `smartDiscogFilter`: un intento previo colapsó sus 4 pasadas en 2 y la métrica no se movió. **Lo que penaliza es la profundidad de anidamiento, no el número de pasadas** — sacar el trabajo interno a su propia función es lo que baja el número.
+
+El mayor valor actual es `pickBest` (14). No es alarmante; vigilar si se añade un criterio de selección nuevo.
 
 ## Comandos de construcción
 
@@ -210,10 +253,15 @@ lyrics_test.go    — buildLabel (formato, ancho fijo, truncado), lrcPathFor, sc
 
 ## Pendiente / Ideas
 
+- [ ] **Único ítem abierto de peso**: tests de integración con servidor mock completo para `downloader`
+      (es el paquete con menos cobertura, 24.3%)
+- [x] Deuda de complejidad cognitiva — cerrada 2026-07-27 (ver tabla arriba):
+      `main()` repartido en dispatcher + `flags.go`; `decodeID3Text` partido por codificación
+      (y arreglado el bug de Latin-1); `smartDiscogFilter` partido en
+      `groupByEssence`/`pickBest`/`qualifies`
 - [x] Downloads DB (archivo plano, un track ID por línea) — `internal/downloader/db.go`
       `--no-db` bypass; `--purge` borra el archivo; se carga al arrancar en un map[string]struct{}
 - [x] Descargas concurrentes por track — semáforo + WaitGroup, flag `--workers N` (default 3)
-- [ ] Tests de integración con servidor mock completo para downloader
 - [x] Soporte last.fm playlists — `internal/downloader/lastfm.go`
       XSPF API 1.0 (sin API key); soporta `/user/{user}/loved` y `/user/{user}/library`;
       busca cada track en Qobuz y descarga el primer resultado
