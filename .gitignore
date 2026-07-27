@@ -33,6 +33,9 @@ test_failed.csv
 # --- Herramientas y Cobertura ---
 # Archivos de Claude Code y pruebas de Go
 .claude/
+# Índice de codebase-memory: 615KB binarios que cambian en cada reindex
+# y embeben la ruta local absoluta del repo. Útil solo en equipo, no en público.
+.codebase-memory/
 coverage.out
 *.out
 *.log
