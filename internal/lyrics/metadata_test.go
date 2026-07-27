@@ -112,7 +112,7 @@ func id3FrameLatin1(id, text string) []byte {
 // (the same encoding qobuz-dl uses when tagging files).
 func id3FrameUTF16LE(id, text string) []byte {
 	payload := []byte{0x01, 0xFF, 0xFE} // encoding=UTF-16, BOM LE
-	for _, r := range []rune(text) {
+	for _, r := range text {
 		u := uint16(r)
 		payload = append(payload, byte(u), byte(u>>8))
 	}

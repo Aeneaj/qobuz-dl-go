@@ -1,8 +1,6 @@
 package bundle
 
 import (
-	"net/http"
-	"net/http/httptest"
 	"testing"
 )
 
@@ -17,25 +15,6 @@ name:"timezones/London",info:"QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJC",extras:"Q0NDQ0ND
 name:"timezones/Berlin",info:"RUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVF",extras:"RkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZG"
 privateKey: "mySecretKey123"
 `
-
-func newMockServer(t *testing.T) *httptest.Server {
-	t.Helper()
-	mux := http.NewServeMux()
-
-	// Login page returns a link to bundle.js
-	mux.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte(`<html><script src="/resources/1.2.3-a001/bundle.js"></script></html>`))
-	})
-
-	// bundle.js
-	mux.HandleFunc("/resources/1.2.3-a001/bundle.js", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/javascript")
-		w.Write([]byte(fakeBundleJS))
-	})
-
-	return httptest.NewServer(mux)
-}
 
 func TestBundleAppID(t *testing.T) {
 	b := &Bundle{content: fakeBundleJS}

@@ -44,6 +44,13 @@ Todas las barras de progreso y el feedback visual se implementan con `github.com
 
 Cualquier nueva feature con feedback visual debe reutilizar este patrón para consistencia.
 
+**Nunca imprimir a stdout con barras vivas.** Mientras un `mpb.Progress` renderiza es dueño del cursor: reposiciona y repinta cada 150ms, así que un `fmt.Printf` crudo corrompe el dibujo, y peor si sale de varias goroutines worker a la vez. Dos formas correctas:
+
+- `downloader` usa `d.termOut()`, que devuelve el `*mpb.Progress` activo (mpb serializa las escrituras contra su bucle de render) o `os.Stdout` si no hay ninguno. Marca el contenedor con `d.withBars(p)` al crearlo.
+- `lyrics` acumula los avisos en un slice y los vuelca **después** de `p.Wait()`.
+
+Usa la primera cuando el mensaje deba verse al momento (un track que falla), la segunda cuando sea un resumen.
+
 ### CLI: `main()` solo despacha
 
 `main()` hace exactamente cuatro cosas: registrar flags, atajos de config (`--version`/`--reset`/`--show-config`/`--purge`), montar el contexto cancelable por señal, y despachar. **Cero lógica de comando inline.**

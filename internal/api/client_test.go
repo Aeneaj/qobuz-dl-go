@@ -10,19 +10,6 @@ import (
 	"testing"
 )
 
-func mockServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *Client) {
-	t.Helper()
-	srv := httptest.NewServer(handler)
-	c := &Client{
-		AppID:   "123456789",
-		Secrets: []string{"testsecret"},
-		http:    srv.Client(),
-	}
-	// Point baseURL at mock — we override via the transport
-	// Instead, use a wrapper that redirects calls
-	return srv, c
-}
-
 func TestMD5Hex(t *testing.T) {
 	tests := []struct{ in, want string }{
 		{"", "d41d8cd98f00b204e9800998ecf8427e"},

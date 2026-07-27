@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/vbauerster/mpb/v8"
@@ -62,6 +63,27 @@ type Downloader struct {
 	Opts       Options
 	db         *downloadDB
 	httpClient *http.Client
+
+	// bars holds the mpb container while it is rendering. See termOut.
+	bars atomic.Value
+}
+
+// termOut returns the writer for terminal messages. While a progress
+// container is live mpb owns the cursor — it repositions and repaints every
+// refresh — so writing straight to stdout garbles the bars, and worker
+// goroutines make it worse by writing at once. mpb.Progress serialises writes
+// against its own render loop, so route through it whenever one is active.
+func (d *Downloader) termOut() io.Writer {
+	if p, ok := d.bars.Load().(*mpb.Progress); ok && p != nil {
+		return p
+	}
+	return os.Stdout
+}
+
+// withBars marks p as the active container and returns the cleanup to defer.
+func (d *Downloader) withBars(p *mpb.Progress) func() {
+	d.bars.Store(p)
+	return func() { d.bars.Store((*mpb.Progress)(nil)) }
 }
 
 // New creates a Downloader. Returns an error if the download directory cannot
@@ -328,9 +350,11 @@ func (d *Downloader) downloadAlbum(ctx context.Context, albumID, baseDir string)
 	isMP3 := d.Opts.Quality == 5
 
 	p := mpb.NewWithContext(ctx, mpb.WithRefreshRate(150*time.Millisecond))
+	restore := d.withBars(p)
 	jobs := d.collectTrackJobs(ctx, p, rawItems, albumDir, isMultiDisc, meta, trackFmt, isMP3)
 	d.runTrackJobs(ctx, jobs, meta, isMP3, trackFmt)
 	p.Wait()
+	restore()
 
 	fmt.Printf("\033[32m✓  Completed: %s\033[0m\n\n", title)
 	return nil
@@ -428,7 +452,7 @@ func (d *Downloader) collectTrackJobs(ctx context.Context, p *mpb.Progress, rawI
 				trackURL, err = d.fallbackQuality(ctx, trackID)
 			}
 			if err != nil {
-				fmt.Printf("\033[31mTrack %s: cannot get URL: %v. Skipping...\033[0m\n", trackID, err)
+				fmt.Fprintf(d.termOut(), "\033[31mTrack %s: cannot get URL: %v. Skipping...\033[0m\n", trackID, err)
 				continue
 			}
 		}
@@ -441,7 +465,7 @@ func (d *Downloader) collectTrackJobs(ctx context.Context, p *mpb.Progress, rawI
 
 		if isMultiDisc {
 			if err := os.MkdirAll(trackDir, 0755); err != nil {
-				fmt.Printf("\033[31mTrack %s: cannot create disc directory %q: %v. Skipping...\033[0m\n", trackID, trackDir, err)
+				fmt.Fprintf(d.termOut(), "\033[31mTrack %s: cannot create disc directory %q: %v. Skipping...\033[0m\n", trackID, trackDir, err)
 				continue
 			}
 		}
@@ -488,10 +512,10 @@ jobLoop:
 			defer func() { <-sem }()
 			if err := d.downloadAndTag(ctx, j.trackDir, j.idx, j.trackURL, j.track, meta, false, isMP3, trackFmt, j.bar); err != nil {
 				j.bar.Abort(false)
-				fmt.Printf("\033[31mTrack %s failed: %v. Skipping...\033[0m\n", j.trackID, err)
+				fmt.Fprintf(d.termOut(), "\033[31mTrack %s failed: %v. Skipping...\033[0m\n", j.trackID, err)
 			} else if d.db != nil {
 				if err := d.db.add(j.trackID); err != nil {
-					fmt.Printf("\033[33mWarning: could not record track in DB: %v\033[0m\n", err)
+					fmt.Fprintf(d.termOut(), "\033[33mWarning: could not record track in DB: %v\033[0m\n", err)
 				}
 			}
 		}(job)
@@ -590,6 +614,7 @@ func (d *Downloader) downloadTrackByID(ctx context.Context, trackID, baseDir str
 		trackNum = int(tn)
 	}
 	p := mpb.NewWithContext(ctx, mpb.WithRefreshRate(150*time.Millisecond))
+	restore := d.withBars(p)
 	bar := p.New(0,
 		mpb.BarStyle().Lbound("╢").Filler("█").Tip("█").Padding("░").Rbound("╟"),
 		mpb.PrependDecorators(decor.Name(barLabel(trackNum, title))),
@@ -603,14 +628,16 @@ func (d *Downloader) downloadTrackByID(ctx context.Context, trackID, baseDir str
 	if err := d.downloadAndTag(ctx, trackDir, 1, trackURL, meta, meta, true, isMP3, trackFmt, bar); err != nil {
 		bar.Abort(false)
 		p.Wait()
+		restore()
 		return err
 	}
 	if d.db != nil {
 		if err := d.db.add(trackID); err != nil {
-			fmt.Printf("\033[33mWarning: could not record track in DB: %v\033[0m\n", err)
+			fmt.Fprintf(d.termOut(), "\033[33mWarning: could not record track in DB: %v\033[0m\n", err)
 		}
 	}
 	p.Wait()
+	restore()
 
 	fmt.Printf("\033[32m✓  Completed: %s\033[0m\n\n", title)
 	return nil
@@ -692,7 +719,7 @@ func (d *Downloader) downloadAndTag(
 ) error {
 	fileURL, _ := trackURLDict["url"].(string)
 	if fileURL == "" {
-		fmt.Printf("\033[90mTrack not available for download\033[0m\n")
+		fmt.Fprintf(d.termOut(), "\033[90mTrack not available for download\033[0m\n")
 		return nil
 	}
 
@@ -726,13 +753,13 @@ func (d *Downloader) downloadAndTag(
 	// Tag and rename
 	if isMP3 {
 		if err := tagMP3(tmpFile, dir, finalFile, trackMeta, albumMeta, isTrack, d.Opts.EmbedArt); err != nil {
-			fmt.Printf("\033[31mWarning: could not tag %s: %v\033[0m\n", filepath.Base(finalFile), err)
+			fmt.Fprintf(d.termOut(), "\033[31mWarning: could not tag %s: %v\033[0m\n", filepath.Base(finalFile), err)
 			// Still rename even if tagging failed
 			os.Rename(tmpFile, finalFile)
 		}
 	} else {
 		if err := tagFLAC(tmpFile, dir, finalFile, trackMeta, albumMeta, isTrack, d.Opts.EmbedArt); err != nil {
-			fmt.Printf("\033[31mWarning: could not tag %s: %v\033[0m\n", filepath.Base(finalFile), err)
+			fmt.Fprintf(d.termOut(), "\033[31mWarning: could not tag %s: %v\033[0m\n", filepath.Base(finalFile), err)
 			os.Rename(tmpFile, finalFile)
 		}
 	}
@@ -750,7 +777,7 @@ func (d *Downloader) fallbackQuality(ctx context.Context, trackID string) (map[s
 		}
 		info, err := d.Client.GetTrackURL(ctx, trackID, q, "")
 		if err == nil {
-			fmt.Printf("\033[33mQuality fallback to %s for track %s\033[0m\n", qualities[q], trackID)
+			fmt.Fprintf(d.termOut(), "\033[33mQuality fallback to %s for track %s\033[0m\n", qualities[q], trackID)
 			return info, nil
 		}
 	}
