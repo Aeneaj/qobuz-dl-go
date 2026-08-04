@@ -50,3 +50,4 @@ coverage.out
 .DS_Store
 Thumbs.db
 logs para qobuz
+qobuz-downloader/

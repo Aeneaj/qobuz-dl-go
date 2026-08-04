@@ -52,6 +52,7 @@ type cliFlags struct {
 	FolderFormat string
 	TrackFormat  string
 	SmartDiscog  bool
+	TUI          bool
 }
 
 func registerDownloadFlags(fs *flag.FlagSet) *cliFlags {
@@ -69,6 +70,7 @@ func registerDownloadFlags(fs *flag.FlagSet) *cliFlags {
 	fs.StringVar(&f.FolderFormat, "folder-format", "", "")
 	fs.StringVar(&f.TrackFormat, "track-format", "", "")
 	fs.BoolVar(&f.SmartDiscog, "smart-discog", false, "")
+	fs.BoolVar(&f.TUI, "tui", false, "")
 	return f
 }
 

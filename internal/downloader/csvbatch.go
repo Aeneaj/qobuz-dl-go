@@ -136,7 +136,7 @@ func (d *Downloader) DownloadCSV(ctx context.Context, csvPath, failedPath string
 		return
 	}
 
-	fmt.Printf("\033[33mCSV loaded: %d tracks to process\033[0m\n\n", len(tracks))
+	fmt.Fprintf(d.termOut(), "\033[33mCSV loaded: %d tracks to process\033[0m\n\n", len(tracks))
 
 	total := len(tracks)
 	downloaded := 0
@@ -145,44 +145,44 @@ func (d *Downloader) DownloadCSV(ctx context.Context, csvPath, failedPath string
 
 	for i, t := range tracks {
 		if err := ctx.Err(); err != nil {
-			fmt.Printf("\033[33m\nInterrupted at row %d/%d.\033[0m\n", i, total)
+			fmt.Fprintf(d.termOut(), "\033[33m\nInterrupted at row %d/%d.\033[0m\n", i, total)
 			break
 		}
-		fmt.Printf("\033[33m[%d/%d] %s\033[0m\n", i+1, total, t.Query)
+		fmt.Fprintf(d.termOut(), "\033[33m[%d/%d] %s\033[0m\n", i+1, total, t.Query)
 
 		trackID, err := d.searchFirstTrackID(ctx, t.Query)
 		if err != nil {
-			fmt.Printf("  \033[31m✗ Search error: %v\033[0m\n", err)
+			fmt.Fprintf(d.termOut(), "  \033[31m✗ Search error: %v\033[0m\n", err)
 			failures = append(failures, failedEntry{t, fmt.Sprintf("search error: %v", err)})
 			continue
 		}
 		if trackID == "" {
-			fmt.Printf("  \033[31m✗ Not found on Qobuz\033[0m\n")
+			fmt.Fprintf(d.termOut(), "  \033[31m✗ Not found on Qobuz\033[0m\n")
 			failures = append(failures, failedEntry{t, "not found"})
 			continue
 		}
 
-		fmt.Printf("  \033[32m→ id=%s, downloading...\033[0m\n", trackID)
+		fmt.Fprintf(d.termOut(), "  \033[32m→ id=%s, downloading...\033[0m\n", trackID)
 		if err := d.downloadTrackByID(ctx, trackID, dir); err != nil {
-			fmt.Printf("  \033[31m✗ Download error: %v\033[0m\n", err)
+			fmt.Fprintf(d.termOut(), "  \033[31m✗ Download error: %v\033[0m\n", err)
 			failures = append(failures, failedEntry{t, fmt.Sprintf("download error: %v", err)})
 			continue
 		}
 		downloaded++
 	}
 
-	printBatchSummary(total, downloaded, failures)
+	printBatchSummary(d.termOut(), total, downloaded, failures)
 
 	if failedPath != "" && len(failures) > 0 {
 		if err := writeFailedCSV(failedPath, failures); err != nil {
 			fmt.Fprintf(os.Stderr, "  \033[31mCould not write failed report: %v\033[0m\n", err)
 		} else {
-			fmt.Printf("  Failed tracks saved to: %s\n", failedPath)
+			fmt.Fprintf(d.termOut(), "  Failed tracks saved to: %s\n", failedPath)
 		}
 	}
 }
 
-func printBatchSummary(total, downloaded int, failures []failedEntry) {
+func printBatchSummary(w io.Writer, total, downloaded int, failures []failedEntry) {
 	notFound, errCount := 0, 0
 	for _, f := range failures {
 		if f.Reason == "not found" {
@@ -191,11 +191,11 @@ func printBatchSummary(total, downloaded int, failures []failedEntry) {
 			errCount++
 		}
 	}
-	fmt.Printf("\n\033[1m=== CSV Batch Summary ===\033[0m\n")
-	fmt.Printf("  Total processed: %d\n", total)
-	fmt.Printf("  Downloaded:      \033[32m%d\033[0m\n", downloaded)
-	fmt.Printf("  Not found:       \033[33m%d\033[0m\n", notFound)
-	fmt.Printf("  Errors:          \033[31m%d\033[0m\n", errCount)
+	fmt.Fprintf(w, "\n\033[1m=== CSV Batch Summary ===\033[0m\n")
+	fmt.Fprintf(w, "  Total processed: %d\n", total)
+	fmt.Fprintf(w, "  Downloaded:      \033[32m%d\033[0m\n", downloaded)
+	fmt.Fprintf(w, "  Not found:       \033[33m%d\033[0m\n", notFound)
+	fmt.Fprintf(w, "  Errors:          \033[31m%d\033[0m\n", errCount)
 }
 
 func writeFailedCSV(path string, entries []failedEntry) error {

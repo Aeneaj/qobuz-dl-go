@@ -17,6 +17,13 @@ internal/bundle/     Scraper de app_id/secrets/private_key de bundle.js
 internal/config/     Lector/escritor de config.ini (INI casero, sin deps)
 internal/downloader/ Descarga, tagging FLAC/MP3, colecciones, OAuth
 internal/lyrics/     Descarga de .lrc: lector de metadatos FLAC/MP3, cliente LRCLIB
+internal/ui/         TUI bubbletea: shell completo (comando `tui`) + progreso (--tui)
+  backend.go         interfaz Backend — el seam que rompe el ciclo de imports
+  shell.go           máquina de estados: menú, búsqueda, cola, running, config
+  widgets.go         textField y picker (hechos a mano, sin bubbles)
+  model.go           pantalla de progreso de descarga
+  handle.go          TrackHandle: implementa downloader.ProgressBar
+  styles.go          paleta lipgloss
 ```
 
 ## Filosofía de Arquitectura
@@ -32,9 +39,15 @@ No añadir dependencias de parseo de audio externas. Si necesitas leer o escribi
 
 **Trampa ya pisada una vez**: en Go, `string(payload)` sobre un `[]byte` lo **reinterpreta como UTF-8**, no lo convierte desde otra codificación. La rama Latin-1 de `decodeID3Text` hacía eso y corrompía todo byte por encima de 0x7F — `Café` en ISO-8859-1 salía como `"Caf\xe9"`, UTF-8 inválido, que iba tal cual a la query de LRCLIB. La conversión correcta es rune a rune: `rune(b)` da U+0000–U+00FF, que *es* ISO-8859-1. Sobrevivió porque los tests solo usaban ASCII, idéntico en ambas codificaciones — **al testear codificaciones, usar siempre al menos un carácter no ASCII**.
 
-### UI de Terminal: siempre `mpb`
+### UI de Terminal: `mpb` por defecto, TUI opt-in
 
-Todas las barras de progreso y el feedback visual se implementan con `github.com/vbauerster/mpb/v8`. Patrones establecidos:
+El display por defecto son barras `mpb`. `--tui` cambia a una pantalla completa bubbletea (`internal/ui/`). **Nunca conviven**: los dos escriben en el cursor, así que `newProgress` devuelve `nil` cuando la TUI está activa y `mpb` ni se crea.
+
+El seam es la interfaz `ProgressBar` (`downloader.go`): `*mpb.Bar` la cumple de forma nativa, `ui.TrackHandle` la implementa explícitamente. El código de descarga no sabe cuál tiene delante. Para añadir un display nuevo basta implementar esos cuatro métodos y una rama en `newBar`/`newProgress`.
+
+`ui.TrackHandle` no manda un mensaje por cada `Read`: acumula bytes en un `atomic.Int64` que el modelo consulta en cada tick de 100ms. Los mensajes quedan para eventos de control (SetTotal, Done, Failed). Mantenlo así — un `p.Send()` por lectura satura el bucle de bubbletea con 6 workers.
+
+Las barras `mpb` siguen los patrones establecidos:
 
 - Estilo de barra: `╢█████░░░╟` (`Lbound("╢").Filler("█").Tip("█").Padding("░").Rbound("╟")`)
 - Etiqueta izquierda (PrependDecorators): ancho fijo con `truncateStr` o `buildLabel`
@@ -50,6 +63,22 @@ Cualquier nueva feature con feedback visual debe reutilizar este patrón para co
 - `lyrics` acumula los avisos en un slice y los vuelca **después** de `p.Wait()`.
 
 Usa la primera cuando el mensaje deba verse al momento (un track que falla), la segunda cuando sea un resumen.
+
+Con `--tui` la regla es más estricta: bubbletea está en alt-screen y **nada** puede llegar a stdout, así que `termOut()` devuelve `io.Discard`. Por eso todos los mensajes del paquete (incluidos `lastfm.go` y `csvbatch.go`) van por `d.termOut()` y no por `fmt.Printf`. Las funciones libres (`makeM3U`, `printBatchSummary`) reciben el `io.Writer` como parámetro.
+
+### La TUI completa (`tui`)
+
+`qobuz-dl tui` mete todo el programa en una pantalla: menú, búsqueda por los 4 tipos, cola, descarga, letras, CSV, config y purga. `--tui` es otra cosa: solo cambia el display de progreso de `dl`/`lucky`/`csv`. Comparten `Model`.
+
+**El ciclo de imports es la restricción que manda.** `internal/downloader` importa `internal/ui` (para `MsgAlbum` y `TrackHandle`), así que el shell **no puede** importar el downloader. Por eso existe `ui.Backend`: una interfaz con una sola implementación real (`tuiBackend` en `cmd/qobuz-dl/tui_cmd.go`). No es abstracción especulativa — es la única forma de que el shell llame al downloader. Si añades una función al menú, añade su método al `Backend` y al adaptador.
+
+Reglas del shell:
+- Toda llamada bloqueante va en un `tea.Cmd`, nunca dentro de `Update`. El bucle de render no puede pararse.
+- El progreso llega por `p.Send()` desde el backend, no como retorno del `tea.Cmd`. Por eso `tuiBackend` guarda el `*tea.Program`.
+- `Update` reenvía al `Model` embebido cualquier mensaje que no reconozca — así el downloader no sabe si habla con el shell o con la pantalla de progreso suelta.
+- Cada operación larga corre en su propio contexto cancelable: Ctrl+C cancela **el trabajo**, y solo sale del programa si no hay nada corriendo.
+
+`lyrics.FetchAll(ctx, dir, step)` existe para esto: `lyrics.Run` dibuja su propia barra mpb y escribe a stdout, lo que bajo la TUI rompería la pantalla. `FetchAll` hace el trabajo sin dibujar nada y reporta por callback; `Run` es ahora un wrapper que le pone las barras.
 
 ### CLI: `main()` solo despacha
 
@@ -68,6 +97,8 @@ No meter cobra ni urfave/cli — el proyecto usa `flag` de stdlib a propósito.
 
 Las dependencias de módulo son:
 - `github.com/vbauerster/mpb/v8` — barras de progreso
+- `github.com/charmbracelet/bubbletea` — TUI opt-in (`--tui`)
+- `github.com/charmbracelet/lipgloss` — estilos de la TUI
 - `github.com/acarl005/stripansi` — limpieza de secuencias ANSI
 - `github.com/VividCortex/ewma` — media móvil (usada por mpb)
 - `github.com/mattn/go-runewidth` — ancho de caracteres Unicode
@@ -75,6 +106,8 @@ Las dependencias de módulo son:
 - `golang.org/x/sys` — syscalls de bajo nivel
 
 No añadir dependencias nuevas sin discusión. En particular no añadir librerías de parseo de audio (dhowden/tag, mewkiz/flac, bogem/id3v2, etc.) — ya tenemos implementaciones propias.
+
+`bubbletea` + `lipgloss` (y sus 13 transitivas) entraron con la TUI en la rama `feat/tui`, discutidas y aprobadas ahí. La regla sigue en pie para lo que venga después.
 
 ## Filosofía de Tests
 
@@ -95,8 +128,9 @@ Medido con `go test -cover ./...` el 2026-07-27:
 | api | 42.3% | client_test.go |
 | bundle | 59.7% | bundle_test.go |
 | config | 37.9% | config_test.go |
-| downloader | 39.5% | integration_test.go, metadata_test.go, db_test.go, lastfm_test.go, helpers_test.go, redownload_test.go |
+| downloader | 40.1% | integration_test.go, tui_test.go, metadata_test.go, db_test.go, lastfm_test.go, helpers_test.go, redownload_test.go |
 | lyrics | 74.1% | metadata_test.go, lrclib_test.go, lyrics_test.go |
+| ui | 47.3% | shell_test.go |
 | cmd/qobuz-dl | 0% | main_test.go |
 
 `cmd/qobuz-dl` marca 0% porque sus tests son **black-box**: compilan el binario en `TestMain` y lo ejecutan como subproceso, así que la cobertura no se instrumenta. No es falta de tests.
@@ -274,6 +308,22 @@ lyrics_test.go    — buildLabel (formato, ancho fijo, truncado), lrcPathFor, sc
       8 tests (11 con subtests): álbum completo, tagging real, tracks no disponibles, multi-disco,
       salto por DB entre ejecuciones, paridad con 1/2/3/8 workers, contexto cancelado, `HandleURL`.
       Cobertura del paquete 24.1% → 39.5%. Validados con 6 mutaciones, todas detectadas.
+- [x] TUI completa (`tui`) — menú con todas las funciones del programa
+      Shell en `internal/ui/shell.go` sobre la interfaz `Backend`; adaptador en `cmd/qobuz-dl/tui_cmd.go`.
+      Widgets a mano (~60 líneas) en vez de `bubbles`: solo hacían falta un campo de texto y una
+      lista con cursor. Validado con 4 mutaciones (marcas de selección, vaciado de cola, reenvío
+      de mensajes al Model, guard de cola vacía), las 4 detectadas.
+      **Fuera**: `oauth` sigue siendo solo CLI — abre navegador y levanta un servidor local con
+      prompts por stdin, hostil de meter en alt-screen. `tui` requiere haber hecho login antes.
+
+- [x] TUI opt-in con bubbletea (`--tui`) — `internal/ui/` (rescatado de `experiment/fancy-ui`)
+      La rama original tenía 1 commit y 33 por detrás de main; el rebase daba 11 conflictos en
+      `downloader.go` porque main ya había resuelto lo mismo con `termOut()`/`withBars()` mientras
+      la rama usaba un `quiet()` propio. Se reintegró **sin rebase**: `internal/ui/*` entra limpio
+      (archivos nuevos) y el cableado se rehízo sobre las costuras actuales.
+      Validado con 4 mutaciones (`p.Wait()` sin guard, `newProgress`/`newBar`/`termOut` ignorando
+      la TUI), las 4 detectadas por `tui_test.go`.
+
 - [ ] Partir `downloader.go` (~1550 líneas). Ahora que hay red de tests de integración, el riesgo
       bajó lo suficiente para plantearlo. Costuras naturales según el grafo: los helpers de
       `downloadWithProgress` y el filtro de discografía.

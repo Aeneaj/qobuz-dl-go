@@ -117,7 +117,7 @@ func (d *Downloader) downloadLastFMPlaylist(ctx context.Context, username, listT
 		label = "recent tracks"
 	}
 
-	fmt.Printf("\033[33mFetching Last.fm %s for user %q...\033[0m\n", label, username)
+	fmt.Fprintf(d.termOut(), "\033[33mFetching Last.fm %s for user %q...\033[0m\n", label, username)
 	tracks, err := fetchLastFMTracks(ctx, username, listType)
 	if err != nil {
 		return err
@@ -126,7 +126,7 @@ func (d *Downloader) downloadLastFMPlaylist(ctx context.Context, username, listT
 		fmt.Println("\033[33mNo tracks found in Last.fm playlist.\033[0m")
 		return nil
 	}
-	fmt.Printf("\033[33mFound %d tracks — searching Qobuz...\033[0m\n\n", len(tracks))
+	fmt.Fprintf(d.termOut(), "\033[33mFound %d tracks — searching Qobuz...\033[0m\n\n", len(tracks))
 
 	dirName := sanitize(fmt.Sprintf("Last.fm - %s - %s", username, label))
 	dir := filepath.Join(d.Opts.Directory, dirName)
@@ -136,15 +136,15 @@ func (d *Downloader) downloadLastFMPlaylist(ctx context.Context, username, listT
 
 	found, skipped := 0, 0
 	for i, t := range tracks {
-		fmt.Printf("\033[33m[%d/%d] %s — %s\033[0m\n", i+1, len(tracks), t.Artist, t.Title)
+		fmt.Fprintf(d.termOut(), "\033[33m[%d/%d] %s — %s\033[0m\n", i+1, len(tracks), t.Artist, t.Title)
 		trackID, err := d.searchFirstTrackID(ctx, t.Artist+" "+t.Title)
 		if err != nil || trackID == "" {
-			fmt.Printf("\033[31m  ✗ No Qobuz match found\033[0m\n")
+			fmt.Fprintf(d.termOut(), "\033[31m  ✗ No Qobuz match found\033[0m\n")
 			skipped++
 			continue
 		}
 		if err := d.downloadTrackByID(ctx, trackID, dir); err != nil {
-			fmt.Printf("\033[31m  ✗ Download error: %v\033[0m\n", err)
+			fmt.Fprintf(d.termOut(), "\033[31m  ✗ Download error: %v\033[0m\n", err)
 			skipped++
 		} else {
 			found++
@@ -152,9 +152,9 @@ func (d *Downloader) downloadLastFMPlaylist(ctx context.Context, username, listT
 	}
 
 	if !d.Opts.NoM3U {
-		makeM3U(dir)
+		makeM3U(d.termOut(), dir)
 	}
-	fmt.Printf("\n\033[32m✓  Last.fm playlist complete: %d downloaded, %d skipped\033[0m\n", found, skipped)
+	fmt.Fprintf(d.termOut(), "\n\033[32m✓  Last.fm playlist complete: %d downloaded, %d skipped\033[0m\n", found, skipped)
 	return nil
 }
 

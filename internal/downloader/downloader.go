@@ -19,10 +19,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/vbauerster/mpb/v8"
 	"github.com/vbauerster/mpb/v8/decor"
 
 	"github.com/Aeneaj/qobuz-dl-go/internal/api"
+	"github.com/Aeneaj/qobuz-dl-go/internal/ui"
 )
 
 const (
@@ -56,6 +58,16 @@ type Options struct {
 	Workers         int // concurrent track downloads per album (0 = default 3)
 }
 
+// ProgressBar is the per-track progress sink. ProgressBar satisfies it natively;
+// ui.TrackHandle implements it explicitly, which is what lets the same
+// download code drive either the mpb bars or the bubbletea TUI.
+type ProgressBar interface {
+	SetTotal(total int64, triggerComplete bool)
+	IncrBy(n int)
+	ProxyReader(r io.Reader) io.ReadCloser
+	Abort(drop bool)
+}
+
 // Downloader handles URL processing and downloads.
 // It does not store a context; callers pass ctx to each method.
 type Downloader struct {
@@ -66,14 +78,26 @@ type Downloader struct {
 
 	// bars holds the mpb container while it is rendering. See termOut.
 	bars atomic.Value
+
+	// tui is the bubbletea program when the TUI is driving the display.
+	// Non-nil means bubbletea owns the screen and mpb is never created.
+	tui *tea.Program
 }
+
+// SetUI routes progress to the bubbletea program p instead of mpb. It must be
+// called before any download method. Passing nil restores the mpb bars.
+func (d *Downloader) SetUI(p *tea.Program) { d.tui = p }
 
 // termOut returns the writer for terminal messages. While a progress
 // container is live mpb owns the cursor — it repositions and repaints every
 // refresh — so writing straight to stdout garbles the bars, and worker
-// goroutines make it worse by writing at once. mpb.Progress serialises writes
-// against its own render loop, so route through it whenever one is active.
+// goroutines make it worse by writing at once. Under the TUI nothing may reach
+// stdout at all; under mpb, mpb.Progress serialises writes against its own
+// render loop, so route through it whenever a container is active.
 func (d *Downloader) termOut() io.Writer {
+	if d.tui != nil {
+		return io.Discard
+	}
 	if p, ok := d.bars.Load().(*mpb.Progress); ok && p != nil {
 		return p
 	}
@@ -84,6 +108,51 @@ func (d *Downloader) termOut() io.Writer {
 func (d *Downloader) withBars(p *mpb.Progress) func() {
 	d.bars.Store(p)
 	return func() { d.bars.Store((*mpb.Progress)(nil)) }
+}
+
+// newProgress builds the mpb container for one download run, or nil when the
+// TUI is active — bubbletea and mpb both drive the cursor, so only one of them
+// may ever be rendering.
+func (d *Downloader) newProgress(ctx context.Context) *mpb.Progress {
+	if d.tui != nil {
+		return nil
+	}
+	return mpb.NewWithContext(ctx, mpb.WithRefreshRate(150*time.Millisecond))
+}
+
+// newBar creates the progress sink for a single track: an mpb bar on p, or a
+// handle registered with the TUI model. p is nil in the latter case.
+// priority orders mpb bars; the TUI orders by registration.
+func (d *Downloader) newBar(p *mpb.Progress, priority, trackNum int, title, trackID string) ProgressBar {
+	if d.tui != nil {
+		h := ui.NewTrackHandle(trackID, d.tui)
+		d.tui.Send(ui.MsgRegisterTrack{
+			ID:      trackID,
+			Num:     trackNum,
+			Name:    title,
+			Counter: h.Counter(),
+		})
+		return h
+	}
+	return p.New(0,
+		mpb.BarStyle().Lbound("╢").Filler("█").Tip("█").Padding("░").Rbound("╟"),
+		mpb.BarPriority(priority),
+		mpb.PrependDecorators(decor.Name(barLabel(trackNum, title))),
+		mpb.AppendDecorators(
+			decor.Counters(decor.SizeB1024(0), " % .1f / % .1f "),
+			decor.EwmaSpeed(decor.SizeB1024(0), "% .1f MiB/s", 30),
+			decor.OnComplete(decor.Name(""), " \033[32m✓\033[0m"),
+		),
+	)
+}
+
+// announceAlbum shows the album header — a stdout line, or the TUI header.
+func (d *Downloader) announceAlbum(title, artist, format string, tracks int) {
+	if d.tui != nil {
+		d.tui.Send(ui.MsgAlbum{Title: title, Artist: artist, Format: format, Tracks: tracks})
+		return
+	}
+	fmt.Fprintf(d.termOut(), "\n\033[1m♫  %s\033[0m  ·  \033[33m%s\033[0m  ·  %d tracks\n\n", title, format, tracks)
 }
 
 // New creates a Downloader. Returns an error if the download directory cannot
@@ -195,12 +264,12 @@ func (d *Downloader) downloadArtist(ctx context.Context, pages []map[string]inte
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("create artist directory %q: %w", dir, err)
 	}
-	fmt.Printf("\033[33mDownloading discography: %s (%d albums)\033[0m\n", name, len(items))
+	fmt.Fprintf(d.termOut(), "\033[33mDownloading discography: %s (%d albums)\033[0m\n", name, len(items))
 
 	for _, item := range items {
 		id := idStr(item["id"])
 		if err := d.downloadAlbum(ctx, id, dir); err != nil {
-			fmt.Printf("\033[31mError on album %s: %v. Skipping...\033[0m\n", id, err)
+			fmt.Fprintf(d.termOut(), "\033[31mError on album %s: %v. Skipping...\033[0m\n", id, err)
 		}
 	}
 	return nil
@@ -230,16 +299,16 @@ func (d *Downloader) downloadPlaylist(ctx context.Context, pages []map[string]in
 		}
 	}
 
-	fmt.Printf("\033[33mDownloading playlist: %s (%d tracks)\033[0m\n", name, len(items))
+	fmt.Fprintf(d.termOut(), "\033[33mDownloading playlist: %s (%d tracks)\033[0m\n", name, len(items))
 	for _, item := range items {
 		id := idStr(item["id"])
 		if err := d.downloadTrackByID(ctx, id, dir); err != nil {
-			fmt.Printf("\033[31mError on track %s: %v. Skipping...\033[0m\n", id, err)
+			fmt.Fprintf(d.termOut(), "\033[31mError on track %s: %v. Skipping...\033[0m\n", id, err)
 		}
 	}
 
 	if !d.Opts.NoM3U {
-		makeM3U(dir)
+		makeM3U(d.termOut(), dir)
 	}
 	return nil
 }
@@ -268,11 +337,11 @@ func (d *Downloader) downloadLabelOrArtist(ctx context.Context, pages []map[stri
 		}
 	}
 
-	fmt.Printf("\033[33mDownloading %s: %s (%d albums)\033[0m\n", collectionType, name, len(items))
+	fmt.Fprintf(d.termOut(), "\033[33mDownloading %s: %s (%d albums)\033[0m\n", collectionType, name, len(items))
 	for _, item := range items {
 		id := idStr(item["id"])
 		if err := d.downloadAlbum(ctx, id, dir); err != nil {
-			fmt.Printf("\033[31mError on album %s: %v. Skipping...\033[0m\n", id, err)
+			fmt.Fprintf(d.termOut(), "\033[31mError on album %s: %v. Skipping...\033[0m\n", id, err)
 		}
 	}
 	return nil
@@ -288,7 +357,7 @@ type trackJob struct {
 	track    map[string]interface{}
 	trackDir string
 	trackID  string
-	bar      *mpb.Bar
+	bar      ProgressBar
 }
 
 func (d *Downloader) downloadAlbum(ctx context.Context, albumID, baseDir string) error {
@@ -313,8 +382,7 @@ func (d *Downloader) downloadAlbum(ctx context.Context, albumID, baseDir string)
 			trackCount = len(raw)
 		}
 	}
-	fmt.Printf("\n\033[1m♫  %s\033[0m  ·  \033[33m%s %v/%v\033[0m  ·  %d tracks\n\n",
-		title, fileFormat, bitDepth, samplingRate, trackCount)
+	d.announceAlbum(title, artist, fmt.Sprintf("%s %v/%v", fileFormat, bitDepth, samplingRate), trackCount)
 
 	// Build folder name. Individual values are sanitised inside
 	// expandPlaceholders, so literal "/" written in FolderFormat survives as a
@@ -349,14 +417,16 @@ func (d *Downloader) downloadAlbum(ctx context.Context, albumID, baseDir string)
 	trackFmt := cleanFormatStr(d.Opts.TrackFormat, fileFormat)
 	isMP3 := d.Opts.Quality == 5
 
-	p := mpb.NewWithContext(ctx, mpb.WithRefreshRate(150*time.Millisecond))
+	p := d.newProgress(ctx)
 	restore := d.withBars(p)
 	jobs := d.collectTrackJobs(ctx, p, rawItems, albumDir, isMultiDisc, meta, trackFmt, isMP3)
 	d.runTrackJobs(ctx, jobs, meta, isMP3, trackFmt)
-	p.Wait()
+	if p != nil {
+		p.Wait()
+	}
 	restore()
 
-	fmt.Printf("\033[32m✓  Completed: %s\033[0m\n\n", title)
+	fmt.Fprintf(d.termOut(), "\033[32m✓  Completed: %s\033[0m\n\n", title)
 	return nil
 }
 
@@ -365,7 +435,7 @@ func (d *Downloader) downloadAlbum(ctx context.Context, albumID, baseDir string)
 // and returns true.
 func (d *Downloader) shouldSkipAlbum(meta map[string]interface{}, albumID string) bool {
 	if streamable, ok := meta["streamable"].(bool); ok && !streamable {
-		fmt.Printf("\033[90mAlbum %s is not streamable, skipping\033[0m\n", albumID)
+		fmt.Fprintf(d.termOut(), "\033[90mAlbum %s is not streamable, skipping\033[0m\n", albumID)
 		return true
 	}
 	if d.Opts.IgnoreSingles {
@@ -373,7 +443,7 @@ func (d *Downloader) shouldSkipAlbum(meta map[string]interface{}, albumID string
 		artistName := nestedStr(meta, "artist", "name")
 		if releaseType != "album" || artistName == "Various Artists" {
 			title, _ := meta["title"].(string)
-			fmt.Printf("\033[90mIgnoring Single/EP/VA: %s\033[0m\n", title)
+			fmt.Fprintf(d.termOut(), "\033[90mIgnoring Single/EP/VA: %s\033[0m\n", title)
 			return true
 		}
 	}
@@ -474,17 +544,7 @@ func (d *Downloader) collectTrackJobs(ctx context.Context, p *mpb.Progress, rawI
 		if tn, ok := track["track_number"].(float64); ok {
 			trackNum = int(tn)
 		}
-		label := barLabel(trackNum, getTitle(track))
-		bar := p.New(0,
-			mpb.BarStyle().Lbound("╢").Filler("█").Tip("█").Padding("░").Rbound("╟"),
-			mpb.BarPriority(idx),
-			mpb.PrependDecorators(decor.Name(label)),
-			mpb.AppendDecorators(
-				decor.Counters(decor.SizeB1024(0), " % .1f / % .1f "),
-				decor.EwmaSpeed(decor.SizeB1024(0), "% .1f MiB/s", 30),
-				decor.OnComplete(decor.Name(""), " \033[32m✓\033[0m"),
-			),
-		)
+		bar := d.newBar(p, idx, trackNum, getTitle(track), trackID)
 
 		jobs = append(jobs, trackJob{idx, trackURL, track, trackDir, trackID, bar})
 	}
@@ -540,7 +600,7 @@ func (d *Downloader) downloadTrackByID(ctx context.Context, trackID, baseDir str
 	}
 
 	if _, isSample := trackURL["sample"]; isSample {
-		fmt.Printf("\033[90mDemo track, skipping\033[0m\n")
+		fmt.Fprintf(d.termOut(), "\033[90mDemo track, skipping\033[0m\n")
 		return nil
 	}
 
@@ -593,7 +653,7 @@ func (d *Downloader) downloadTrackByID(ctx context.Context, trackID, baseDir str
 	// the exact path downloadAndTag will write.
 	if finalPath, err := finalTrackPath(trackDir, meta, meta, trackFmt, isMP3); err == nil {
 		if d.alreadyHave(trackID, finalPath) {
-			fmt.Printf("\033[90mTrack %s already downloaded, skipping\033[0m\n", trackID)
+			fmt.Fprintf(d.termOut(), "\033[90mTrack %s already downloaded, skipping\033[0m\n", trackID)
 			return nil
 		}
 	}
@@ -607,27 +667,25 @@ func (d *Downloader) downloadTrackByID(ctx context.Context, trackID, baseDir str
 		}
 	}
 
-	fmt.Printf("\n\033[1m♫  %s\033[0m  ·  \033[33m%s — %s\033[0m\n\n", title, performer, fileFormat)
-
 	trackNum := 0
 	if tn, ok := meta["track_number"].(float64); ok {
 		trackNum = int(tn)
 	}
-	p := mpb.NewWithContext(ctx, mpb.WithRefreshRate(150*time.Millisecond))
+	if d.tui != nil {
+		d.tui.Send(ui.MsgAlbum{Title: title, Artist: performer, Format: fileFormat, Tracks: 1})
+	} else {
+		fmt.Fprintf(d.termOut(), "\n\033[1m♫  %s\033[0m  ·  \033[33m%s — %s\033[0m\n\n", title, performer, fileFormat)
+	}
+
+	p := d.newProgress(ctx)
 	restore := d.withBars(p)
-	bar := p.New(0,
-		mpb.BarStyle().Lbound("╢").Filler("█").Tip("█").Padding("░").Rbound("╟"),
-		mpb.PrependDecorators(decor.Name(barLabel(trackNum, title))),
-		mpb.AppendDecorators(
-			decor.Counters(decor.SizeB1024(0), " % .1f / % .1f "),
-			decor.EwmaSpeed(decor.SizeB1024(0), "% .1f MiB/s", 30),
-			decor.OnComplete(decor.Name(""), " \033[32m✓\033[0m"),
-		),
-	)
+	bar := d.newBar(p, 0, trackNum, title, trackID)
 
 	if err := d.downloadAndTag(ctx, trackDir, 1, trackURL, meta, meta, true, isMP3, trackFmt, bar); err != nil {
 		bar.Abort(false)
-		p.Wait()
+		if p != nil {
+			p.Wait()
+		}
 		restore()
 		return err
 	}
@@ -636,10 +694,12 @@ func (d *Downloader) downloadTrackByID(ctx context.Context, trackID, baseDir str
 			fmt.Fprintf(d.termOut(), "\033[33mWarning: could not record track in DB: %v\033[0m\n", err)
 		}
 	}
-	p.Wait()
+	if p != nil {
+		p.Wait()
+	}
 	restore()
 
-	fmt.Printf("\033[32m✓  Completed: %s\033[0m\n\n", title)
+	fmt.Fprintf(d.termOut(), "\033[32m✓  Completed: %s\033[0m\n\n", title)
 	return nil
 }
 
@@ -701,7 +761,7 @@ func (d *Downloader) alreadyHave(trackID, finalFile string) bool {
 	if _, err := os.Stat(finalFile); err == nil {
 		return true
 	}
-	fmt.Printf("\033[90mTrack %s in DB but file is missing — re-downloading\033[0m\n", trackID)
+	fmt.Fprintf(d.termOut(), "\033[90mTrack %s in DB but file is missing — re-downloading\033[0m\n", trackID)
 	return false
 }
 
@@ -715,7 +775,7 @@ func (d *Downloader) downloadAndTag(
 	isTrack bool,
 	isMP3 bool,
 	trackFmt string,
-	bar *mpb.Bar,
+	bar ProgressBar,
 ) error {
 	fileURL, _ := trackURLDict["url"].(string)
 	if fileURL == "" {
@@ -813,7 +873,7 @@ func (d *Downloader) resolveFormat(ctx context.Context, albumMeta map[string]int
 		for _, r := range restrictions {
 			rm, _ := r.(map[string]interface{})
 			if code, _ := rm["code"].(string); code == qlDowngrade {
-				fmt.Printf("\033[90mQuality downgraded for this release\033[0m\n")
+				fmt.Fprintf(d.termOut(), "\033[90mQuality downgraded for this release\033[0m\n")
 			}
 		}
 	}
@@ -827,7 +887,7 @@ func (d *Downloader) resolveFormat(ctx context.Context, albumMeta map[string]int
 // cancellation (e.g. Ctrl+C).
 const maxDownloadRetries = 5
 
-func (d *Downloader) downloadWithProgress(ctx context.Context, rawURL, dest string, bar *mpb.Bar) error {
+func (d *Downloader) downloadWithProgress(ctx context.Context, rawURL, dest string, bar ProgressBar) error {
 	var (
 		totalSize   int64 = -1 // full file size, resolved from Content-Length or Content-Range
 		barCredited int64      // bytes already reflected in the bar across all attempts
@@ -994,7 +1054,7 @@ func openOutput(dest string, offset int64) (*os.File, error) {
 // ProxyReader so the progress bar advances live as bytes arrive. The proxy
 // reader is closed before returning so its goroutine settles; the caller
 // retains ownership of body and f.
-func copyAndCommit(f *os.File, body io.Reader, bar *mpb.Bar) (int64, error) {
+func copyAndCommit(f *os.File, body io.Reader, bar ProgressBar) (int64, error) {
 	reader := body
 	var pr io.ReadCloser
 	if bar != nil {
@@ -1011,7 +1071,7 @@ func copyAndCommit(f *os.File, body io.Reader, bar *mpb.Bar) (int64, error) {
 // finalizeBar marks bar complete after io.Copy has fully returned. Doing it
 // here (and not during SetTotal) prevents mpb from closing its internal
 // operateState channel while ProxyReader is still active.
-func finalizeBar(bar *mpb.Bar, totalSize, written int64) {
+func finalizeBar(bar ProgressBar, totalSize, written int64) {
 	if bar == nil {
 		return
 	}
@@ -1039,35 +1099,35 @@ func isRecoverableErr(err error) bool {
 // ignoring them.
 func (d *Downloader) downloadExtra(ctx context.Context, rawURL, dest string) {
 	if _, err := os.Stat(dest); err == nil {
-		fmt.Printf("\033[90m%s already downloaded\033[0m\n", filepath.Base(dest))
+		fmt.Fprintf(d.termOut(), "\033[90m%s already downloaded\033[0m\n", filepath.Base(dest))
 		return
 	}
-	fmt.Printf("\033[90mDownloading %s...\033[0m\n", filepath.Base(dest))
+	fmt.Fprintf(d.termOut(), "\033[90mDownloading %s...\033[0m\n", filepath.Base(dest))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		fmt.Printf("\033[31mCould not create request for %s: %v\033[0m\n", filepath.Base(dest), err)
+		fmt.Fprintf(d.termOut(), "\033[31mCould not create request for %s: %v\033[0m\n", filepath.Base(dest), err)
 		return
 	}
 	resp, err := d.httpClient.Do(req)
 	if err != nil {
-		fmt.Printf("\033[31mCould not download %s: %v\033[0m\n", filepath.Base(dest), err)
+		fmt.Fprintf(d.termOut(), "\033[31mCould not download %s: %v\033[0m\n", filepath.Base(dest), err)
 		return
 	}
 	defer resp.Body.Close()
 	f, err := os.Create(dest)
 	if err != nil {
-		fmt.Printf("\033[31mCould not create file %s: %v\033[0m\n", filepath.Base(dest), err)
+		fmt.Fprintf(d.termOut(), "\033[31mCould not create file %s: %v\033[0m\n", filepath.Base(dest), err)
 		return
 	}
 	defer f.Close()
 	if _, err := io.Copy(f, resp.Body); err != nil {
-		fmt.Printf("\033[31mError writing %s: %v\033[0m\n", filepath.Base(dest), err)
+		fmt.Fprintf(d.termOut(), "\033[31mError writing %s: %v\033[0m\n", filepath.Base(dest), err)
 	}
 }
 
 // ---- M3U playlist ----
 
-func makeM3U(dir string) {
+func makeM3U(w io.Writer, dir string) {
 	plName := filepath.Base(dir) + ".m3u"
 	plPath := filepath.Join(dir, plName)
 
@@ -1099,15 +1159,15 @@ func makeM3U(dir string) {
 	}
 	f, err := os.Create(plPath)
 	if err != nil {
-		fmt.Printf("\033[31mCould not create M3U: %v\033[0m\n", err)
+		fmt.Fprintf(w, "\033[31mCould not create M3U: %v\033[0m\n", err)
 		return
 	}
 	defer f.Close()
 	if _, err := f.WriteString(sb.String()); err != nil {
-		fmt.Printf("\033[31mCould not write M3U: %v\033[0m\n", err)
+		fmt.Fprintf(w, "\033[31mCould not write M3U: %v\033[0m\n", err)
 		return
 	}
-	fmt.Printf("\033[32mM3U playlist saved: %s\033[0m\n", plName)
+	fmt.Fprintf(w, "\033[32mM3U playlist saved: %s\033[0m\n", plName)
 }
 
 // ---- DownloadURLs (batch entry point) ----
@@ -1118,7 +1178,7 @@ func (d *Downloader) DownloadURLs(ctx context.Context, urls []string) {
 			d.downloadFromFile(ctx, u)
 		} else {
 			if err := d.HandleURL(ctx, u); err != nil {
-				fmt.Printf("\033[31mError: %v\033[0m\n", err)
+				fmt.Fprintf(d.termOut(), "\033[31mError: %v\033[0m\n", err)
 			}
 		}
 	}
@@ -1129,7 +1189,7 @@ func (d *Downloader) DownloadURLs(ctx context.Context, urls []string) {
 func (d *Downloader) downloadFromFile(ctx context.Context, path string) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Printf("\033[31mCannot read file %s: %v\033[0m\n", path, err)
+		fmt.Fprintf(d.termOut(), "\033[31mCannot read file %s: %v\033[0m\n", path, err)
 		return
 	}
 	var urls []string
@@ -1139,7 +1199,7 @@ func (d *Downloader) downloadFromFile(ctx context.Context, path string) {
 			urls = append(urls, line)
 		}
 	}
-	fmt.Printf("\033[33mDownloading %d URLs from %s\033[0m\n", len(urls), path)
+	fmt.Fprintf(d.termOut(), "\033[33mDownloading %d URLs from %s\033[0m\n", len(urls), path)
 	d.DownloadURLs(ctx, urls)
 }
 

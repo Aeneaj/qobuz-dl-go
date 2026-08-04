@@ -9,8 +9,11 @@ import (
 	"strings"
 	"syscall"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/Aeneaj/qobuz-dl-go/internal/config"
 	"github.com/Aeneaj/qobuz-dl-go/internal/downloader"
+	"github.com/Aeneaj/qobuz-dl-go/internal/ui"
 )
 
 // version is set at build time via -ldflags "-X main.version=v1.x.x".
@@ -23,7 +26,8 @@ Commands:
   lucky <query>      Download first N search results
   csv <file.csv>     Batch download from a TuneMyMusic CSV export
   oauth [code|url]   Login via OAuth (recommended)
-  fun                Interactive search and download mode
+  fun                Interactive search and download mode (line based)
+  tui                Full-screen interface: menu, search, queue, downloads
   lyrics [path]      Fetch .lrc files from LRCLIB for a music library
 
 Options:
@@ -41,6 +45,7 @@ Options:
   --no-cover         Skip cover art download
   --no-db            Bypass downloads database
   --workers N        Concurrent track downloads per album (overrides 'workers' in config.ini; default 3)
+  --tui              Full-screen download UI (dl/lucky/csv)
   --folder-format    Folder naming format string
   --track-format     Track naming format string
   --smart-discog     Smart discography filter
@@ -103,6 +108,8 @@ func main() {
 	switch args[0] {
 	case "fun":
 		mustDownloader(ctx, flags).Interactive(ctx)
+	case "tui":
+		runTUI(ctx, flags)
 	case "dl":
 		runDL(ctx, cmdArgs, flags)
 	case "lucky":
@@ -167,9 +174,38 @@ func mustDownloader(ctx context.Context, f *cliFlags) *downloader.Downloader {
 	return dl
 }
 
+// runDisplay runs fn, wrapped in the bubbletea TUI when --tui is set.
+//
+// The TUI runs in alt-screen raw mode, where Ctrl+C arrives as a key event
+// instead of SIGINT — so the signal context in main() never fires and the
+// download goroutine would keep running after the screen is gone. A derived
+// context cancelled on exit is what actually stops it.
+func runDisplay(ctx context.Context, dl *downloader.Downloader, f *cliFlags, fn func(context.Context)) {
+	if !f.TUI {
+		fn(ctx)
+		return
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	p := tea.NewProgram(ui.NewModel(), tea.WithAltScreen(), tea.WithContext(ctx))
+	dl.SetUI(p)
+
+	go func() {
+		fn(ctx)
+		p.Quit()
+	}()
+
+	if _, err := p.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
+	}
+}
+
 func runDL(ctx context.Context, args []string, f *cliFlags) {
 	requireArgs(args, "dl", "provide at least one URL")
-	mustDownloader(ctx, f).DownloadURLs(ctx, args)
+	dl := mustDownloader(ctx, f)
+	runDisplay(ctx, dl, f, func(ctx context.Context) { dl.DownloadURLs(ctx, args) })
 }
 
 func runLucky(ctx context.Context, args []string, f *cliFlags, itemType string, n int) {
@@ -184,12 +220,13 @@ func runLucky(ctx context.Context, args []string, f *cliFlags, itemType string, 
 	if err != nil {
 		fatalf("%v", err)
 	}
-	dl.DownloadURLs(ctx, urls)
+	runDisplay(ctx, dl, f, func(ctx context.Context) { dl.DownloadURLs(ctx, urls) })
 }
 
 func runCSV(ctx context.Context, args []string, f *cliFlags, failedCSV string) {
 	requireArgs(args, "csv", "provide path to a TuneMyMusic CSV file")
-	mustDownloader(ctx, f).DownloadCSV(ctx, args[0], failedCSV)
+	dl := mustDownloader(ctx, f)
+	runDisplay(ctx, dl, f, func(ctx context.Context) { dl.DownloadCSV(ctx, args[0], failedCSV) })
 }
 
 func fatalf(format string, a ...interface{}) {

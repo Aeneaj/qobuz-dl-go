@@ -148,6 +148,9 @@ Don't have a URL? Search from the terminal instead:
 
 # Faster: 6 tracks downloading at the same time instead of 3
 ./qobuz-dl --workers 6 dl https://www.qobuz.com/album/...
+
+# Full-screen view with per-track bars, speed and ETA (works with dl, lucky, csv)
+./qobuz-dl --tui dl https://www.qobuz.com/album/...
 ```
 
 ### Audio quality
@@ -165,10 +168,43 @@ Use `--no-fallback` if you'd rather it skip the album than downgrade.
 
 ---
 
-## Interactive mode
+## Full-screen mode
 
-Prefer browsing to pasting URLs? `./qobuz-dl fun` opens a small prompt where you
-search, build up a list, and download it all at the end:
+`./qobuz-dl tui` opens the whole program in one screen — no commands to
+remember. Arrow keys move, Enter chooses, Esc goes back, `q` quits:
+
+```
+╭──────────────────────────────────────────────────────────╮
+│ ◈  QOBUZ-DL                                    cola: 2   │
+╰──────────────────────────────────────────────────────────╯
+
+  ❯ Buscar álbumes  busca en Qobuz y añade a la cola
+    Buscar canciones
+    Buscar artistas
+    Buscar playlists
+    Añadir URL
+    Ver la cola
+    Descargar la cola
+    Letras (.lrc)
+    Importar CSV
+    Configuración
+    Borrar historial
+    Salir
+```
+
+Search results are a checklist: `space` marks the ones you want, `Enter` adds
+them to the queue. Queue up as much as you like from as many searches as you
+like, then pick **Descargar la cola** and watch the per-track bars. `Ctrl+C`
+during a download cancels that download and returns you to the menu; from the
+menu it exits.
+
+Logging in still happens on the command line — run `./qobuz-dl oauth` once
+before your first `tui` session.
+
+## Interactive mode (line based)
+
+`./qobuz-dl fun` is the older text prompt, still there if you prefer typing
+commands to navigating menus:
 
 ```
 qobuz > sa radiohead          search albums
@@ -326,6 +362,7 @@ Remember: these go **before** the command.
 | `--no-m3u` | Don't create `.m3u` playlist files |
 | `--no-fallback` | Skip albums rather than downloading a lower quality |
 | `--workers N` | How many tracks to download at once (default 3) |
+| `--tui` | Full-screen download view for `dl`/`lucky`/`csv` (see also the `tui` command) |
 | `--no-db` | Re-download even things you already have |
 | `--folder-format` | Album folder name template |
 | `--track-format` | Track file name template |
@@ -343,7 +380,8 @@ Remember: these go **before** the command.
 |---|---|
 | `dl <URL...>` | Download one or more URLs |
 | `lucky <words>` | Search, then download the top result(s) |
-| `fun` | Interactive search-and-download mode |
+| `tui` | Full-screen interface: menu, search, queue, downloads, lyrics |
+| `fun` | Line-based interactive search-and-download mode |
 | `csv <file>` | Download a playlist exported from TuneMyMusic |
 | `lyrics [folder]` | Fetch `.lrc` lyrics for a music library |
 | `oauth [url\|code]` | Log in |
