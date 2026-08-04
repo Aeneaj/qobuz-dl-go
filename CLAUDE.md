@@ -209,7 +209,7 @@ Cuando cambies una función cuyo resultado es silenciosamente rompible (qué ál
 2. Preferir extender una tabla existente antes de crear nueva función de test.
 3. Asegurarse de que `go fmt ./...` no cambia nada antes de commit.
 
-## Estado actual (v1.4.1)
+## Estado actual (v1.5.0)
 
 - `go build ./...` ✅
 - `go vet ./...` ✅
