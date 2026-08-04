@@ -77,6 +77,23 @@ Radiohead - In Rainbows (2007) [24B-96kHz]/
 
 That's it. Everything below is optional.
 
+### Don't like typing commands?
+
+Then skip them. This opens the whole program as a menu:
+
+```bash
+./qobuz-dl tui
+```
+
+Search, queue things up, download, fetch lyrics, change settings — all with the
+arrow keys, no commands to remember. It's the same program, just a different
+way in, and you can log in from the menu too. See [Full-screen
+mode](#full-screen-mode) for what's on each screen.
+
+One catch: it needs a real terminal window. If you run it from a script or a
+cron job it will stop with `could not open a new TTY` — use the regular
+commands there.
+
 ---
 
 ## One rule about options
@@ -170,28 +187,46 @@ Use `--no-fallback` if you'd rather it skip the album than downgrade.
 
 ## Full-screen mode
 
-`./qobuz-dl tui` opens the whole program in one screen — no commands to
-remember. Arrow keys move, Enter chooses, Esc goes back, `q` quits:
+```bash
+./qobuz-dl tui
+```
+
+That opens the whole program in one screen — no commands to remember. Arrow
+keys move, Enter chooses, Esc goes back, `q` quits:
 
 ```
-╭──────────────────────────────────────────────────────────╮
-│ ◈  QOBUZ-DL                                    cola: 2   │
-╰──────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────╮
+│ ◈ QOBUZ-DL                             ○ sin sesión  │  cola 0   │
+╰──────────────────────────────────────────────────────────────────╯
 
-  ❯ Buscar álbumes  busca en Qobuz y añade a la cola
-    Buscar canciones
-    Buscar artistas
-    Buscar playlists
-    Añadir URL
-    Iniciar sesión (OAuth)
-    Ver la cola
-    Descargar la cola
-    Letras (.lrc)
-    Importar CSV
-    Configuración
-    Borrar historial
-    Salir
+  BUSCAR
+   ♫  Buscar álbumes  ·  busca en Qobuz y añade a la cola
+   ♪  Buscar canciones
+   ◈  Buscar artistas
+   ≡  Buscar playlists
+
+  COLA
+   +  Añadir URL
+   ▤  Ver la cola
+   ⬇  Descargar la cola
+
+  HERRAMIENTAS
+   ♬  Letras (.lrc)
+   ⇪  Importar CSV
+   ⚙  Configuración
+   ✖  Borrar historial
+
+  SESIÓN
+   ⚿  Iniciar sesión (OAuth)
+   ⏻  Salir
+
+────────────────────────────────────────────────────────────────────
+  ↑↓ moverse   ⏎ elegir   esc volver   q salir
 ```
+
+The indicator top-right tells you where you stand: `○ sin sesión` until you log
+in, and how many items are queued. The highlighted row explains itself in the
+line next to it.
 
 Search results are a checklist: `space` marks the ones you want, `Enter` adds
 them to the queue. Queue up as much as you like from as many searches as you
