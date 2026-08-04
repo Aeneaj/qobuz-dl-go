@@ -195,33 +195,33 @@ That opens the whole program in one screen — no commands to remember. Arrow
 keys move, Enter chooses, Esc goes back, `q` quits:
 
 ```
-╭──────────────────────────────────────────────────────────────────╮
-│ ◈ QOBUZ-DL                             ○ sin sesión  │  cola 0   │
-╰──────────────────────────────────────────────────────────────────╯
+╭────────────────────────────────────────────────────────────────────╮
+│ ◈ QOBUZ-DL                           ○ not signed in  │  queue 0   │
+╰────────────────────────────────────────────────────────────────────╯
 
-  BUSCAR
-   ♫  Buscar álbumes  ·  busca en Qobuz y añade a la cola
-   ♪  Buscar canciones
-   ◈  Buscar artistas
-   ≡  Buscar playlists
+  FIND
+   ♫  Search albums  ·  search Qobuz and add to the queue
+   ♪  Search tracks
+   ◈  Search artists
+   ≡  Search playlists
 
-  COLA
-   +  Añadir URL
-   ▤  Ver la cola
-   ⬇  Descargar la cola
+  QUEUE
+   +  Add URL
+   ▤  View the queue
+   ⬇  Download the queue
 
-  HERRAMIENTAS
-   ♬  Letras (.lrc)
-   ⇪  Importar CSV
-   ⚙  Configuración
-   ✖  Borrar historial
+  TOOLS
+   ♬  Lyrics (.lrc)
+   ⇪  Import CSV
+   ⚙  Settings
+   ✖  Clear history
 
-  SESIÓN
-   ⚿  Iniciar sesión (OAuth)
-   ⏻  Salir
+  SESSION
+   ⚿  Log in (OAuth)
+   ⏻  Quit
 
-────────────────────────────────────────────────────────────────────
-  ↑↓ moverse   ⏎ elegir   esc volver   q salir
+──────────────────────────────────────────────────────────────────────
+  ↑↓ move   ⏎ choose   esc back   q quit
 ```
 
 ### Language
@@ -237,13 +237,13 @@ Anything else — no line at all, or a language that isn't translated — leaves
 in English. Only the full-screen interface is translated; the regular commands
 are English only.
 
-The indicator top-right tells you where you stand: `○ sin sesión` until you log
-in, and how many items are queued. The highlighted row explains itself in the
+The indicator top-right tells you where you stand: `○ not signed in` until you
+log in, and how many items are queued. The highlighted row explains itself in the
 line next to it.
 
 Search results are a checklist: `space` marks the ones you want, `Enter` adds
 them to the queue. Queue up as much as you like from as many searches as you
-like, then pick **Descargar la cola** and watch the per-track bars. `Ctrl+C`
+like, then pick **Download the queue** and watch the per-track bars. `Ctrl+C`
 during a download cancels that download and returns you to the menu; from the
 menu it exits.
 
