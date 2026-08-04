@@ -16,6 +16,14 @@ internal/api/        Cliente HTTP Qobuz API (qopy.py)
 internal/bundle/     Scraper de app_id/secrets/private_key de bundle.js
 internal/config/     Lector/escritor de config.ini (INI casero, sin deps)
 internal/downloader/ Descarga, tagging FLAC/MP3, colecciones, OAuth
+  downloader.go      tipo Downloader, New, plumbing de progreso (termOut/newBar/
+                     newProgress), HandleURL, DownloadURLs, parseQobuzURL
+  collection.go      artista/playlist/label + smartDiscogFilter
+  album.go           downloadAlbum → collectTrackJobs → runTrackJobs →
+                     downloadTrackByID → downloadAndTag, resolveFormat
+  transfer.go        downloadWithProgress: reintentos, resume por Range, downloadExtra
+  search.go          Search/SearchURLs para CLI y TUI
+  helpers.go         M3U, cleanTmp, sanitize/safeJoin/nestedStr/idStr, barLabel
 internal/lyrics/     Descarga de .lrc: lector de metadatos FLAC/MP3, cliente LRCLIB
 internal/ui/         TUI bubbletea: shell completo (comando `tui`) + progreso (--tui)
   backend.go         interfaz Backend — el seam que rompe el ciclo de imports
@@ -328,9 +336,13 @@ lyrics_test.go    — buildLabel (formato, ancho fijo, truncado), lrcPathFor, sc
       Validado con 4 mutaciones (`p.Wait()` sin guard, `newProgress`/`newBar`/`termOut` ignorando
       la TUI), las 4 detectadas por `tui_test.go`.
 
-- [ ] Partir `downloader.go` (~1550 líneas). Ahora que hay red de tests de integración, el riesgo
-      bajó lo suficiente para plantearlo. Costuras naturales según el grafo: los helpers de
-      `downloadWithProgress` y el filtro de discografía.
+- [x] Partir `downloader.go` (1605 líneas) — hecho, ver el árbol de arriba.
+      Seis archivos, el mayor 545 líneas. **Movimiento puro**: verificado ordenando las líneas
+      de código del original y de la unión de los seis y comprobando que el diff solo contiene
+      los banners `// ---- sección ----` borrados (ahora los lleva el nombre del archivo).
+      Cobertura del paquete sin cambios (40.1%), misma suite de tests.
+      El corte lo eligió el grafo: `smartDiscogFilter` vive con `downloadArtist`, su único
+      llamador, y los helpers de `downloadWithProgress` salen enteros a `transfer.go`.
 - [x] Deuda de complejidad cognitiva — cerrada 2026-07-27 (ver tabla arriba):
       `main()` repartido en dispatcher + `flags.go`; `decodeID3Text` partido por codificación
       (y arreglado el bug de Latin-1); `smartDiscogFilter` partido en
