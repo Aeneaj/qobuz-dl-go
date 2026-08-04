@@ -1,27 +1,22 @@
 # qobuz-dl-go
 
-A complete rewrite of [vitiko98/qobuz-dl](https://github.com/vitiko98/qobuz-dl) in Go. Downloads music from Qobuz — albums, tracks, playlists, artists, and labels — with support for lossless and hi-res audio.
+Download your Qobuz music to your computer — albums, tracks, playlists, whole
+discographies — in CD or Hi-Res quality, with cover art, correct tags and
+optional synced lyrics.
 
-## Features
+A rewrite in Go of [vitiko98/qobuz-dl](https://github.com/vitiko98/qobuz-dl).
+One self-contained binary, nothing else to install.
 
-- Download albums, tracks, artists, playlists, and labels by URL
-- Quality up to 24-bit / 192kHz Hi-Res
-- FLAC (Vorbis Comment) and MP3 (ID3v2.3) tagging — pure Go, no external tools needed
-- Cover art download and optional embedding
-- M3U playlist generation
-- Concurrent track downloads per album
-- Downloads database to skip already-downloaded tracks
-- Configurable folder and track naming formats
-- OAuth and manual token authentication (password login no longer supported by Qobuz)
-- CSV batch download from [TuneMyMusic](https://www.tunemymusic.com/) exports
-- Small dependency footprint — stdlib plus a handful of focused libraries (progress bars, Unicode, ANSI)
+**You need:** a Qobuz account with an active subscription. Free accounts can
+browse and search, but Qobuz will not let them download tracks.
 
-## Requirements
+---
 
-- Go 1.24+
-- A Qobuz account (subscription required for lossless quality)
+## Quick start
 
-## Build
+### 1. Build it
+
+You need [Go 1.24+](https://go.dev/dl/) installed. Then:
 
 ```bash
 git clone https://github.com/Aeneaj/qobuz-dl-go.git
@@ -29,128 +24,212 @@ cd qobuz-dl-go
 go build -o qobuz-dl ./cmd/qobuz-dl/
 ```
 
-## Authentication
+That leaves a single file called `qobuz-dl` in the folder. Every command below
+is run from there as `./qobuz-dl ...`.
 
-Password-based login is no longer accepted by Qobuz. Use one of these methods instead:
-
-### Option 1 — OAuth (recommended)
+### 2. Log in
 
 ```bash
 ./qobuz-dl oauth
 ```
 
-Opens a local server that captures the OAuth redirect and saves your token automatically. If the browser redirect fails (404), you can paste the redirect URL or authorization code:
+The first run asks three simple questions (where to save music, folder name,
+audio quality — pressing Enter accepts the defaults), then opens Qobuz in your
+browser. Log in there and you're done: the token is saved automatically and you
+never have to do this again.
+
+<details>
+<summary>If the browser login doesn't work</summary>
+
+Qobuz sometimes shows a 404 page after login. Copy the URL of that page from
+the address bar and pass it in:
 
 ```bash
-./qobuz-dl oauth <redirect-url-or-code>
+./qobuz-dl oauth "https://www.qobuz.com/...paste-the-whole-url..."
 ```
 
-### Option 2 — Manual token
+Still stuck? You can enter your credentials by hand with `./qobuz-dl --reset`.
+It asks for a `user_id` and a `user_auth_token`, which you find like this:
+
+1. Log in at [play.qobuz.com](https://play.qobuz.com) in your browser
+2. Press F12 → **Application** tab → **Local Storage**
+3. Open the `localuser` entry and copy the `id` and `userAuthToken` values
+
+</details>
+
+### 3. Download something
+
+Copy an album URL from the Qobuz website and paste it after `dl`:
 
 ```bash
-./qobuz-dl --reset
+./qobuz-dl dl https://www.qobuz.com/us-en/album/.../abc123
 ```
 
-Prompts for `user_id` and `user_auth_token`. To find them:
-1. Log in at [play.qobuz.com](https://play.qobuz.com)
-2. Open DevTools → Application → Local Storage
-3. Find the `localuser` key and copy `id` and `userAuthToken`
-
-## Usage
+Files land in the folder you chose during setup (by default `qobuz-downloader`
+next to the binary), one folder per album:
 
 ```
-qobuz-dl [options] <command> [args]
+Radiohead - In Rainbows (2007) [24B-96kHz]/
+  01. 15 Step.flac
+  02. Bodysnatchers.flac
+  cover.jpg
 ```
 
-### Commands
+That's it. Everything below is optional.
 
-| Command | Description |
+---
+
+## One rule about options
+
+⚠️ **Options always go before the command**, never after it:
+
+```bash
+./qobuz-dl -q 27 dl https://...        ✅ works
+./qobuz-dl dl https://... -q 27        ❌ silently ignored
+```
+
+This trips everybody up once. If a setting seems to have no effect, this is
+almost certainly why. (The one exception is `lyrics`, which accepts `-d` after
+the command too.)
+
+---
+
+## What you can download
+
+Paste any of these URLs after `dl` — one at a time or several at once:
+
+| You paste | You get |
 |---|---|
-| `dl <URL...>` | Download one or more URLs (album, track, artist, label, playlist, Last.fm) |
-| `lucky <query>` | Search and download the top N results |
-| `oauth [code\|url]` | Log in via OAuth |
-| `csv <file>` | Batch download from a TuneMyMusic CSV export |
-| `fun` | Interactive search and download mode |
-| `lyrics [path]` | Fetch synchronized `.lrc` files from LRCLIB for a music library |
-
-### Examples
+| An album URL | The whole album |
+| A track URL | That single track |
+| An artist URL | That artist's full discography |
+| A label URL | Everything from that label |
+| A Qobuz playlist URL | Every track in the playlist |
+| `last.fm/user/NAME/loved` | Your Last.fm loved tracks, searched on Qobuz |
+| `last.fm/user/NAME/library` | Your recent Last.fm tracks, searched on Qobuz |
 
 ```bash
-# Download an album by URL
-./qobuz-dl dl https://www.qobuz.com/album/...
-
-# Download multiple URLs at once
+# Several at once
 ./qobuz-dl dl https://www.qobuz.com/album/... https://www.qobuz.com/track/...
+```
 
-# Download in hi-res quality
-./qobuz-dl -q 27 dl https://www.qobuz.com/album/...
+Don't have a URL? Search from the terminal instead:
 
-# Download to a specific directory
-./qobuz-dl -d ~/Music dl https://www.qobuz.com/album/...
+```bash
+# Download the best-matching album for a search
+./qobuz-dl lucky "Radiohead In Rainbows"
 
-# Download your Last.fm loved tracks (searches each on Qobuz)
-./qobuz-dl dl https://www.last.fm/user/yourusername/loved
-
-# Download your Last.fm recent tracks
-./qobuz-dl dl https://www.last.fm/user/yourusername/library
-
-# Search and download top 3 albums by an artist
-./qobuz-dl lucky --lucky-n 3 "Radiohead"
+# Download the top 3 matching albums
+./qobuz-dl --lucky-n 3 lucky "Radiohead"
 
 # Search for tracks instead of albums
-./qobuz-dl lucky --lucky-type track "Paranoid Android"
-
-# Interactive REPL mode
-./qobuz-dl fun
+./qobuz-dl --lucky-type track lucky "Paranoid Android"
 ```
 
-### Interactive mode (`fun`)
+---
 
-A command-driven REPL for searching and building a download queue without leaving the session:
-
-```
-qobuz > sa radiohead          # search albums
-qobuz > st paranoid android   # search tracks
-qobuz > sr radiohead          # search artists
-qobuz > sp workout            # search playlists
-qobuz > dl https://...        # add a URL directly to the queue
-qobuz > q                     # show the queue
-qobuz > rm 2                  # remove item 2 from the queue
-qobuz > go                    # start downloading
-qobuz > exit                  # quit
-```
-
-After each search, pick result numbers to add to the queue (e.g. `1 3 5`). Type `help` for the full command list.
-
-### Last.fm playlists
-
-Pass a Last.fm user playlist URL to `dl` and qobuz-dl will fetch the track list and search each song on Qobuz automatically:
-
-| URL | What it downloads |
-|---|---|
-| `https://www.last.fm/user/{user}/loved` | Your loved tracks |
-| `https://www.last.fm/user/{user}/library` | Your recent tracks |
-
-No Last.fm API key is required. Tracks are saved to `<download-dir>/Last.fm - {user} - {type}/`. Tracks not found on Qobuz are skipped and counted in the final summary.
-
-### CSV batch download (`csv`)
-
-Export a playlist from [TuneMyMusic](https://www.tunemymusic.com/) as CSV, then:
+## Common tasks
 
 ```bash
-# Basic batch download
-./qobuz-dl csv my_playlist.csv
+# Best available quality (Hi-Res 24-bit)
+./qobuz-dl -q 27 dl https://www.qobuz.com/album/...
 
-# Hi-res quality + save a report of tracks that failed or weren't found
-./qobuz-dl csv my_playlist.csv -q 27 --failed skipped.csv
+# Save somewhere else, just this once
+./qobuz-dl -d ~/Music dl https://www.qobuz.com/album/...
 
-# Download to a specific folder
-./qobuz-dl -d ~/Music csv my_playlist.csv -q 6
+# Put the cover art inside the audio files (for players that want it embedded)
+./qobuz-dl --embed-art dl https://www.qobuz.com/album/...
+
+# Grab an artist's discography, skipping singles and EPs
+./qobuz-dl --albums-only dl https://www.qobuz.com/interpreter/...
+
+# ...and also skip live albums and compilations
+./qobuz-dl --albums-only --smart-discog dl https://www.qobuz.com/interpreter/...
+
+# Faster: 6 tracks downloading at the same time instead of 3
+./qobuz-dl --workers 6 dl https://www.qobuz.com/album/...
 ```
 
-The parser handles the most common TuneMyMusic export quirk: when `Artist name`, `Album`, and `ISRC` columns are blank and the track appears as `"Artist - Title"` in the `Track name` field, artist and title are inferred automatically.
+### Audio quality
 
-At the end of the run a summary is printed:
+| Use `-q` | What it is |
+|---|---|
+| `5` | MP3 320 kbps |
+| `6` | FLAC, CD quality (16-bit / 44.1 kHz) — **default** |
+| `7` | Hi-Res, up to 24-bit / 96 kHz |
+| `27` | Hi-Res, above 96 kHz — the maximum |
+
+Ask for a quality the album doesn't have and you automatically get the next
+best one instead, so `-q 27` is a safe default for "give me the best there is".
+Use `--no-fallback` if you'd rather it skip the album than downgrade.
+
+---
+
+## Interactive mode
+
+Prefer browsing to pasting URLs? `./qobuz-dl fun` opens a small prompt where you
+search, build up a list, and download it all at the end:
+
+```
+qobuz > sa radiohead          search albums
+qobuz > st paranoid android   search tracks
+qobuz > sr radiohead          search artists
+qobuz > sp workout            search playlists
+qobuz > dl https://...        add a URL to the list
+qobuz > q                     show the list
+qobuz > rm 2                  remove item 2
+qobuz > go                    download everything
+qobuz > exit                  quit
+```
+
+After a search, type the numbers of the results you want (e.g. `1 3 5`) to add
+them to the list. `help` shows every command.
+
+---
+
+## Synced lyrics
+
+Adds karaoke-style `.lrc` lyrics files to a music library, so players like
+Navidrome, Jellyfin or Plex can show lyrics scrolling in time with the song.
+
+```bash
+# Your qobuz-dl download folder
+./qobuz-dl lyrics
+
+# Any other music folder
+./qobuz-dl lyrics ~/Music
+```
+
+It scans every FLAC and MP3 in the folder and its subfolders, and writes a
+lyrics file next to each song (`01. Song.flac` → `01. Song.lrc`).
+
+Worth knowing:
+
+- **Works on any music**, not just Qobuz downloads — it doesn't even need you
+  to be logged in. Lyrics come from the free [LRCLIB](https://lrclib.net)
+  database.
+- **Safe to re-run.** Songs that already have a lyrics file are skipped
+  instantly, so you can run it again after every new download.
+- **Not every song has lyrics.** Missing ones are listed at the end; the rest
+  still get theirs.
+- **The folder must already exist** — unlike downloading, this command won't
+  create it.
+
+---
+
+## Importing playlists from Spotify, Apple Music, etc.
+
+Use the free [TuneMyMusic](https://www.tunemymusic.com/) to export any playlist
+as a CSV file, then hand that file to qobuz-dl:
+
+```bash
+./qobuz-dl csv my_playlist.csv
+
+# Hi-Res, and write down anything that couldn't be downloaded
+./qobuz-dl -q 27 --failed skipped.csv csv my_playlist.csv
+```
+
+Each song is searched on Qobuz and downloaded. At the end you get a summary:
 
 ```
 === CSV Batch Summary ===
@@ -161,98 +240,122 @@ At the end of the run a summary is printed:
   Failed tracks saved to: skipped.csv
 ```
 
-The `--failed` report is a CSV with columns `row`, `artist`, `title`, `query`, `reason` — inspect it and retry manually.
+The `--failed` file lists what didn't work and why, so you can look those few
+up by hand.
 
-### Synchronized lyrics (`lyrics`)
+---
 
-Fetch synchronized `.lrc` files from [LRCLIB](https://lrclib.net) for every FLAC and MP3 file found recursively under a directory. Each `.lrc` is written next to its audio file with the same base name — the standard layout expected by Navidrome, Jellyfin, and any player with karaoke or time-synced lyrics support.
+## Troubleshooting
+
+**"Free accounts are not eligible to download tracks"**
+Your Qobuz plan doesn't include downloads. A paid subscription is required —
+this isn't something the tool can work around.
+
+**Login stopped working / "unauthorized" errors**
+Tokens expire. Run `./qobuz-dl oauth` again.
+
+**A flag seems to do nothing**
+It's probably placed after the command. See [the rule above](#one-rule-about-options).
+
+**Nothing downloads, everything is "skipped"**
+qobuz-dl remembers what it already downloaded and won't fetch it twice. To
+force it:
 
 ```bash
-# Scan the configured download directory (from config.ini)
-./qobuz-dl lyrics
-
-# Scan a specific path
-./qobuz-dl lyrics ~/Music/Qobuz
-
-# Use the -d flag
-./qobuz-dl lyrics -d ~/Music
+./qobuz-dl --no-db dl https://...   # ignore the memory this once
+./qobuz-dl --purge                  # forget everything permanently
 ```
 
-**Key behaviours:**
+**Where did my files go? / What are my settings?**
 
-- **No Qobuz auth required.** The command calls the public LRCLIB API only — no token or login needed.
-- **Synced lyrics preferred.** When LRCLIB returns both synced (`[mm:ss.xx]` timestamps) and plain lyrics, the synced version is always saved.
-- **Idempotent.** Files that already have a `.lrc` sibling are skipped without making any network request.
-- **Rate-limit safe.** Requests are paced at ~2 per second. A single automatic retry with a 10-second backoff handles the rare HTTP 429 response — no manual intervention needed.
-- **Graceful on missing lyrics.** When LRCLIB has no match (HTTP 404) the track is noted in the final summary and the run continues.
+```bash
+./qobuz-dl --show-config
+```
 
-The directory resolution follows the same priority chain as downloads: `-d` flag → `download_dir` in `config.ini` → `./qobuz-downloader`. Unlike other commands this one does **not** create the directory if it doesn't exist — point it at an existing library.
+**I want to start over**
+`./qobuz-dl --reset` re-runs the whole setup.
 
-### Options
+---
 
-| Flag | Description |
-|---|---|
-| `-r`, `--reset` | Reconfigure credentials |
-| `-s`, `--show-config` | Show config file path and current contents |
-| `-p`, `--purge` | Delete the downloads database |
-| `-d <dir>` | Download directory (overrides config) |
-| `-q <quality>` | Audio quality (see table below) |
-| `--embed-art` | Embed cover art into audio files |
-| `--albums-only` | Skip singles and EPs |
-| `--no-m3u` | Do not create M3U playlist files |
-| `--no-fallback` | Disable automatic quality fallback |
-| `--og-cover` | Download original (max) resolution cover art |
-| `--no-cover` | Skip cover art download |
-| `--no-db` | Bypass the downloads database (re-download everything) |
-| `--workers N` | Number of concurrent track downloads per album (default: 3) |
-| `--folder-format` | Folder naming format string |
-| `--track-format` | Track naming format string |
-| `--smart-discog` | Smart discography filter (skip live/compilation albums) |
-| `--lucky-type` | Item type for `lucky` command: `album`, `track`, `artist`, `playlist` |
-| `--lucky-n` | Number of results to download with `lucky` (default: 1) |
-| `--failed <file>` | (`csv` only) Save undownloaded tracks to this CSV file |
+## Settings
 
-### Quality levels
-
-| Value | Description |
-|---|---|
-| `5` | MP3 320 kbps |
-| `6` | FLAC 16-bit / 44.1 kHz (CD quality, default) |
-| `7` | Hi-Res 24-bit / up to 96 kHz |
-| `27` | Hi-Res 24-bit / above 96 kHz |
-
-If the requested quality is unavailable, the downloader falls back to the next available tier automatically (disable with `--no-fallback`).
-
-## Configuration
-
-The config file is created automatically on first run at:
+Your answers from the first run are saved in a config file you can edit by hand:
 
 - **Linux / macOS**: `~/.config/qobuz-dl/config.ini`
 - **Windows**: `%APPDATA%\qobuz-dl\config.ini`
 
-Re-run setup at any time with `./qobuz-dl --reset`.
+Run `./qobuz-dl --show-config` to see where it is and what's in it, or
+`./qobuz-dl --reset` to answer the setup questions again.
 
-### Naming formats
+### Renaming folders and files
 
-Folder and track names are configurable with format strings. Default values:
+Folder and file names are built from a template. The defaults:
 
 ```
 folder_format = {artist} - {album} ({year}) [{bit_depth}B-{sampling_rate}kHz]
 track_format  = {tracknumber}. {tracktitle}
 ```
 
-Available tokens: `{artist}`, `{album}`, `{year}`, `{bit_depth}`, `{sampling_rate}`, `{tracknumber}`, `{tracktitle}`, `{genre}`, `{composer}`.
+Which produces `Radiohead - In Rainbows (2007) [24B-96kHz]/01. 15 Step.flac`.
+Change them in the config file, or per run with `--folder-format` /
+`--track-format`. Available pieces:
 
-## Downloads database
+`{artist}` `{album}` `{year}` `{bit_depth}` `{sampling_rate}` `{tracknumber}`
+`{tracktitle}` `{genre}` `{composer}`
 
-By default qobuz-dl keeps a plain-text database of downloaded track IDs at `~/.config/qobuz-dl/qobuz_dl.db` so that already-downloaded tracks are skipped on future runs.
+### Where files are saved
 
-```bash
-./qobuz-dl --no-db dl <URL>   # skip the database for this run
-./qobuz-dl --purge            # delete the database entirely
-```
+In order of priority: the `-d` flag → `download_dir` in the config file →
+a `qobuz-downloader` folder next to the binary.
 
-## Project structure
+---
+
+## All options
+
+Remember: these go **before** the command.
+
+| Flag | What it does |
+|---|---|
+| `-d <dir>` | Save to this folder instead of the configured one |
+| `-q <5\|6\|7\|27>` | Audio quality (see table above) |
+| `--embed-art` | Put cover art inside the audio files |
+| `--og-cover` | Download the cover at maximum resolution |
+| `--no-cover` | Don't download cover art at all |
+| `--albums-only` | Skip singles and EPs |
+| `--smart-discog` | Also skip live albums and compilations |
+| `--no-m3u` | Don't create `.m3u` playlist files |
+| `--no-fallback` | Skip albums rather than downloading a lower quality |
+| `--workers N` | How many tracks to download at once (default 3) |
+| `--no-db` | Re-download even things you already have |
+| `--folder-format` | Album folder name template |
+| `--track-format` | Track file name template |
+| `--lucky-type` | What `lucky` searches: `album`, `track`, `artist`, `playlist` |
+| `--lucky-n` | How many results `lucky` downloads (default 1) |
+| `--failed <file>` | For `csv`: save the failures to this file |
+| `-r`, `--reset` | Re-run setup |
+| `-s`, `--show-config` | Show settings and where they live |
+| `-p`, `--purge` | Forget the download history |
+| `-v`, `--version` | Print the version |
+
+### Commands
+
+| Command | What it does |
+|---|---|
+| `dl <URL...>` | Download one or more URLs |
+| `lucky <words>` | Search, then download the top result(s) |
+| `fun` | Interactive search-and-download mode |
+| `csv <file>` | Download a playlist exported from TuneMyMusic |
+| `lyrics [folder]` | Fetch `.lrc` lyrics for a music library |
+| `oauth [url\|code]` | Log in |
+
+---
+
+## For developers
+
+Pure Go, no cgo, no external tools like ffmpeg. FLAC (Vorbis Comment) and MP3
+(ID3v2.3) tagging are implemented in-repo; audio parsing dependencies are
+deliberately avoided. The dependency list is stdlib plus progress bars
+(`mpb`) and its Unicode/ANSI helpers.
 
 ```
 cmd/qobuz-dl/        CLI entry point
@@ -260,12 +363,23 @@ internal/api/        Qobuz HTTP API client
 internal/bundle/     Scraper for app_id / secrets / private_key from bundle.js
 internal/config/     INI config reader/writer
 internal/downloader/ Download logic, FLAC/MP3 tagging, collections, OAuth
-internal/lyrics/     .lrc fetcher: audio metadata reader (FLAC/MP3), LRCLIB HTTP client
+internal/lyrics/     .lrc fetcher: audio metadata reader (FLAC/MP3), LRCLIB client
 ```
+
+```bash
+go build ./...
+go vet ./...
+go test -cover ./...
+```
+
+See [CLAUDE.md](CLAUDE.md) for architecture notes and testing conventions.
 
 ## Credits
 
-Based on [vitiko98/qobuz-dl](https://github.com/vitiko98/qobuz-dl) and its OAuth PR [#331](https://github.com/vitiko98/qobuz-dl/pull/331). All credit for the original design and reverse engineering goes to the upstream project and its contributors.
+Based on [vitiko98/qobuz-dl](https://github.com/vitiko98/qobuz-dl) and its OAuth
+PR [#331](https://github.com/vitiko98/qobuz-dl/pull/331). All credit for the
+original design and reverse engineering goes to the upstream project and its
+contributors.
 
 ## License
 
