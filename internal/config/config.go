@@ -47,6 +47,7 @@ type Config struct {
 	UserID         string
 	UserAuthToken  string
 	DownloadDir    string
+	Lang           string
 	DefaultFolder  string
 	DefaultQuality int
 	DefaultLimit   int
@@ -129,6 +130,7 @@ func Load() (*Config, error) {
 		UserID:         get("user_id", ""),
 		UserAuthToken:  get("user_auth_token", ""),
 		DownloadDir:    get("download_dir", ""),
+		Lang:           get("lang", ""),
 		DefaultFolder:  get("default_folder", "Qobuz Downloads"),
 		DefaultQuality: getInt("default_quality", 6),
 		DefaultLimit:   getInt("default_limit", 20),

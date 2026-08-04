@@ -98,6 +98,14 @@ func main() {
 		return
 	}
 
+	// Both TUI screens (the `tui` shell and the --tui progress view) read the
+	// language here rather than each wiring it themselves. It must be set
+	// before any bubbletea program starts — ui.SetLang is not safe once a
+	// render loop is running. No config yet, or an unknown code, means English.
+	if cfg, err := config.Load(); err == nil {
+		ui.SetLang(cfg.Lang)
+	}
+
 	args := fs.Args()
 	if len(args) == 0 {
 		fmt.Print(usage)

@@ -28,6 +28,7 @@ internal/downloader/ Descarga, tagging FLAC/MP3, colecciones, OAuth
 internal/lyrics/     Descarga de .lrc: lector de metadatos FLAC/MP3, cliente LRCLIB
 internal/ui/         TUI bubbletea: shell completo (comando `tui`) + progreso (--tui)
   backend.go         interfaz Backend — el seam que rompe el ciclo de imports
+  lang.go            i18n: T() + mapa es; el inglés vive en el código
   shell.go           máquina de estados: menú, búsqueda, cola, running, config
   widgets.go         textField y picker (hechos a mano, sin bubbles)
   model.go           pantalla de progreso de descarga
@@ -74,6 +75,26 @@ Cualquier nueva feature con feedback visual debe reutilizar este patrón para co
 Usa la primera cuando el mensaje deba verse al momento (un track que falla), la segunda cuando sea un resumen.
 
 Con `--tui` la regla es más estricta: bubbletea está en alt-screen y **nada** puede llegar a stdout, así que `termOut()` devuelve `io.Discard`. Por eso todos los mensajes del paquete (incluidos `lastfm.go` y `csvbatch.go`) van por `d.termOut()` y no por `fmt.Printf`. Las funciones libres (`makeM3U`, `printBatchSummary`) reciben el `io.Writer` como parámetro.
+
+### Idioma de la TUI
+
+El inglés es el default y **vive en el código**: cada cadena se escribe en inglés
+en su sitio de uso y `T()` la traduce al renderizar. `lang.go` solo tiene el mapa
+`es`. Una entrada que falte devuelve la clave, así que una traducción olvidada sale
+en inglés en vez de dejar un hueco en blanco — y añadir un idioma no puede vaciar
+la pantalla. No hay tabla de inglés que mantener sincronizada.
+
+`SetLang` se llama **una vez desde `main()`**, antes de cualquier `tea.Program`: no
+lleva lock y no es seguro con el bucle de render corriendo. Va en `main()` y no en
+`runTUI` porque las dos pantallas lo necesitan (`tui` y `--tui`), y así `internal/ui`
+no depende de `internal/config`. Idioma ausente o desconocido → inglés.
+
+**Lección de los tests**: los tres tests de datos (tabla completa, sin claves
+huérfanas, sin español en el código) pasaban mientras la fila **seleccionada** del
+menú se renderizaba en inglés — se construía con `m.label` crudo mientras todas las
+demás pasaban por `T()`. Una tabla de traducción completa no puede detectar un sitio
+de render que no la consulta. `TestMenuRendersFullySpanish` mueve el cursor por todas
+las entradas y compara la salida real; es el único que lo caza.
 
 ### La TUI completa (`tui`)
 
@@ -143,7 +164,7 @@ Medido con `go test -cover ./...` el 2026-08-04:
 | config | 37.9% | config_test.go |
 | downloader | 41.5% | integration_test.go, oauth_test.go, tui_test.go, metadata_test.go, db_test.go, lastfm_test.go, helpers_test.go, redownload_test.go |
 | lyrics | 75.6% | metadata_test.go, lrclib_test.go, lyrics_test.go |
-| ui | 52.4% | shell_test.go, handle_test.go |
+| ui | 53.3% | shell_test.go, handle_test.go, lang_test.go |
 | cmd/qobuz-dl | 0% | main_test.go |
 
 `cmd/qobuz-dl` marca 0% porque sus tests son **black-box**: compilan el binario en `TestMain` y lo ejecutan como subproceso, así que la cobertura no se instrumenta. No es falta de tests.

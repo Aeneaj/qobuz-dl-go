@@ -295,7 +295,7 @@ func (m Model) viewGlobal(w int) string {
 	done := m.done
 	total := m.totalTracks
 
-	label := sDim.Render("LOTE")
+	label := sDim.Render(T("BATCH"))
 	counter := sBlue.Render(fmt.Sprintf("%d/%d", done, total))
 	pct := sBlue.Bold(true).Render(fmt.Sprintf("%3.0f%%", float64(done)/float64(total)*100))
 
@@ -335,7 +335,7 @@ func (m Model) viewTrack(e trackEntry, w int) string {
 	// Badge and size on first line for terminal states
 	switch e.state {
 	case stateDone:
-		badge := sBadgeDone.Render("LISTO")
+		badge := sBadgeDone.Render(T("DONE"))
 		size := sDim.Render(fmtBytes(e.current))
 		rightPart := badge + " " + size
 		pad := w - lipgloss.Width(firstLine) - lipgloss.Width(rightPart) - 1

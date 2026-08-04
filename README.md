@@ -224,6 +224,19 @@ keys move, Enter chooses, Esc goes back, `q` quits:
   ↑↓ moverse   ⏎ elegir   esc volver   q salir
 ```
 
+### Language
+
+The interface is in English. For Spanish, add one line to your config file
+(`~/.config/qobuz-dl/config.ini`):
+
+```ini
+lang = es
+```
+
+Anything else — no line at all, or a language that isn't translated — leaves it
+in English. Only the full-screen interface is translated; the regular commands
+are English only.
+
 The indicator top-right tells you where you stand: `○ sin sesión` until you log
 in, and how many items are queued. The highlighted row explains itself in the
 line next to it.
