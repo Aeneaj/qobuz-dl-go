@@ -19,8 +19,9 @@ internal/downloader/ Descarga, tagging FLAC/MP3, colecciones, OAuth
   downloader.go      tipo Downloader, New, plumbing de progreso (termOut/newBar/
                      newProgress), HandleURL, DownloadURLs, parseQobuzURL
   collection.go      artista/playlist/label + smartDiscogFilter
-  album.go           downloadAlbum → collectTrackJobs → runTrackJobs →
-                     downloadTrackByID → downloadAndTag, resolveFormat
+  album.go           downloadAlbum → collectTrackJobs → runTrackJobs, resolveFormat
+  track.go           un track de punta a punta: downloadTrackByID, finalTrackPath,
+                     alreadyHave, downloadAndTag, fallbackQuality
   transfer.go        downloadWithProgress: reintentos, resume por Range, downloadExtra
   search.go          Search/SearchURLs para CLI y TUI
   helpers.go         M3U, cleanTmp, sanitize/safeJoin/nestedStr/idStr, barLabel
@@ -337,12 +338,15 @@ lyrics_test.go    — buildLabel (formato, ancho fijo, truncado), lrcPathFor, sc
       la TUI), las 4 detectadas por `tui_test.go`.
 
 - [x] Partir `downloader.go` (1605 líneas) — hecho, ver el árbol de arriba.
-      Seis archivos, el mayor 545 líneas. **Movimiento puro**: verificado ordenando las líneas
-      de código del original y de la unión de los seis y comprobando que el diff solo contiene
+      Siete archivos, el mayor 281 líneas. **Movimiento puro**: verificado ordenando las líneas
+      de código del original y de la unión de los nuevos y comprobando que el diff solo contiene
       los banners `// ---- sección ----` borrados (ahora los lleva el nombre del archivo).
       Cobertura del paquete sin cambios (40.1%), misma suite de tests.
-      El corte lo eligió el grafo: `smartDiscogFilter` vive con `downloadArtist`, su único
-      llamador, y los helpers de `downloadWithProgress` salen enteros a `transfer.go`.
+      El corte lo eligió el grafo, en dos pasadas: primero seis archivos, y tras reindexar,
+      `album.go` (545) seguía partido en dos clusters (0.57 y 0.40) → `album.go` + `track.go`.
+      `smartDiscogFilter` vive con `downloadArtist`, su único llamador; los helpers de
+      `downloadWithProgress` salen enteros a `transfer.go` (cluster de cohesión 0.93).
+      `getFloat` se queda en `helpers.go`, no en `search.go`: `metadata.go` también lo llama.
 - [x] Deuda de complejidad cognitiva — cerrada 2026-07-27 (ver tabla arriba):
       `main()` repartido en dispatcher + `flags.go`; `decodeID3Text` partido por codificación
       (y arreglado el bug de Latin-1); `smartDiscogFilter` partido en
