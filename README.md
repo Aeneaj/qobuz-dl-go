@@ -183,6 +183,7 @@ remember. Arrow keys move, Enter chooses, Esc goes back, `q` quits:
     Buscar artistas
     Buscar playlists
     Añadir URL
+    Iniciar sesión (OAuth)
     Ver la cola
     Descargar la cola
     Letras (.lrc)
@@ -198,8 +199,16 @@ like, then pick **Descargar la cola** and watch the per-track bars. `Ctrl+C`
 during a download cancels that download and returns you to the menu; from the
 menu it exits.
 
-Logging in still happens on the command line — run `./qobuz-dl oauth` once
-before your first `tui` session.
+**Logging in** is in the menu. Picking it drops out of the full-screen view,
+runs the ordinary OAuth flow — the one that prints a URL and waits for your
+browser — then returns to the menu with your session live. The screen flips out
+and back; that is expected. `./qobuz-dl oauth` from the command line still works
+and does exactly the same thing.
+
+You can open `tui` without being logged in: the menu is where the login lives,
+so it would be no help to refuse to start. Anything needing Qobuz says so in
+the footer until you log in. Fetching lyrics works either way — LRCLIB is
+public.
 
 ## Interactive mode (line based)
 

@@ -16,6 +16,16 @@ type fakeBackend struct {
 	searchErr error
 	got       []string // urls handed to Download
 	purged    bool
+	loggedIn  bool
+	loginErr  error
+}
+
+func (f *fakeBackend) Login(context.Context) (string, error) {
+	if f.loginErr != nil {
+		return "", f.loginErr
+	}
+	f.loggedIn = true
+	return "sesión iniciada", nil
 }
 
 func (f *fakeBackend) Search(context.Context, string, string, int) ([]Item, error) {
@@ -214,6 +224,47 @@ func TestShellQueueRemoval(t *testing.T) {
 	press(t, s, keyEsc)
 	if s.screen != scMenu {
 		t.Errorf("esc must return to the menu, got %v", s.screen)
+	}
+}
+
+// TestShellLoginReachesBackend covers the entry that exists precisely for the
+// user who cannot do anything else yet: no session, so every other Qobuz
+// action fails until this one runs.
+func TestShellLoginReachesBackend(t *testing.T) {
+	be := &fakeBackend{}
+	s := NewShell(context.Background(), be)
+
+	_, cmd := s.run(actLogin)
+	if cmd == nil {
+		t.Fatal("the login entry must start work")
+	}
+	if !s.busy || s.screen != scRunning {
+		t.Errorf("screen = %v busy = %v, want scRunning and busy", s.screen, s.busy)
+	}
+
+	msg := cmd()
+	if !be.loggedIn {
+		t.Error("login never reached the backend")
+	}
+
+	s.Update(msg)
+	if s.busy {
+		t.Error("shell still busy after login returned")
+	}
+	if s.errMsg != "" {
+		t.Errorf("successful login left an error on screen: %q", s.errMsg)
+	}
+}
+
+func TestShellLoginFailureSurfaces(t *testing.T) {
+	be := &fakeBackend{loginErr: errors.New("no llegó el redirect")}
+	s := NewShell(context.Background(), be)
+
+	_, cmd := s.run(actLogin)
+	s.Update(cmd())
+
+	if !strings.Contains(s.errMsg, "no llegó el redirect") {
+		t.Errorf("errMsg = %q, want the login error", s.errMsg)
 	}
 }
 

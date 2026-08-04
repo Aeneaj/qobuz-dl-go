@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,20 +15,35 @@ import (
 	"github.com/Aeneaj/qobuz-dl-go/internal/ui"
 )
 
-// runTUI opens the full-program TUI: menu, search, queue, downloads, lyrics,
-// CSV import and config, all in one screen.
-//
-// Everything before p.Run() still prints to stdout (login, quality) because
-// the alt screen is not up yet; from there on nothing may write to stdout, so
-// the downloader's termOut goes to io.Discard and the backend reports through
-// the program instead.
-func runTUI(ctx context.Context, f *cliFlags) {
-	dl := mustDownloader(ctx, f)
+// errNoSession is what every Qobuz-backed action returns before login. It
+// names the menu entry that fixes it, since that is where the user is looking.
+var errNoSession = errors.New("sin sesión — elige «Iniciar sesión (OAuth)» en el menú")
 
-	be := &tuiBackend{dl: dl}
+// runTUI opens the full-program TUI: menu, search, queue, downloads, lyrics,
+// CSV import and config.
+//
+// Missing credentials must not stop the shell from opening — the menu is
+// where OAuth lives, so refusing to start would hide the only fix. The
+// downloader is therefore optional at boot: nil until a session exists, and
+// the actions that need it fail with errNoSession instead.
+func runTUI(ctx context.Context, f *cliFlags) {
+	be := &tuiBackend{flags: f}
+
+	// initDownloader prints as it logs in, which is safe here: the alt screen
+	// is not up yet. An error never stops the shell, but it is kept — it may
+	// be a bad directory or a dead network rather than a missing token, and
+	// telling the user "log in" would send them down the wrong path.
+	if dl, err := initDownloader(ctx, f); err == nil {
+		be.dl = dl
+	} else {
+		be.bootErr = err
+	}
+
 	p := tea.NewProgram(ui.NewShell(ctx, be), tea.WithAltScreen(), tea.WithContext(ctx))
 	be.prog = p
-	dl.SetUI(p)
+	if be.dl != nil {
+		be.dl.SetUI(p)
+	}
 
 	if _, err := p.Run(); err != nil {
 		fatalf("tui: %v", err)
@@ -37,11 +53,57 @@ func runTUI(ctx context.Context, f *cliFlags) {
 // tuiBackend is the one real implementation of ui.Backend. It lives here, not
 // in internal/ui, because internal/downloader already imports internal/ui.
 type tuiBackend struct {
-	dl   *downloader.Downloader
-	prog *tea.Program
+	flags   *cliFlags
+	dl      *downloader.Downloader // nil until a session exists
+	bootErr error                  // why dl is nil, if it was ever attempted
+	prog    *tea.Program
+}
+
+// session reports whether Qobuz actions can run, explaining the real reason
+// when they cannot.
+func (b *tuiBackend) session() error {
+	switch {
+	case b.dl != nil:
+		return nil
+	case b.bootErr != nil:
+		return fmt.Errorf("%w — o elige «Iniciar sesión (OAuth)» en el menú", b.bootErr)
+	default:
+		return errNoSession
+	}
+}
+
+// Login drops out of the alt screen, runs the ordinary CLI OAuth flow, and
+// comes back.
+//
+// The flow prints the login URL and reads Enter from stdin via fmt.Scanln.
+// Bubbletea holds stdin in raw mode with its own reader, so two readers would
+// steal bytes from each other — releasing the terminal is what makes reusing
+// the CLI flow verbatim correct, rather than merely convenient.
+func (b *tuiBackend) Login(ctx context.Context) (string, error) {
+	if err := b.prog.ReleaseTerminal(); err != nil {
+		return "", fmt.Errorf("no se pudo liberar la terminal: %w", err)
+	}
+	defer b.prog.RestoreTerminal() //nolint:errcheck
+
+	if err := oauthLogin(ctx, ""); err != nil {
+		return "", err
+	}
+
+	// Still outside the alt screen, so initDownloader may print freely.
+	dl, err := initDownloader(ctx, b.flags)
+	if err != nil {
+		return "", err
+	}
+	dl.SetUI(b.prog)
+	b.dl = dl
+	b.bootErr = nil
+	return "sesión iniciada", nil
 }
 
 func (b *tuiBackend) Search(ctx context.Context, kind, query string, limit int) ([]ui.Item, error) {
+	if err := b.session(); err != nil {
+		return nil, err
+	}
 	hits, err := downloader.Search(ctx, b.dl.Client, kind, query, limit)
 	if err != nil {
 		return nil, err
@@ -54,11 +116,17 @@ func (b *tuiBackend) Search(ctx context.Context, kind, query string, limit int) 
 }
 
 func (b *tuiBackend) Download(ctx context.Context, urls []string) error {
+	if err := b.session(); err != nil {
+		return err
+	}
 	b.dl.DownloadURLs(ctx, urls)
 	return nil
 }
 
 func (b *tuiBackend) CSV(ctx context.Context, path string) (string, error) {
+	if err := b.session(); err != nil {
+		return "", err
+	}
 	if _, err := os.Stat(path); err != nil {
 		return "", fmt.Errorf("no se encuentra el CSV: %s", path)
 	}
@@ -66,6 +134,8 @@ func (b *tuiBackend) CSV(ctx context.Context, path string) (string, error) {
 	return "importación CSV terminada", nil
 }
 
+// Lyrics needs no Qobuz session — LRCLIB is public — so it deliberately skips
+// the b.dl check and works before login.
 func (b *tuiBackend) Lyrics(ctx context.Context, dir string) (string, error) {
 	resolved, err := resolveScanDir(dir)
 	if err != nil {
@@ -91,11 +161,12 @@ func (b *tuiBackend) Lyrics(ctx context.Context, dir string) (string, error) {
 }
 
 func (b *tuiBackend) Config() string {
-	data, err := os.ReadFile(filepath.Join(config.ConfigDir(), "config.ini"))
+	path := filepath.Join(config.ConfigDir(), "config.ini")
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return "no se pudo leer la configuración: " + err.Error()
 	}
-	return filepath.Join(config.ConfigDir(), "config.ini") + "\n\n" + string(data)
+	return path + "\n\n" + string(data)
 }
 
 func (b *tuiBackend) Purge() error {
@@ -105,4 +176,17 @@ func (b *tuiBackend) Purge() error {
 	return nil
 }
 
-func (b *tuiBackend) DefaultDir() string { return b.dl.Opts.Directory }
+// DefaultDir falls back to the configured directory when there is no session
+// yet, so the lyrics prompt is still prefilled before login.
+func (b *tuiBackend) DefaultDir() string {
+	if b.dl != nil {
+		return b.dl.Opts.Directory
+	}
+	if b.flags != nil && b.flags.Dir != "" {
+		return b.flags.Dir
+	}
+	if cfg, err := config.Load(); err == nil && cfg.DownloadDir != "" {
+		return cfg.DownloadDir
+	}
+	return "./qobuz-downloader"
+}

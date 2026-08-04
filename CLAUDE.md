@@ -72,6 +72,10 @@ Con `--tui` la regla es más estricta: bubbletea está en alt-screen y **nada** 
 
 **El ciclo de imports es la restricción que manda.** `internal/downloader` importa `internal/ui` (para `MsgAlbum` y `TrackHandle`), así que el shell **no puede** importar el downloader. Por eso existe `ui.Backend`: una interfaz con una sola implementación real (`tuiBackend` en `cmd/qobuz-dl/tui_cmd.go`). No es abstracción especulativa — es la única forma de que el shell llame al downloader. Si añades una función al menú, añade su método al `Backend` y al adaptador.
 
+**OAuth entra suspendiendo la TUI**, no reimplementándolo. `tuiBackend.Login` llama a `p.ReleaseTerminal()`, corre `oauthLogin` (el flujo CLI de siempre) y hace `RestoreTerminal()`, que re-entra en alt-screen y repinta solo. Esto no es comodidad: `captureOAuthRedirect` lee el Enter con `fmt.Scanln`, y bubbletea tiene stdin en modo raw con su propio lector — dos lectores se roban bytes. `ReleaseTerminal` **cancela el lector de entrada**, que es lo que hace que reutilizar el flujo tal cual sea correcto. Si algún día se integra nativo, lo primero que hay que borrar es ese `Scanln`.
+
+`runTUI` **no exige credenciales**: si `initDownloader` falla, guarda el error en `bootErr` y abre el shell igual — el menú es donde vive el login, negarse a arrancar escondería la única salida. `session()` distingue "no hay token" de "el directorio no existe", para no mandar al usuario a hacer login cuando el problema es otro.
+
 Reglas del shell:
 - Toda llamada bloqueante va en un `tea.Cmd`, nunca dentro de `Update`. El bucle de render no puede pararse.
 - El progreso llega por `p.Send()` desde el backend, no como retorno del `tea.Cmd`. Por eso `tuiBackend` guarda el `*tea.Program`.
@@ -313,8 +317,8 @@ lyrics_test.go    — buildLabel (formato, ancho fijo, truncado), lrcPathFor, sc
       Widgets a mano (~60 líneas) en vez de `bubbles`: solo hacían falta un campo de texto y una
       lista con cursor. Validado con 4 mutaciones (marcas de selección, vaciado de cola, reenvío
       de mensajes al Model, guard de cola vacía), las 4 detectadas.
-      **Fuera**: `oauth` sigue siendo solo CLI — abre navegador y levanta un servidor local con
-      prompts por stdin, hostil de meter en alt-screen. `tui` requiere haber hecho login antes.
+      OAuth entra por suspensión de terminal (`ReleaseTerminal`/`RestoreTerminal`), reutilizando
+      el flujo CLI sin tocarlo; `runOAuth` se partió en `oauthLogin` que devuelve error.
 
 - [x] TUI opt-in con bubbletea (`--tui`) — `internal/ui/` (rescatado de `experiment/fancy-ui`)
       La rama original tenía 1 commit y 33 por detrás de main; el rebase daba 11 conflictos en

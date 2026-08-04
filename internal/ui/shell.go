@@ -33,6 +33,7 @@ const (
 	actSearchArtist
 	actSearchPlaylist
 	actURL
+	actLogin
 	actQueue
 	actGo
 	actLyrics
@@ -54,6 +55,7 @@ var menu = []menuEntry{
 	{actSearchArtist, "Buscar artistas", "discografía completa"},
 	{actSearchPlaylist, "Buscar playlists", "playlists de Qobuz"},
 	{actURL, "Añadir URL", "álbum, track, artista, sello o Last.fm"},
+	{actLogin, "Iniciar sesión (OAuth)", "abre Qobuz en el navegador"},
 	{actQueue, "Ver la cola", "revisar y quitar elementos"},
 	{actGo, "Descargar la cola", "empieza la descarga"},
 	{actLyrics, "Letras (.lrc)", "busca letras sincronizadas en LRCLIB"},
@@ -312,6 +314,12 @@ func (s *Shell) run(a action) (tea.Model, tea.Cmd) {
 		return s.start(runDownload, func(ctx context.Context) (string, error) {
 			return "descarga terminada", s.be.Download(ctx, urls)
 		})
+
+	case actLogin:
+		// The backend leaves the alt screen to run the CLI login, so the
+		// shell must not repaint until it is done: no progress screen here,
+		// just a status line that is already on screen when we hand over.
+		return s.start(runPlain, s.be.Login)
 
 	case actConfig:
 		s.text = s.be.Config()

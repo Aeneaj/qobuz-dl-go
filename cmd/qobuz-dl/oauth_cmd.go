@@ -16,10 +16,19 @@ func runOAuth(ctx context.Context, args []string) {
 	if len(args) > 0 {
 		codeOrURL = args[0]
 	}
+	if err := oauthLogin(ctx, codeOrURL); err != nil {
+		fmt.Fprintf(os.Stderr, "\033[31m%v\033[0m\n", err)
+		os.Exit(1)
+	}
+}
 
+// oauthLogin runs the whole OAuth flow and saves the token. It talks to the
+// terminal directly — printing the login URL, and reading Enter from stdin —
+// so a TUI caller must release the terminal first.
+func oauthLogin(ctx context.Context, codeOrURL string) error {
 	cfg, err := loadOrInitConfig(ctx, true)
 	if err != nil {
-		fatalf("load config: %v", err)
+		return fmt.Errorf("load config: %w", err)
 	}
 
 	appID := cfg.AppID
@@ -59,7 +68,7 @@ func runOAuth(ctx context.Context, args []string) {
 	}
 
 	if appID == "" {
-		fatalf("app_id not found — run 'qobuz-dl --reset' to reconfigure")
+		return fmt.Errorf("app_id not found — run 'qobuz-dl --reset' to reconfigure")
 	}
 	if privateKey == "" {
 		fmt.Println("\033[31mWarning: private_key not found in bundle.js.\033[0m")
@@ -70,20 +79,19 @@ func runOAuth(ctx context.Context, args []string) {
 	client := api.New(appID, secrets)
 	dl, err := downloader.New(client, downloader.Options{})
 	if err != nil {
-		fatalf("init downloader: %v", err)
+		return fmt.Errorf("init downloader: %w", err)
 	}
 
 	if err := dl.OAuthLogin(ctx, appID, privateKey, codeOrURL); err != nil {
-		fmt.Fprintf(os.Stderr, "\033[31m%v\033[0m\n", err)
-		os.Exit(1)
+		return err
 	}
 
 	// Persist token + user_id
-	if client.UAT != "" {
-		if err := config.SaveToken(cfg.FilePath, client.UserID, client.UAT); err != nil {
-			fmt.Fprintf(os.Stderr, "\033[33mWarning: could not save token: %v\033[0m\n", err)
-		}
-	} else {
-		fmt.Println("\033[33mWarning: no token obtained — config not updated\033[0m")
+	if client.UAT == "" {
+		return fmt.Errorf("no token obtained — config not updated")
 	}
+	if err := config.SaveToken(cfg.FilePath, client.UserID, client.UAT); err != nil {
+		return fmt.Errorf("could not save token: %w", err)
+	}
+	return nil
 }
