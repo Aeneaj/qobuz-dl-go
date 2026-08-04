@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -42,6 +43,14 @@ func (d *Downloader) OAuthLogin(ctx context.Context, appID, privateKey string, c
 	}
 
 	if _, err := d.Client.LoginWithOAuthResult(ctx, result, privateKey); err != nil {
+		// A free account is not a credentials problem: the login itself
+		// succeeded and Qobuz reported the tier. Sending the user to --reset
+		// would loop them through re-entering credentials that are already
+		// correct, so the token-auth advice is suppressed for this one error.
+		var ineligible *api.IneligibleError
+		if errors.As(err, &ineligible) {
+			return fmt.Errorf("%w\n\nThe login itself worked — downloading needs a paid Qobuz subscription", err)
+		}
 		return fmt.Errorf("OAuth login: %w\n\nIf this keeps failing, use token auth instead:\n  qobuz-dl --reset", err)
 	}
 

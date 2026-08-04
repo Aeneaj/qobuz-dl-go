@@ -141,7 +141,7 @@ Medido con `go test -cover ./...` el 2026-07-27:
 | api | 42.3% | client_test.go |
 | bundle | 59.7% | bundle_test.go |
 | config | 37.9% | config_test.go |
-| downloader | 40.1% | integration_test.go, tui_test.go, metadata_test.go, db_test.go, lastfm_test.go, helpers_test.go, redownload_test.go |
+| downloader | 41.5% | integration_test.go, oauth_test.go, tui_test.go, metadata_test.go, db_test.go, lastfm_test.go, helpers_test.go, redownload_test.go |
 | lyrics | 74.1% | metadata_test.go, lrclib_test.go, lyrics_test.go |
 | ui | 47.3% | shell_test.go |
 | cmd/qobuz-dl | 0% | main_test.go |
@@ -213,12 +213,32 @@ go test ./...                           # todos los tests
 go test ./internal/lyrics/... -v        # tests de un paquete concreto
 ```
 
-## Autenticación Qobuz (abril 2026)
+## Autenticación Qobuz
 
-Password auth rota (401). Workarounds implementados:
-1. **Token**: `qobuz-dl --reset` → pegar user_id + user_auth_token desde DevTools
-2. **OAuth** (recomendado): `qobuz-dl oauth` → servidor local captura redirect con `user_auth_token=` o `code_autorisation=`
+Password auth rota (401, abril 2026). Dos vías:
+1. **OAuth** (recomendado): `qobuz-dl oauth` → servidor local captura redirect con `user_auth_token=` o `code_autorisation=`
+2. **Token**: `qobuz-dl --reset` → pegar user_id + user_auth_token desde DevTools
 3. `/oauth/callback` puede devolver 404 — el código intenta `code_autorisation` y `code` como fallback
+
+**OAuth funciona end to end** (verificado 2026-08-04 contra Qobuz real): captura del redirect,
+token, `user/login` y lectura de membresía. Lo que antes parecía "auth rota" en una cuenta gratuita
+era el gate de elegibilidad, no un fallo de autenticación.
+
+**Regla de mensajes de error**: cuando la autenticación falla, el usuario ya está atascado — el
+consejo que se imprima es su única salida, así que tiene que funcionar y tiene que ser el correcto.
+Dos bugs pisados aquí, ambos de consejo equivocado, no de lógica:
+
+- Tres rutas anunciaban `qobuz-dl --reset --token`; el flag `--token` nunca existió, así que el
+  comando moría con `flag provided but not defined`. Lo guarda `TestAdvertisedFlagsExist`
+  (`cmd/qobuz-dl/main_test.go`), que escanea las fuentes buscando `qobuz-dl --xxx` y comprueba
+  cada nombre contra los `fs.Bool/String/Int` registrados. Es **estático a propósito**: ejecutar
+  los comandos anunciados dispararía `--reset` de verdad, que escribe el `config.ini` del usuario
+  y hace fetch de `bundle.js` por red.
+- `IneligibleError` (cuenta gratuita) recibía el consejo genérico "usa token auth: `--reset`", que
+  es un bucle: el login ya funcionó y las credenciales son correctas. `OAuthLogin` lo distingue con
+  `errors.As` y dice lo que pasa de verdad. Tests en `internal/downloader/oauth_test.go`.
+
+La ruta de token (`flags.go:121`) propaga el error tal cual, sin añadir consejo — correcto, no tocar.
 
 ### Flujo de inicialización y credenciales
 
