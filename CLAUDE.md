@@ -134,7 +134,7 @@ No añadir dependencias nuevas sin discusión. En particular no añadir librerí
 
 ### Cobertura por paquete
 
-Medido con `go test -cover ./...` el 2026-07-27:
+Medido con `go test -cover ./...` el 2026-08-04:
 
 | Paquete | Cobertura | Archivos de test |
 |---|---|---|
@@ -142,11 +142,18 @@ Medido con `go test -cover ./...` el 2026-07-27:
 | bundle | 59.7% | bundle_test.go |
 | config | 37.9% | config_test.go |
 | downloader | 41.5% | integration_test.go, oauth_test.go, tui_test.go, metadata_test.go, db_test.go, lastfm_test.go, helpers_test.go, redownload_test.go |
-| lyrics | 74.1% | metadata_test.go, lrclib_test.go, lyrics_test.go |
-| ui | 47.3% | shell_test.go |
+| lyrics | 75.6% | metadata_test.go, lrclib_test.go, lyrics_test.go |
+| ui | 52.4% | shell_test.go, handle_test.go |
 | cmd/qobuz-dl | 0% | main_test.go |
 
 `cmd/qobuz-dl` marca 0% porque sus tests son **black-box**: compilan el binario en `TestMain` y lo ejecutan como subproceso, así que la cobertura no se instrumenta. No es falta de tests.
+
+`handle_test.go` en ui cubre `TrackHandle`, el seam que hace intercambiables mpb y la TUI. El test
+que importa es `TestTrackHandleReadSendsNothing`: arranca un `tea.Program` headless con un modelo
+que graba los mensajes y comprueba que copiar 8 KB por el `ProxyReader` no manda **ninguno**. Es la
+invariante de la que depende el diseño — un `p.Send()` por `Read` satura el bucle con 6 workers.
+Filtra los mensajes propios de bubbletea (window size) porque si no los conteos no significan nada.
+Validado con 6 mutaciones, todas detectadas.
 
 `helpers_test.go` en downloader cubre: `sanitize`, `expandPlaceholders`, `renderFormat`, `formatDuration`, `idStr`, `nestedStr`, `releaseYear`, `essenceTitle`, `isAlbumType`.
 
