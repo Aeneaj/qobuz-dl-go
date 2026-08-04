@@ -72,6 +72,8 @@ func (b *tuiBackend) session() error {
 	}
 }
 
+func (b *tuiBackend) LoggedIn() bool { return b.dl != nil }
+
 // Login drops out of the alt screen, runs the ordinary CLI OAuth flow, and
 // comes back.
 //

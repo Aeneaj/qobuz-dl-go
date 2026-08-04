@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -44,25 +45,34 @@ const (
 )
 
 type menuEntry struct {
-	act   action
-	label string
-	hint  string
+	act     action
+	icon    string
+	label   string
+	hint    string
+	section string         // rendered as a heading when it changes
+	style   lipgloss.Style // colour of the icon
 }
 
+// Entries are grouped by section and coloured by purpose: blue to find things,
+// cyan to move them through the queue, yellow for tools, purple for the
+// session. Sections are drawn from this table, never selectable themselves.
 var menu = []menuEntry{
-	{actSearchAlbum, "Buscar álbumes", "busca en Qobuz y añade a la cola"},
-	{actSearchTrack, "Buscar canciones", "búsqueda por track"},
-	{actSearchArtist, "Buscar artistas", "discografía completa"},
-	{actSearchPlaylist, "Buscar playlists", "playlists de Qobuz"},
-	{actURL, "Añadir URL", "álbum, track, artista, sello o Last.fm"},
-	{actLogin, "Iniciar sesión (OAuth)", "abre Qobuz en el navegador"},
-	{actQueue, "Ver la cola", "revisar y quitar elementos"},
-	{actGo, "Descargar la cola", "empieza la descarga"},
-	{actLyrics, "Letras (.lrc)", "busca letras sincronizadas en LRCLIB"},
-	{actCSV, "Importar CSV", "playlist exportada de TuneMyMusic"},
-	{actConfig, "Configuración", "ver ajustes actuales"},
-	{actPurge, "Borrar historial", "olvida lo ya descargado"},
-	{actQuit, "Salir", ""},
+	{actSearchAlbum, "♫", "Buscar álbumes", "busca en Qobuz y añade a la cola", "BUSCAR", sBlue},
+	{actSearchTrack, "♪", "Buscar canciones", "búsqueda por track", "", sBlue},
+	{actSearchArtist, "◈", "Buscar artistas", "discografía completa", "", sBlue},
+	{actSearchPlaylist, "≡", "Buscar playlists", "playlists de Qobuz", "", sBlue},
+
+	{actURL, "+", "Añadir URL", "álbum, track, artista, sello o Last.fm", "COLA", sCyan},
+	{actQueue, "▤", "Ver la cola", "revisar y quitar elementos", "", sCyan},
+	{actGo, "⬇", "Descargar la cola", "empieza la descarga", "", sCyan},
+
+	{actLyrics, "♬", "Letras (.lrc)", "busca letras sincronizadas en LRCLIB", "HERRAMIENTAS", sYellow},
+	{actCSV, "⇪", "Importar CSV", "playlist exportada de TuneMyMusic", "", sYellow},
+	{actConfig, "⚙", "Configuración", "ver ajustes actuales", "", sYellow},
+	{actPurge, "✖", "Borrar historial", "olvida lo ya descargado", "", sYellow},
+
+	{actLogin, "⚿", "Iniciar sesión (OAuth)", "abre Qobuz en el navegador", "SESIÓN", sPurple},
+	{actQuit, "⏻", "Salir", "", "", sPurple},
 }
 
 // runKind tells the running screen what to draw: per-track bars for the
@@ -456,16 +466,31 @@ func (s *Shell) View() string {
 }
 
 func (s *Shell) viewHeader(w int) string {
-	title := sBlue.Render("◈") + "  " + sBold.Foreground(cWhite).Render("QOBUZ-DL")
-	right := sDim.Render(fmt.Sprintf("cola: %d", len(s.queue)))
+	title := sBlue.Render("◈") + " " + sBold.Foreground(cWhite).Render("QOBUZ") +
+		sBlue.Render("-") + sBold.Foreground(cWhite).Render("DL")
 
+	// Session state belongs in the chrome: without it the only way to find out
+	// there is no token is to run a search and watch it fail.
+	session := sRed.Render("○") + " " + sDim.Render("sin sesión")
+	if s.be.LoggedIn() {
+		session = sGreen.Render("●") + " " + sDim.Render("conectado")
+	}
+
+	queue := sDim.Render("cola ")
+	if len(s.queue) > 0 {
+		queue += sCyan.Render(strconv.Itoa(len(s.queue)))
+	} else {
+		queue += sFaint.Render("0")
+	}
+
+	right := session + sFaint.Render("  │  ") + queue
 	pad := w - 6 - lipgloss.Width(title) - lipgloss.Width(right)
 	if pad < 1 {
 		pad = 1
 	}
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(cGray).
+		BorderForeground(cFaint).
 		Padding(0, 1).
 		Width(w - 2).
 		Render(title + strings.Repeat(" ", pad) + right)
@@ -473,28 +498,49 @@ func (s *Shell) viewHeader(w int) string {
 
 func (s *Shell) viewMenu(w int) string {
 	var b strings.Builder
+
 	for i, m := range menu {
-		cursor := "   "
-		label := sDim.Render(m.label)
+		if m.section != "" {
+			if i > 0 {
+				b.WriteString("\n")
+			}
+			b.WriteString("  " + sSection.Render(m.section) + "\n")
+		}
+
 		if i == s.menu.cursor {
-			cursor = "  " + sBlue.Render("❯")
-			label = sBold.Foreground(cWhite).Render(m.label)
+			// The selected row is painted edge to edge, hint included, so the
+			// cursor is visible at a glance instead of being one bold word.
+			text := " " + m.icon + "  " + m.label
+			if m.hint != "" {
+				text += "  ·  " + m.hint
+			}
+			text = truncate(text, w-6)
+			pad := w - 4 - lipgloss.Width(text)
+			if pad > 0 {
+				text += strings.Repeat(" ", pad)
+			}
+			b.WriteString("  " + sSelected.Render(text) + "\n")
+			continue
 		}
-		line := cursor + " " + label
-		if m.hint != "" && i == s.menu.cursor {
-			line += "  " + sDim.Italic(true).Render(m.hint)
-		}
-		b.WriteString(truncate(line, w+40) + "\n")
+
+		b.WriteString("   " + m.style.Render(m.icon) + "  " + sDim.Render(m.label) + "\n")
 	}
 	return b.String()
 }
 
 func (s *Shell) viewFooter() string {
 	if s.errMsg != "" {
-		return "  " + sRed.Render("✗ "+s.errMsg)
+		return "  " + sBadgeErr.Render("ERROR") + " " + sRed.Render(s.errMsg)
 	}
 	if s.status != "" {
-		return "  " + sDim.Render(s.status)
+		return "  " + sYellow.Render("▸ ") + sDim.Render(s.status)
 	}
-	return "  " + sDim.Render("↑↓ moverse · enter elegir · q salir")
+
+	hints := []string{
+		keyHint("↑↓", "moverse"),
+		keyHint("⏎", "elegir"),
+		keyHint("esc", "volver"),
+		keyHint("q", "salir"),
+	}
+	return "  " + strings.Join(hints, sFaint.Render("   "))
 }

@@ -20,6 +20,8 @@ type fakeBackend struct {
 	loginErr  error
 }
 
+func (f *fakeBackend) LoggedIn() bool { return f.loggedIn }
+
 func (f *fakeBackend) Login(context.Context) (string, error) {
 	if f.loginErr != nil {
 		return "", f.loginErr
@@ -296,5 +298,27 @@ func TestShellViewRendersEveryScreen(t *testing.T) {
 				t.Errorf("width %d screen %v rendered nothing", width, sc)
 			}
 		}
+	}
+}
+
+// TestMenuTableIsWellFormed guards the table the menu is drawn from. Adding an
+// entry and forgetting its icon or colour renders a hole in the list, and a
+// first entry without a section heading starts the menu mid-group.
+func TestMenuTableIsWellFormed(t *testing.T) {
+	if menu[0].section == "" {
+		t.Error("the first entry must open a section, or the menu starts headerless")
+	}
+	seen := map[action]bool{}
+	for i, m := range menu {
+		if m.icon == "" {
+			t.Errorf("menu[%d] (%s) has no icon", i, m.label)
+		}
+		if m.label == "" {
+			t.Errorf("menu[%d] has no label", i)
+		}
+		if seen[m.act] {
+			t.Errorf("menu[%d] (%s) repeats an action already in the menu", i, m.label)
+		}
+		seen[m.act] = true
 	}
 }

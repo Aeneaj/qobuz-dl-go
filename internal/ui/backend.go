@@ -19,6 +19,10 @@ type Item struct {
 // They report progress by sending Msg* values into the program — which is why
 // the implementation, not the shell, holds the *tea.Program.
 type Backend interface {
+	// LoggedIn reports whether a Qobuz session exists. The header shows it, so
+	// "no session" is visible before an action fails rather than after.
+	LoggedIn() bool
+
 	// Login authenticates with Qobuz. The implementation may take over the
 	// terminal while it runs — the shell must not draw until it returns.
 	Login(ctx context.Context) (string, error)
