@@ -73,7 +73,7 @@ func oauthLogin(ctx context.Context, codeOrURL string) error {
 	if privateKey == "" {
 		fmt.Println("\033[31mWarning: private_key not found in bundle.js.\033[0m")
 		fmt.Println("\033[33mOAuth code exchange will fail. If it does, use token auth:\033[0m")
-		fmt.Println("\033[33m  qobuz-dl --reset --token\033[0m")
+		fmt.Println("\033[33m  qobuz-dl --reset\033[0m")
 	}
 
 	client := api.New(appID, secrets)

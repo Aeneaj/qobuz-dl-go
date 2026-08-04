@@ -36,13 +36,13 @@ func (d *Downloader) OAuthLogin(ctx context.Context, appID, privateKey string, c
 				"Received params: %v\n\n"+
 				"As a workaround, log in at https://play.qobuz.com, then open\n"+
 				"DevTools → Application → Local Storage → find 'localuser' and run:\n"+
-				"  qobuz-dl --reset --token",
+				"  qobuz-dl --reset",
 			result.AllParams,
 		)
 	}
 
 	if _, err := d.Client.LoginWithOAuthResult(ctx, result, privateKey); err != nil {
-		return fmt.Errorf("OAuth login: %w\n\nIf this keeps failing, use token auth instead:\n  qobuz-dl --reset --token", err)
+		return fmt.Errorf("OAuth login: %w\n\nIf this keeps failing, use token auth instead:\n  qobuz-dl --reset", err)
 	}
 
 	fmt.Println("\033[32mOAuth login successful!\033[0m")

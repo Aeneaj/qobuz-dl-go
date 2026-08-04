@@ -1,9 +1,11 @@
 package main
 
 import (
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -157,5 +159,64 @@ func TestShowConfig_ExistingConfig_PrintsIt(t *testing.T) {
 
 	if !strings.Contains(string(out), "email") {
 		t.Errorf("expected config content in output, got: %q", string(out))
+	}
+}
+
+// TestAdvertisedFlagsExist guards a whole bug class: error paths that tell the
+// user to run "qobuz-dl --something" where --something was never registered.
+// That advice is printed exactly when the user is already stuck (auth failed),
+// so a stale flag name sends them into "flag provided but not defined".
+//
+// Deliberately static — it compares advertised names against the ones passed to
+// fs.Bool/fs.String/fs.Int rather than executing the binary. Running the advice
+// for real would fire --reset, which writes the caller's config.ini and fetches
+// bundle.js over the network.
+func TestAdvertisedFlagsExist(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	root := filepath.Dir(filepath.Dir(wd)) // repo root, from cmd/qobuz-dl
+
+	var (
+		reAdvice   = regexp.MustCompile(`qobuz-dl ((?:--[a-z-]+ ?)+)`)
+		reRegister = regexp.MustCompile(`fs\.(?:Bool|String|Int)\("([a-z-]+)"`)
+		advertised = map[string]string{} // flag -> file advertising it
+		registered = map[string]bool{}
+	)
+
+	err = filepath.WalkDir(root, func(path string, e fs.DirEntry, err error) error {
+		if err != nil || e.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		for _, m := range reRegister.FindAllStringSubmatch(string(src), -1) {
+			registered[m[1]] = true
+		}
+		for _, m := range reAdvice.FindAllStringSubmatch(string(src), -1) {
+			for _, f := range strings.Fields(m[1]) {
+				advertised[strings.TrimPrefix(f, "--")] = path
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk sources: %v", err)
+	}
+
+	// Both sides must be non-empty, otherwise a broken regex passes silently.
+	if len(advertised) == 0 || len(registered) == 0 {
+		t.Fatalf("scan found %d advertised and %d registered flags — regex or walk is broken",
+			len(advertised), len(registered))
+	}
+
+	for flag, file := range advertised {
+		if !registered[flag] {
+			t.Errorf("%s tells the user to run \"qobuz-dl --%s\" but no flag %q is registered",
+				file, flag, flag)
+		}
 	}
 }
