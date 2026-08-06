@@ -1,11 +1,93 @@
 package downloader
 
 import (
+	"bytes"
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// Tags and cover art are written in a single rewrite: the Vorbis Comment must
+// land right after STREAMINFO, the stale PICTURE block must be replaced (not
+// duplicated), and the audio data must survive untouched.
+func TestWriteFLACMeta_TagsAndCoverInOnePass(t *testing.T) {
+	// A PADDING block sits between STREAMINFO and PICTURE so that inserting the
+	// Vorbis Comment after STREAMINFO is distinguishable from appending it at
+	// the end — with a single block both would produce the same file.
+	flac := append([]byte("fLaC"), 0x00, 0x00, 0x00, 0x22) // STREAMINFO, not last, len 34
+	flac = append(flac, make([]byte, 34)...)
+	flac = append(flac, 0x01, 0x00, 0x00, 0x02, 0x00, 0x00) // PADDING, not last, len 2
+	flac = append(flac, 0x86, 0x00, 0x00, 0x03)             // PICTURE, last, len 3
+	flac = append(flac, "old"...)
+	audio := []byte{0xff, 0xf8, 0x00, 0x00}
+	flac = append(flac, audio...)
+
+	tmp := tempFile(t, "*.flac")
+	if err := os.WriteFile(tmp, flac, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cover := []byte("JPEGDATA")
+	if err := writeFLACMeta(tmp, map[string]string{"TITLE": "One Pass"}, cover); err != nil {
+		t.Fatalf("writeFLACMeta: %v", err)
+	}
+
+	out, err := os.ReadFile(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocks, tail := walkFLAC(t, out)
+
+	var types []byte
+	for _, b := range blocks {
+		types = append(types, b.blockType)
+	}
+	const typePadding = 1
+	if want := []byte{typeStreamInfo, typeVorbisComment, typePadding, typePicture}; !bytes.Equal(types, want) {
+		t.Fatalf("block types = %v, want %v", types, want)
+	}
+	if !strings.Contains(string(blocks[1].data), "TITLE=One Pass") {
+		t.Error("TITLE tag missing from Vorbis Comment block")
+	}
+	if !bytes.HasSuffix(blocks[3].data, cover) {
+		t.Error("new cover not found in PICTURE block")
+	}
+	if bytes.Contains(blocks[3].data, []byte("old")) {
+		t.Error("stale PICTURE block was not replaced")
+	}
+	if !bytes.Equal(tail, audio) {
+		t.Errorf("audio data = %q, want %q", tail, audio)
+	}
+}
+
+// walkFLAC parses an encoded FLAC into its metadata blocks and trailing audio,
+// failing the test unless exactly the final block carries the last-block flag.
+func walkFLAC(t *testing.T, data []byte) ([]flacBlock, []byte) {
+	t.Helper()
+	if len(data) < 4 || string(data[:4]) != "fLaC" {
+		t.Fatal("output is not a FLAC file")
+	}
+	var blocks []flacBlock
+	pos := 4
+	for pos+4 <= len(data) {
+		isLast := data[pos]&0x80 != 0
+		bType := data[pos] & 0x7F
+		n := int(data[pos+1])<<16 | int(data[pos+2])<<8 | int(data[pos+3])
+		pos += 4
+		if pos+n > len(data) {
+			t.Fatalf("block %d overruns end of file", len(blocks))
+		}
+		blocks = append(blocks, flacBlock{bType, data[pos : pos+n]})
+		pos += n
+		if isLast {
+			return blocks, data[pos:]
+		}
+	}
+	t.Fatal("no block carries the last-block flag")
+	return nil, nil
+}
 
 // ---- FLAC tagging tests ----
 
@@ -24,8 +106,8 @@ func TestWriteFLACTags_RoundTrip(t *testing.T) {
 		"TRACKNUMBER": "3",
 		"DATE":        "2024-04-01",
 	}
-	if err := writeFLACTags(tmp, tags); err != nil {
-		t.Fatalf("writeFLACTags: %v", err)
+	if err := writeFLACMeta(tmp, tags, nil); err != nil {
+		t.Fatalf("writeFLACMeta: %v", err)
 	}
 
 	// Read back and verify the Vorbis Comment block is present
@@ -73,7 +155,7 @@ func TestWriteFLACTags_RoundTrip(t *testing.T) {
 func TestWriteFLACTags_NotFLAC(t *testing.T) {
 	tmp := tempFile(t, "*.flac")
 	os.WriteFile(tmp, []byte("not a flac file"), 0644)
-	err := writeFLACTags(tmp, map[string]string{"TITLE": "x"})
+	err := writeFLACMeta(tmp, map[string]string{"TITLE": "x"}, nil)
 	if err == nil {
 		t.Error("expected error for non-FLAC file")
 	}
@@ -460,3 +542,36 @@ func containsBytes(data, sub []byte) bool {
 
 // suppress unused import
 var _ = filepath.Join
+
+// TestBuildFLACPictureBlock pins the field layout, and specifically that every
+// uint32 is big-endian — the FLAC spec's byte order, and the opposite of the
+// Vorbis Comment block right next to it in the same file.
+func TestBuildFLACPictureBlock(t *testing.T) {
+	img := bytes.Repeat([]byte{0xAB}, 300) // >255 so the length bytes disagree LE vs BE
+	b := buildFLACPictureBlock(img)
+
+	be := binary.BigEndian
+	if got := be.Uint32(b[0:4]); got != 3 {
+		t.Errorf("picture_type = %d, want 3 (front cover)", got)
+	}
+	mimeLen := be.Uint32(b[4:8])
+	if mimeLen != uint32(len("image/jpeg")) {
+		t.Fatalf("mime_length = %d, want %d", mimeLen, len("image/jpeg"))
+	}
+	if got := string(b[8 : 8+mimeLen]); got != "image/jpeg" {
+		t.Errorf("mime = %q, want %q", got, "image/jpeg")
+	}
+
+	// desc_length, then four zeroed image properties, then data_length.
+	p := 8 + mimeLen
+	if got := be.Uint32(b[p : p+4]); got != 0 {
+		t.Errorf("desc_length = %d, want 0", got)
+	}
+	p += 4 + 16 // empty desc + width/height/depth/count
+	if got := be.Uint32(b[p : p+4]); got != uint32(len(img)) {
+		t.Errorf("data_length = %d, want %d", got, len(img))
+	}
+	if got := b[p+4:]; !bytes.Equal(got, img) {
+		t.Errorf("image payload truncated: %d bytes, want %d", len(got), len(img))
+	}
+}

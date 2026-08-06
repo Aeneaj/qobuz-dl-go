@@ -7,27 +7,42 @@ package downloader
 // Both are pure-Go implementations with no external dependencies.
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"unicode/utf16"
 )
 
 // ---- FLAC tagging ----
 
-// tagFLAC writes Vorbis Comment metadata to a FLAC file,
-// then renames tmpFile → finalFile.
-func tagFLAC(tmpFile, coverDir, finalFile string, track, album map[string]interface{}, isTrack, embedArt bool) error {
-	tags := buildFLACTags(track, album, isTrack)
-	if err := writeFLACTags(tmpFile, tags); err != nil {
-		return err
-	}
+// FLAC metadata block types (the ones we read or replace).
+const (
+	typeStreamInfo    = 0
+	typeVorbisComment = 4
+	typePicture       = 6
+)
+
+// tagFLAC writes Vorbis Comment metadata — and, when embedArt is set, the
+// cover art — to a FLAC file in a single rewrite, then renames tmpFile →
+// finalFile.
+//
+// w is where the missing-cover warning goes. It must be the downloader's
+// termOut(), never os.Stdout: this runs from the worker pool with progress
+// bars live, and under the TUI nothing may reach the terminal at all.
+func tagFLAC(w io.Writer, tmpFile, coverDir, finalFile string, track, album map[string]interface{}, isTrack, embedArt bool) error {
+	var cover []byte
 	if embedArt {
-		if err := embedFLACCover(tmpFile, coverDir); err != nil {
-			fmt.Printf("\033[33mWarning: could not embed cover: %v\033[0m\n", err)
+		var err error
+		if cover, err = readCover(coverDir); err != nil {
+			fmt.Fprintf(w, "\033[33mWarning: could not embed cover: %v\033[0m\n", err)
 		}
+	}
+	if err := writeFLACMeta(tmpFile, buildFLACTags(track, album, isTrack), cover); err != nil {
+		return err
 	}
 	return os.Rename(tmpFile, finalFile)
 }
@@ -57,7 +72,7 @@ func buildFLACTags(track, album map[string]interface{}, isTrack bool) map[string
 		t["TRACKTOTAL"] = fmt.Sprintf("%v", nestedFloat(track, "album", "tracks_count"))
 		t["ALBUM"] = nestedStr(track, "album", "title")
 		t["DATE"] = nestedStr(track, "album", "release_date_original")
-		t["COPYRIGHT"] = formatCopyright(safeGetStr(track, "copyright"))
+		t["COPYRIGHT"] = formatCopyright(nestedStr(track, "copyright"))
 		t["LABEL"] = nestedStr(track, "album", "label", "name")
 	} else {
 		if performer == "" {
@@ -66,7 +81,7 @@ func buildFLACTags(track, album map[string]interface{}, isTrack bool) map[string
 		t["ARTIST"] = performer
 		t["GENRE"] = formatGenres(sliceStrings(album, "", "genres_list"))
 		t["ALBUMARTIST"] = nestedStr(album, "artist", "name")
-		t["TRACKTOTAL"] = fmt.Sprintf("%v", nestedFloat(album, "", "tracks_count"))
+		t["TRACKTOTAL"] = fmt.Sprintf("%v", nestedFloat(album, "tracks_count"))
 		t["ALBUM"] = nestedStr(album, "", "title")
 		if t["ALBUM"] == "" {
 			t["ALBUM"], _ = album["title"].(string)
@@ -74,43 +89,64 @@ func buildFLACTags(track, album map[string]interface{}, isTrack bool) map[string
 		if rd, _ := album["release_date_original"].(string); rd != "" {
 			t["DATE"] = rd
 		}
-		t["COPYRIGHT"] = formatCopyright(safeGetStr(album, "copyright"))
+		t["COPYRIGHT"] = formatCopyright(nestedStr(album, "copyright"))
 		t["LABEL"] = nestedStr(album, "label", "name")
 	}
 
 	return t
 }
 
-// writeFLACTags reads a FLAC file, replaces/adds a VORBIS_COMMENT block, and writes back.
-// FLAC format: 4-byte magic, then a sequence of metadata blocks.
-// Each block: 1-byte type+last_flag, 3-byte length, then data.
-func writeFLACTags(path string, tags map[string]string) error {
-	data, err := os.ReadFile(path)
+// flacBlock is a single FLAC metadata block. The last-block flag is not stored
+// — writeFLAC recomputes it from the position in the slice.
+type flacBlock struct {
+	blockType byte
+	data      []byte
+}
+
+// writeFLACMeta rewrites the metadata of a FLAC file in one pass: the
+// VORBIS_COMMENT block is replaced with tags, and when cover is non-nil the
+// existing PICTURE blocks are replaced with it. A nil cover leaves whatever
+// artwork the file already carries untouched.
+func writeFLACMeta(path string, tags map[string]string, cover []byte) error {
+	drop := []byte{typeVorbisComment}
+	if cover != nil {
+		drop = append(drop, typePicture)
+	}
+	blocks, audio, err := splitFLAC(path, drop...)
 	if err != nil {
 		return err
 	}
+
+	// Vorbis Comment belongs right after STREAMINFO; without one, it goes last.
+	vc := flacBlock{typeVorbisComment, buildVorbisComment(tags)}
+	if i := slices.IndexFunc(blocks, func(b flacBlock) bool { return b.blockType == typeStreamInfo }); i >= 0 {
+		blocks = slices.Insert(blocks, i+1, vc)
+	} else {
+		blocks = append(blocks, vc)
+	}
+
+	if cover != nil {
+		blocks = append(blocks, flacBlock{typePicture, buildFLACPictureBlock(cover)})
+	}
+	return writeFLAC(path, blocks, audio)
+}
+
+// splitFLAC parses a FLAC file into its metadata blocks and the audio data
+// that follows, discarding every block whose type appears in drop.
+// FLAC format: 4-byte magic, then a sequence of metadata blocks.
+// Each block: 1-byte type+last_flag, 3-byte length, then data.
+func splitFLAC(path string, drop ...byte) ([]flacBlock, []byte, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, err
+	}
 	if len(data) < 4 || string(data[:4]) != "fLaC" {
-		return fmt.Errorf("not a FLAC file: %s", path)
+		return nil, nil, fmt.Errorf("not a FLAC file: %s", path)
 	}
 
-	// Parse existing blocks, removing any existing VORBIS_COMMENT (type 4)
-	const (
-		typeStreamInfo    = 0
-		typeVorbisComment = 4
-		typePicture       = 6
-	)
-
-	type block struct {
-		blockType byte
-		data      []byte
-	}
-
-	var blocks []block
+	var blocks []flacBlock
 	pos := 4
-	for pos < len(data) {
-		if pos+4 > len(data) {
-			break
-		}
+	for pos+4 <= len(data) {
 		header := data[pos]
 		isLast := (header & 0x80) != 0
 		bType := header & 0x7F
@@ -119,42 +155,24 @@ func writeFLACTags(path string, tags map[string]string) error {
 		if pos+length > len(data) {
 			break
 		}
-		blockData := data[pos : pos+length]
-		pos += length
-
-		if bType != typeVorbisComment {
-			blocks = append(blocks, block{bType, blockData})
+		if !slices.Contains(drop, bType) {
+			blocks = append(blocks, flacBlock{bType, data[pos : pos+length]})
 		}
+		pos += length
 		if isLast {
 			break
 		}
 	}
-	audioData := data[pos:]
+	return blocks, data[pos:], nil
+}
 
-	// Build new Vorbis Comment block
-	vcData := buildVorbisComment(tags)
-
-	// Re-assemble: insert VC block after STREAMINFO
-	var newBlocks []block
-	inserted := false
-	for _, b := range blocks {
-		newBlocks = append(newBlocks, b)
-		if b.blockType == typeStreamInfo && !inserted {
-			newBlocks = append(newBlocks, block{typeVorbisComment, vcData})
-			inserted = true
-		}
-	}
-	if !inserted {
-		newBlocks = append(newBlocks, block{typeVorbisComment, vcData})
-	}
-
-	// Encode blocks
-	var out []byte
-	out = append(out, 'f', 'L', 'a', 'C')
-	for i, b := range newBlocks {
-		isLast := i == len(newBlocks)-1
+// writeFLAC encodes blocks followed by audio back to path, flagging the last
+// metadata block as required by the format.
+func writeFLAC(path string, blocks []flacBlock, audio []byte) error {
+	out := []byte("fLaC")
+	for i, b := range blocks {
 		header := b.blockType
-		if isLast {
+		if i == len(blocks)-1 {
 			header |= 0x80
 		}
 		length := len(b.data)
@@ -162,8 +180,7 @@ func writeFLACTags(path string, tags map[string]string) error {
 			byte(length>>16), byte(length>>8), byte(length))
 		out = append(out, b.data...)
 	}
-	out = append(out, audioData...)
-
+	out = append(out, audio...)
 	return os.WriteFile(path, out, 0644)
 }
 
@@ -187,85 +204,14 @@ func buildVorbisComment(tags map[string]string) []byte {
 		size += 4 + len(c)
 	}
 	buf := make([]byte, 0, size)
-	buf = appendU32LE(buf, uint32(len(vendorBytes)))
+	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(vendorBytes)))
 	buf = append(buf, vendorBytes...)
-	buf = appendU32LE(buf, uint32(len(comments)))
+	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(comments)))
 	for _, c := range comments {
-		buf = appendU32LE(buf, uint32(len(c)))
+		buf = binary.LittleEndian.AppendUint32(buf, uint32(len(c)))
 		buf = append(buf, c...)
 	}
 	return buf
-}
-
-func appendU32LE(b []byte, v uint32) []byte {
-	return append(b, byte(v), byte(v>>8), byte(v>>16), byte(v>>24))
-}
-
-func embedFLACCover(flacPath, coverDir string) error {
-	coverPath := findCover(coverDir)
-	if coverPath == "" {
-		return fmt.Errorf("cover not found")
-	}
-	imgData, err := os.ReadFile(coverPath)
-	if err != nil {
-		return err
-	}
-
-	const typePicture = 6
-	picBlock := buildFLACPictureBlock(imgData)
-	data, err := os.ReadFile(flacPath)
-	if err != nil {
-		return err
-	}
-	if len(data) < 4 {
-		return fmt.Errorf("bad FLAC")
-	}
-
-	type block struct {
-		blockType byte
-		data      []byte
-	}
-	var blocks []block
-	pos := 4
-	for pos < len(data) {
-		if pos+4 > len(data) {
-			break
-		}
-		header := data[pos]
-		isLast := (header & 0x80) != 0
-		bType := header & 0x7F
-		length := int(data[pos+1])<<16 | int(data[pos+2])<<8 | int(data[pos+3])
-		pos += 4
-		if pos+length > len(data) {
-			break
-		}
-		blockData := data[pos : pos+length]
-		pos += length
-		if bType != typePicture { // remove old pictures
-			blocks = append(blocks, block{bType, blockData})
-		}
-		if isLast {
-			break
-		}
-	}
-	audioData := data[pos:]
-
-	blocks = append(blocks, block{typePicture, picBlock})
-
-	var out []byte
-	out = append(out, 'f', 'L', 'a', 'C')
-	for i, b := range blocks {
-		isLast := i == len(blocks)-1
-		header := b.blockType
-		if isLast {
-			header |= 0x80
-		}
-		length := len(b.data)
-		out = append(out, header, byte(length>>16), byte(length>>8), byte(length))
-		out = append(out, b.data...)
-	}
-	out = append(out, audioData...)
-	return os.WriteFile(flacPath, out, 0644)
 }
 
 func buildFLACPictureBlock(imgData []byte) []byte {
@@ -274,23 +220,29 @@ func buildFLACPictureBlock(imgData []byte) []byte {
 	// FLAC picture block layout (all big-endian uint32):
 	// picture_type, mime_length, mime, desc_length, desc,
 	// width, height, color_depth, color_count, data_length, data
+	be := binary.BigEndian
 	buf := make([]byte, 0, 32+len(mimeType)+len(imgData))
-	buf = appendU32BE(buf, 3) // Front cover
-	buf = appendU32BE(buf, uint32(len(mimeType)))
+	buf = be.AppendUint32(buf, 3) // Front cover
+	buf = be.AppendUint32(buf, uint32(len(mimeType)))
 	buf = append(buf, []byte(mimeType)...)
-	buf = appendU32BE(buf, uint32(len(desc)))
+	buf = be.AppendUint32(buf, uint32(len(desc)))
 	buf = append(buf, []byte(desc)...)
-	buf = appendU32BE(buf, 0) // width (unknown)
-	buf = appendU32BE(buf, 0) // height
-	buf = appendU32BE(buf, 0) // color depth
-	buf = appendU32BE(buf, 0) // color count
-	buf = appendU32BE(buf, uint32(len(imgData)))
+	buf = be.AppendUint32(buf, 0) // width (unknown)
+	buf = be.AppendUint32(buf, 0) // height
+	buf = be.AppendUint32(buf, 0) // color depth
+	buf = be.AppendUint32(buf, 0) // color count
+	buf = be.AppendUint32(buf, uint32(len(imgData)))
 	buf = append(buf, imgData...)
 	return buf
 }
 
-func appendU32BE(b []byte, v uint32) []byte {
-	return append(b, byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
+// readCover loads the cover image next to (or one level above) dir.
+func readCover(dir string) ([]byte, error) {
+	path := findCover(dir)
+	if path == "" {
+		return nil, fmt.Errorf("cover not found")
+	}
+	return os.ReadFile(path)
 }
 
 func findCover(dir string) string {
@@ -332,7 +284,7 @@ func buildMP3Tags(track, album map[string]interface{}, isTrack bool) map[string]
 		t["TPE2"] = nestedStr(track, "album", "artist", "name")
 		t["TALB"] = nestedStr(track, "album", "title")
 		t["TDRC"] = nestedStr(track, "album", "release_date_original")
-		t["TCOP"] = formatCopyright(safeGetStr(track, "copyright"))
+		t["TCOP"] = formatCopyright(nestedStr(track, "copyright"))
 		t["TPUB"] = nestedStr(track, "album", "label", "name")
 		trackTotal = fmt.Sprintf("%v", nestedFloat(track, "album", "tracks_count"))
 	} else {
@@ -347,9 +299,9 @@ func buildMP3Tags(track, album map[string]interface{}, isTrack bool) map[string]
 		if v, ok := album["release_date_original"].(string); ok {
 			t["TDRC"] = v
 		}
-		t["TCOP"] = formatCopyright(safeGetStr(album, "copyright"))
+		t["TCOP"] = formatCopyright(nestedStr(album, "copyright"))
 		t["TPUB"] = nestedStr(album, "label", "name")
-		trackTotal = fmt.Sprintf("%v", getFloat(album, "tracks_count"))
+		trackTotal = fmt.Sprintf("%v", nestedFloat(album, "tracks_count"))
 	}
 	t["TPE1"] = performer
 	if t["TDRC"] != "" && len(t["TDRC"]) >= 4 {
@@ -381,12 +333,8 @@ func writeID3v23(path string, tags map[string]string, embedArt bool, coverDir st
 	}
 
 	if embedArt {
-		coverPath := findCover(coverDir)
-		if coverPath != "" {
-			if imgData, err := os.ReadFile(coverPath); err == nil {
-				frame := buildAPICFrame(imgData)
-				frames = append(frames, frame...)
-			}
+		if imgData, err := readCover(coverDir); err == nil {
+			frames = append(frames, buildAPICFrame(imgData)...)
 		}
 	}
 
@@ -554,23 +502,4 @@ func sliceStrings(m map[string]interface{}, subKey, key string) []string {
 		}
 	}
 	return result
-}
-
-func safeGetStr(m map[string]interface{}, key string) string {
-	v, _ := m[key].(string)
-	return v
-}
-
-func nestedFloat(m map[string]interface{}, subKey, key string) float64 {
-	var src interface{} = m
-	if subKey != "" {
-		sub, _ := m[subKey].(map[string]interface{})
-		if sub == nil {
-			return 0
-		}
-		src = sub
-	}
-	mm, _ := src.(map[string]interface{})
-	v, _ := mm[key].(float64)
-	return v
 }

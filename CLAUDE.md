@@ -11,7 +11,7 @@ cmd/qobuz-dl/        CLI entry point (flag stdlib, sin dependencias externas)
   flags.go           wiring CLI→downloader: cliFlags, registerDownloadFlags,
                      loadOrInitConfig, initDownloader
   oauth_cmd.go       runOAuth
-  lyrics_cmd.go      runLyrics, resolveScanDir
+  lyrics_cmd.go      runLyrics
 internal/api/        Cliente HTTP Qobuz API (qopy.py)
 internal/bundle/     Scraper de app_id/secrets/private_key de bundle.js
 internal/config/     Lector/escritor de config.ini (INI casero, sin deps)
@@ -74,7 +74,25 @@ Cualquier nueva feature con feedback visual debe reutilizar este patrón para co
 
 Usa la primera cuando el mensaje deba verse al momento (un track que falla), la segunda cuando sea un resumen.
 
-Con `--tui` la regla es más estricta: bubbletea está en alt-screen y **nada** puede llegar a stdout, así que `termOut()` devuelve `io.Discard`. Por eso todos los mensajes del paquete (incluidos `lastfm.go` y `csvbatch.go`) van por `d.termOut()` y no por `fmt.Printf`. Las funciones libres (`makeM3U`, `printBatchSummary`) reciben el `io.Writer` como parámetro.
+Con `--tui` la regla es más estricta: bubbletea está en alt-screen y **nada** puede llegar a stdout, así que `termOut()` devuelve `io.Discard`. Por eso todos los mensajes del paquete (incluidos `lastfm.go` y `csvbatch.go`) van por `d.termOut()` y no por `fmt.Printf`. Las funciones libres (`makeM3U`, `printBatchSummary`, `tagFLAC`) reciben el `io.Writer` como parámetro.
+
+**`os.Stderr` cuenta igual que stdout**: la alt-screen se traga los dos. Un error que el
+usuario tiene que ver se **devuelve**, no se imprime — `DownloadCSV` devuelve el fallo de
+parseo y `runDisplay` propaga el de `fn`, que se reporta con la pantalla ya cerrada. Bajo
+la TUI el shell lo pinta en su línea de estado; en CLI acaba en `fatalf`, o sea stderr y
+exit 1.
+
+Las dos excepciones son `interactive.go` y `oauth.go`: el REPL de `fun` es dueño de su
+terminal y nunca corre con barras, y OAuth solo imprime con la terminal liberada por
+`ReleaseTerminal`. Están en la allowlist de `TestNoDirectStdoutWrites`.
+
+**Esa regla se rompió ocho veces sin que nada lo notara** (arreglado 2026-08-06):
+`tagFLAC`, `csvbatch.go` y `lastfm.go` tenían un `fmt.Print*` a un par de líneas de
+código que sí usaba `termOut()`, y `csvbatch.go` otros cinco `os.Stderr` —tres de ellos
+dentro de `ParseCSV`, que corre bajo la TUI vía `DownloadCSV`.
+`TestTermOutDiscardsUnderTUI` no lo veía porque prueba que `termOut()` **devuelve**
+`io.Discard`, no que alguien lo **use**. `TestNoDirectStdoutWrites` escanea el paquete y
+cierra esa diferencia.
 
 ### Idioma de la TUI
 
@@ -89,12 +107,31 @@ lleva lock y no es seguro con el bucle de render corriendo. Va en `main()` y no 
 `runTUI` porque las dos pantallas lo necesitan (`tui` y `--tui`), y así `internal/ui`
 no depende de `internal/config`. Idioma ausente o desconocido → inglés.
 
-**Lección de los tests**: los tres tests de datos (tabla completa, sin claves
-huérfanas, sin español en el código) pasaban mientras la fila **seleccionada** del
-menú se renderizaba en inglés — se construía con `m.label` crudo mientras todas las
-demás pasaban por `T()`. Una tabla de traducción completa no puede detectar un sitio
-de render que no la consulta. `TestMenuRendersFullySpanish` mueve el cursor por todas
-las entradas y compara la salida real; es el único que lo caza.
+Los **errores** son la excepción y se quedan en inglés sin `T()`, igual que los de
+`api`, `config` y `downloader`: traducir solo los del backend TUI sería incoherente y
+los `%w` no son claves de tabla. Los mensajes de estado sí van por `T()` — el patrón
+lo marca `shell.go` (`s.status = T("working…")`, `fmt.Sprintf(T("%d in the queue"), n)`).
+`cmd/qobuz-dl/tui_cmd.go` está en `package main` y llama `ui.T()`.
+
+**Lección de los tests, en dos rondas.** Primera: los tres tests de datos (tabla
+completa, sin claves huérfanas, sin español en el código) pasaban mientras la fila
+**seleccionada** del menú se renderizaba en inglés — se construía con `m.label` crudo
+mientras todas las demás pasaban por `T()`. Una tabla de traducción completa no puede
+detectar un sitio de render que no la consulta. `TestMenuRendersFullySpanish` mueve el
+cursor por todas las entradas y compara la salida real.
+
+Segunda (2026-08-06): esos cuatro tests seguían verdes con 16 cadenas en español
+hardcodeadas. Tres agujeros distintos, los tres ahora cerrados:
+
+- `readUISources` leía una **lista fija de seis ficheros** de `internal/ui`, así que
+  `cmd/qobuz-dl/tui_cmd.go` no se miraba nunca. Ahora lee por directorio — una lista de
+  ficheros deja de cubrir todo lo que se añada después de escribirla.
+- La regex de `TestNoSpanishLeftInSources` solo miraba `ñÑ¿¡`; `"(vacío)"` pasaba.
+  Ampliada a vocales acentuadas.
+- **Español sin carácter distintivo** (`"%d completadas"`, `"Ctrl+C cancelar"`) es
+  invisible para cualquier escaneo de fuentes. Lo caza `TestEnglishRenderStaysEnglish`:
+  renderiza en inglés y falla si aparece cualquier **valor** del mapa `es`. Una cadena
+  hardcodeada sale idéntica en los dos idiomas, y eso no necesita lista de palabras.
 
 ### La TUI completa (`tui`)
 
@@ -155,16 +192,16 @@ No añadir dependencias nuevas sin discusión. En particular no añadir librerí
 
 ### Cobertura por paquete
 
-Medido con `go test -cover ./...` el 2026-08-04:
+Medido con `go test -cover ./...` el 2026-08-06:
 
 | Paquete | Cobertura | Archivos de test |
 |---|---|---|
-| api | 42.3% | client_test.go |
+| api | 42.9% | client_test.go |
 | bundle | 59.7% | bundle_test.go |
-| config | 37.9% | config_test.go |
-| downloader | 41.5% | integration_test.go, oauth_test.go, tui_test.go, metadata_test.go, db_test.go, lastfm_test.go, helpers_test.go, redownload_test.go |
+| config | 45.1% | config_test.go |
+| downloader | 48.7% | integration_test.go, oauth_test.go, tui_test.go, metadata_test.go, db_test.go, lastfm_test.go, helpers_test.go, redownload_test.go, csvbatch_test.go |
 | lyrics | 75.6% | metadata_test.go, lrclib_test.go, lyrics_test.go |
-| ui | 53.3% | shell_test.go, handle_test.go, lang_test.go |
+| ui | 55.8% | shell_test.go, handle_test.go, lang_test.go |
 | cmd/qobuz-dl | 0% | main_test.go |
 
 `cmd/qobuz-dl` marca 0% porque sus tests son **black-box**: compilan el binario en `TestMain` y lo ejecutan como subproceso, así que la cobertura no se instrumenta. No es falta de tests.
@@ -176,7 +213,7 @@ invariante de la que depende el diseño — un `p.Send()` por `Read` satura el b
 Filtra los mensajes propios de bubbletea (window size) porque si no los conteos no significan nada.
 Validado con 6 mutaciones, todas detectadas.
 
-`helpers_test.go` en downloader cubre: `sanitize`, `expandPlaceholders`, `renderFormat`, `formatDuration`, `idStr`, `nestedStr`, `releaseYear`, `essenceTitle`, `isAlbumType`.
+`helpers_test.go` en downloader cubre: `sanitize`, `expandPlaceholders`, `renderFormat`, `formatDuration`, `idStr`, `nestedStr`, `releaseYear`, `essenceTitle`, `isRemaster`.
 
 ### Tests de integración del downloader (`integration_test.go`)
 
@@ -309,12 +346,11 @@ Jerarquía de prioridad al resolver la ruta de descarga:
 3. Fallback: `./qobuz-downloader` (relativo al CWD)
 
 Implementación:
-- `config.ResolveDir(dir string) (string, error)` — expande `~`, llama `filepath.Abs`, crea con `os.MkdirAll`; devuelve error descriptivo si hay problema de permisos (sin panic)
-- `Config.DownloadDir` — campo separado de `DefaultFolder` (que es el formato de nombre de álbum, no una ruta)
-- `Reset()` pregunta al usuario por el directorio antes de `default_folder`
+- `config.ResolveDir(dir string, create bool) (string, error)` — expande `~`, llama `filepath.Abs`; con `create` crea el árbol con `os.MkdirAll`, sin él exige que el directorio ya exista. Devuelve error descriptivo si hay problema de permisos (sin panic)
+- `Config.DownloadDir` — no confundir con la **constante** `config.DefaultFolder`, que es el formato de nombre de álbum (el default de `folder_format`), no una ruta. El campo `Config.DefaultFolder` se retiró: nadie lo leía.
 - `downloader.New()` ya no tiene fallback hardcodeado — la ruta llega siempre resuelta desde `initDownloader`
 
-**Importante**: el comando `lyrics` usa `resolveScanDir` (en `lyrics_cmd.go`), que es igual a `ResolveDir` pero **sin** `os.MkdirAll` — no crea el directorio si no existe. El usuario debe apuntar a una biblioteca ya existente.
+**Importante**: el comando `lyrics` (y `tuiBackend.Lyrics`) llama `config.ResolveDir(dir, false)` — no crea el directorio si no existe. El usuario debe apuntar a una biblioteca ya existente.
 
 ## Comando `lyrics` — detalles de implementación
 
@@ -365,6 +401,18 @@ lyrics_test.go    — buildLabel (formato, ancho fijo, truncado), lrcPathFor, sc
 
 ## Pendiente / Ideas
 
+- [x] Auditoría de sobreingeniería (`/ponytail-audit` sobre v1.5.0) — cerrada 2026-08-06.
+      15 hallazgos, −198 líneas, 0 dependencias eliminables. Los 2 primeros en `ec3b40a`
+      (dedup de reescritura FLAC y aplanado de páginas); los 13 restantes en cinco commits
+      temáticos: `rightAlign` en ui, `ResolveDir(dir, create)` + alias de flags por `BoolVar`
+      + `downloader.Qualities` en cmd, claves muertas de config, accesores/`encoding/binary`/
+      `isRemaster` en downloader, y código muerto en api.
+      Dos lecciones: (a) un test de datos completo no cubre un sitio de render que no consulta
+      la tabla — la mutación de `rightAlign` sin relleno pasaba `TestMenuRendersFullySpanish`
+      y solo la caza una aserción sobre el ancho real; (b) `buildFLACPictureBlock` aceptaba
+      `BigEndian`→`LittleEndian` sin que fallara nada, así que el swap a stdlib llegó con su
+      propio test de layout.
+
 - [x] Tests de integración con servidor mock completo para `downloader` — `integration_test.go`
       8 tests (11 con subtests): álbum completo, tagging real, tracks no disponibles, multi-disco,
       salto por DB entre ejecuciones, paridad con 1/2/3/8 workers, contexto cancelado, `HandleURL`.
@@ -394,7 +442,8 @@ lyrics_test.go    — buildLabel (formato, ancho fijo, truncado), lrcPathFor, sc
       `album.go` (545) seguía partido en dos clusters (0.57 y 0.40) → `album.go` + `track.go`.
       `smartDiscogFilter` vive con `downloadArtist`, su único llamador; los helpers de
       `downloadWithProgress` salen enteros a `transfer.go` (cluster de cohesión 0.93).
-      `getFloat` se queda en `helpers.go`, no en `search.go`: `metadata.go` también lo llama.
+      `getFloat` se quedó en `helpers.go`, no en `search.go`: `metadata.go` también lo llamaba.
+      (Desde 2026-08-06 ya no existe: era `nestedFloat` con la clave anidada vacía.)
 - [x] Deuda de complejidad cognitiva — cerrada 2026-07-27 (ver tabla arriba):
       `main()` repartido en dispatcher + `flags.go`; `decodeID3Text` partido por codificación
       (y arreglado el bug de Latin-1); `smartDiscogFilter` partido en

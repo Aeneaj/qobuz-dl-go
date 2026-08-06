@@ -169,16 +169,27 @@ func safeJoin(base, elem string) (string, error) {
 }
 
 func nestedStr(m map[string]interface{}, keys ...string) string {
+	s, _ := walkKeys(m, keys).(string)
+	return s
+}
+
+func nestedFloat(m map[string]interface{}, keys ...string) float64 {
+	v, _ := walkKeys(m, keys).(float64)
+	return v
+}
+
+// walkKeys descends through nested maps, returning nil the moment a level is
+// missing or is not a map.
+func walkKeys(m map[string]interface{}, keys []string) interface{} {
 	var cur interface{} = m
 	for _, k := range keys {
 		mm, ok := cur.(map[string]interface{})
 		if !ok {
-			return ""
+			return nil
 		}
 		cur = mm[k]
 	}
-	s, _ := cur.(string)
-	return s
+	return cur
 }
 
 func releaseYear(meta map[string]interface{}) string {
@@ -194,9 +205,4 @@ func isLocalFile(s string) bool {
 	}
 	_, err := os.Stat(s)
 	return err == nil
-}
-
-func getFloat(m map[string]interface{}, key string) float64 {
-	v, _ := m[key].(float64)
-	return v
 }

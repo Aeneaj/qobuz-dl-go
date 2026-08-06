@@ -9,15 +9,12 @@ import (
 	"strings"
 )
 
-func (d *Downloader) downloadArtist(ctx context.Context, pages []map[string]interface{}) error {
-	if len(pages) == 0 {
-		return nil
-	}
-	name, _ := pages[0]["name"].(string)
-
+// collectPageItems flattens the items of every page under the given section
+// key (e.g. "albums", "tracks"), skipping pages that lack the section.
+func collectPageItems(pages []map[string]interface{}, key string) []map[string]interface{} {
 	var items []map[string]interface{}
 	for _, page := range pages {
-		section, _ := page["albums"].(map[string]interface{})
+		section, _ := page[key].(map[string]interface{})
 		if section == nil {
 			continue
 		}
@@ -28,16 +25,30 @@ func (d *Downloader) downloadArtist(ctx context.Context, pages []map[string]inte
 			}
 		}
 	}
+	return items
+}
 
-	if d.Opts.SmartDiscog {
+// downloadAlbumCollection downloads every album listed under itemKey in pages
+// into a directory named after the collection. kind names the collection in
+// the console output. smartDiscog applies the discography filter, which only
+// makes sense when the albums all belong to the collection's own artist — for
+// a label it would compare each album's artist against the label name and
+// discard everything.
+func (d *Downloader) downloadAlbumCollection(ctx context.Context, pages []map[string]interface{}, itemKey, kind string, smartDiscog bool) error {
+	if len(pages) == 0 {
+		return nil
+	}
+	name, _ := pages[0]["name"].(string)
+	items := collectPageItems(pages, itemKey)
+	if smartDiscog {
 		items = smartDiscogFilter(name, items)
 	}
 
 	dir := filepath.Join(d.Opts.Directory, sanitize(name))
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("create artist directory %q: %w", dir, err)
+		return fmt.Errorf("create %s directory %q: %w", kind, dir, err)
 	}
-	fmt.Fprintf(d.termOut(), "\033[33mDownloading discography: %s (%d albums)\033[0m\n", name, len(items))
+	fmt.Fprintf(d.termOut(), "\033[33mDownloading %s: %s (%d albums)\033[0m\n", kind, name, len(items))
 
 	for _, item := range items {
 		id := idStr(item["id"])
@@ -58,20 +69,7 @@ func (d *Downloader) downloadPlaylist(ctx context.Context, pages []map[string]in
 		return fmt.Errorf("create playlist directory %q: %w", dir, err)
 	}
 
-	var items []map[string]interface{}
-	for _, page := range pages {
-		section, _ := page["tracks"].(map[string]interface{})
-		if section == nil {
-			continue
-		}
-		raw, _ := section["items"].([]interface{})
-		for _, r := range raw {
-			if m, ok := r.(map[string]interface{}); ok {
-				items = append(items, m)
-			}
-		}
-	}
-
+	items := collectPageItems(pages, "tracks")
 	fmt.Fprintf(d.termOut(), "\033[33mDownloading playlist: %s (%d tracks)\033[0m\n", name, len(items))
 	for _, item := range items {
 		id := idStr(item["id"])
@@ -86,43 +84,8 @@ func (d *Downloader) downloadPlaylist(ctx context.Context, pages []map[string]in
 	return nil
 }
 
-func (d *Downloader) downloadLabelOrArtist(ctx context.Context, pages []map[string]interface{}, itemKey, collectionType string) error {
-	if len(pages) == 0 {
-		return nil
-	}
-	name, _ := pages[0]["name"].(string)
-	dir := filepath.Join(d.Opts.Directory, sanitize(name))
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("create %s directory %q: %w", collectionType, dir, err)
-	}
-
-	var items []map[string]interface{}
-	for _, page := range pages {
-		section, _ := page[itemKey].(map[string]interface{})
-		if section == nil {
-			continue
-		}
-		raw, _ := section["items"].([]interface{})
-		for _, r := range raw {
-			if m, ok := r.(map[string]interface{}); ok {
-				items = append(items, m)
-			}
-		}
-	}
-
-	fmt.Fprintf(d.termOut(), "\033[33mDownloading %s: %s (%d albums)\033[0m\n", collectionType, name, len(items))
-	for _, item := range items {
-		id := idStr(item["id"])
-		if err := d.downloadAlbum(ctx, id, dir); err != nil {
-			fmt.Fprintf(d.termOut(), "\033[31mError on album %s: %v. Skipping...\033[0m\n", id, err)
-		}
-	}
-	return nil
-}
-
 var (
 	reRemaster = regexp.MustCompile(`(?i)(re)?master(ed)?`)
-	reExtra    = regexp.MustCompile(`(?i)(anniversary|deluxe|live|collector|demo|expanded)`)
 	reEssence  = regexp.MustCompile(`^([^(]+)`)
 )
 
@@ -171,7 +134,7 @@ func pickBest(requestedArtist string, albums []map[string]interface{}) (map[stri
 	// One pass for the aggregates, caching each album's "is remaster" flag so
 	// the regex runs once per album rather than again in the selection loop.
 	var q groupQuality
-	isRemaster := make([]bool, len(albums))
+	remastered := make([]bool, len(albums))
 	for i, a := range albums {
 		bd, _ := a["maximum_bit_depth"].(float64)
 		sr, _ := a["maximum_sampling_rate"].(float64)
@@ -181,14 +144,14 @@ func pickBest(requestedArtist string, albums []map[string]interface{}) (map[stri
 		case bd == q.bestBitDepth && sr > q.bestSampleRate:
 			q.bestSampleRate = sr
 		}
-		if isAlbumType("remaster", a) {
-			isRemaster[i] = true
+		if isRemaster(a) {
+			remastered[i] = true
 			q.hasRemaster = true
 		}
 	}
 
 	for i, a := range albums {
-		if qualifies(a, q, isRemaster[i], requestedArtist) {
+		if qualifies(a, q, remastered[i], requestedArtist) {
 			return a, true
 		}
 	}
@@ -217,15 +180,8 @@ func essenceTitle(title string) string {
 	return strings.ToLower(strings.TrimSpace(m))
 }
 
-func isAlbumType(t string, album map[string]interface{}) bool {
+func isRemaster(album map[string]interface{}) bool {
 	title, _ := album["title"].(string)
 	version, _ := album["version"].(string)
-	combined := title + " " + version
-	switch t {
-	case "remaster":
-		return reRemaster.MatchString(combined)
-	case "extra":
-		return reExtra.MatchString(combined)
-	}
-	return false
+	return reRemaster.MatchString(title + " " + version)
 }

@@ -88,7 +88,7 @@ func initDownloader(ctx context.Context, f *cliFlags) (*downloader.Downloader, e
 	if dir == "" {
 		dir = "./qobuz-downloader"
 	}
-	resolvedDir, err := config.ResolveDir(dir)
+	resolvedDir, err := config.ResolveDir(dir, true)
 	if err != nil {
 		return nil, fmt.Errorf("download directory: %w", err)
 	}
@@ -126,8 +126,7 @@ func initDownloader(ctx context.Context, f *cliFlags) (*downloader.Downloader, e
 		return nil, err
 	}
 
-	qualityNames := map[int]string{5: "5 - MP3", 6: "6 - 16 bit, 44.1kHz", 7: "7 - 24 bit, <96kHz", 27: "27 - 24 bit, >96kHz"}
-	fmt.Printf("\033[33mSet max quality: %s\033[0m\n", qualityNames[quality])
+	fmt.Printf("\033[33mSet max quality: %s\033[0m\n", downloader.Qualities[quality])
 
 	opts := downloader.Options{
 		Directory:       dir,

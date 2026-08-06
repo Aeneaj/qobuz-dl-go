@@ -270,14 +270,7 @@ func (m Model) viewHeader(w int) string {
 
 	inner := brand
 	if meta != "" {
-		brandW := lipgloss.Width(brand)
-		metaW := lipgloss.Width(meta)
-		pad := w - 6 - brandW - metaW
-		if pad > 0 {
-			inner += strings.Repeat(" ", pad) + meta
-		} else {
-			inner += "  " + meta
-		}
+		inner = rightAlign(brand, meta, w-6)
 	}
 
 	return lipgloss.NewStyle().
@@ -337,23 +330,9 @@ func (m Model) viewTrack(e trackEntry, w int) string {
 	case stateDone:
 		badge := sBadgeDone.Render(T("DONE"))
 		size := sDim.Render(fmtBytes(e.current))
-		rightPart := badge + " " + size
-		pad := w - lipgloss.Width(firstLine) - lipgloss.Width(rightPart) - 1
-		if pad > 0 {
-			firstLine += strings.Repeat(" ", pad)
-		} else {
-			firstLine += " "
-		}
-		firstLine += rightPart
+		firstLine = rightAlign(firstLine, badge+" "+size, w-1)
 	case stateFailed:
-		badge := sBadgeErr.Render("ERROR")
-		pad := w - lipgloss.Width(firstLine) - lipgloss.Width(badge) - 1
-		if pad > 0 {
-			firstLine += strings.Repeat(" ", pad)
-		} else {
-			firstLine += " "
-		}
-		firstLine += badge
+		firstLine = rightAlign(firstLine, sBadgeErr.Render("ERROR"), w-1)
 	}
 
 	lines := []string{firstLine}
@@ -405,14 +384,14 @@ func (m Model) viewFooter() string {
 			active++
 		}
 	}
-	parts := []string{sDim.Render(fmt.Sprintf("%d completadas", m.done))}
+	parts := []string{sDim.Render(fmt.Sprintf(T("%d done"), m.done))}
 	if m.failed > 0 {
-		parts = append(parts, sRed.Render(fmt.Sprintf("%d errores", m.failed)))
+		parts = append(parts, sRed.Render(fmt.Sprintf(T("%d failed"), m.failed)))
 	}
 	if active > 0 {
-		parts = append(parts, sBlue.Render(fmt.Sprintf("%d activas", active)))
+		parts = append(parts, sBlue.Render(fmt.Sprintf(T("%d active"), active)))
 	}
-	parts = append(parts, sDim.Render("Ctrl+C cancelar"))
+	parts = append(parts, sDim.Render(T("Ctrl+C to cancel")))
 	return "  " + strings.Join(parts, sDim.Render("  ·  "))
 }
 

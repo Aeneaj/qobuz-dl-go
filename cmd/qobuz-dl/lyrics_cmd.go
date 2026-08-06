@@ -4,9 +4,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
 
 	"github.com/Aeneaj/qobuz-dl-go/internal/config"
 	"github.com/Aeneaj/qobuz-dl-go/internal/lyrics"
@@ -45,7 +42,8 @@ Options:
 		scanDir = "./qobuz-downloader"
 	}
 
-	resolved, err := resolveScanDir(scanDir)
+	// create=false: lyrics scans an existing library, it never makes one.
+	resolved, err := config.ResolveDir(scanDir, false)
 	if err != nil {
 		fatalf("lyrics: %v", err)
 	}
@@ -53,27 +51,4 @@ Options:
 	if err := lyrics.Run(ctx, resolved); err != nil {
 		fatalf("lyrics: %v", err)
 	}
-}
-
-// resolveScanDir expands ~ and returns an absolute path.
-// Unlike config.ResolveDir it does NOT create the directory — the user must
-// point lyrics at an existing music library.
-func resolveScanDir(dir string) (string, error) {
-	if strings.HasPrefix(dir, "~/") || dir == "~" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("expand ~: %w", err)
-		}
-		dir = filepath.Join(home, dir[1:])
-	}
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return "", fmt.Errorf("resolve path %q: %w", dir, err)
-	}
-	if info, err := os.Stat(abs); err != nil {
-		return "", fmt.Errorf("directory not found: %q", abs)
-	} else if !info.IsDir() {
-		return "", fmt.Errorf("%q is not a directory", abs)
-	}
-	return abs, nil
 }

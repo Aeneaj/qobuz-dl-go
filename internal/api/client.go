@@ -326,22 +326,6 @@ func (c *Client) GetTrackURL(ctx context.Context, trackID string, fmtID int, sec
 	})
 }
 
-// GetFavoriteAlbums returns the user's favorite albums.
-func (c *Client) GetFavoriteAlbums(ctx context.Context, offset, limit int) (map[string]interface{}, error) {
-	unix := strconv.FormatInt(time.Now().Unix(), 10)
-	rawSig := "favoritegetUserFavorites" + unix + c.Secret
-	sig := md5hex(rawSig)
-	return c.doGet(ctx, "favorite/getUserFavorites", url.Values{
-		"app_id":          {c.AppID},
-		"user_auth_token": {c.UAT},
-		"type":            {"albums"},
-		"request_ts":      {unix},
-		"request_sig":     {sig},
-		"limit":           {strconv.Itoa(limit)},
-		"offset":          {strconv.Itoa(offset)},
-	})
-}
-
 // SearchAlbums searches for albums.
 func (c *Client) SearchAlbums(ctx context.Context, query string, limit int) (map[string]interface{}, error) {
 	return c.doGet(ctx, "album/search", url.Values{"query": {query}, "limit": {strconv.Itoa(limit)}})

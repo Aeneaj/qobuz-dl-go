@@ -17,7 +17,7 @@ import (
 
 // errNoSession is what every Qobuz-backed action returns before login. It
 // names the menu entry that fixes it, since that is where the user is looking.
-var errNoSession = errors.New("sin sesión — elige «Iniciar sesión (OAuth)» en el menú")
+var errNoSession = errors.New(`not signed in — choose "Log in (OAuth)" in the menu`)
 
 // runTUI opens the full-program TUI: menu, search, queue, downloads, lyrics,
 // CSV import and config.
@@ -66,7 +66,7 @@ func (b *tuiBackend) session() error {
 	case b.dl != nil:
 		return nil
 	case b.bootErr != nil:
-		return fmt.Errorf("%w — o elige «Iniciar sesión (OAuth)» en el menú", b.bootErr)
+		return fmt.Errorf(`%w — or choose "Log in (OAuth)" in the menu`, b.bootErr)
 	default:
 		return errNoSession
 	}
@@ -83,7 +83,7 @@ func (b *tuiBackend) LoggedIn() bool { return b.dl != nil }
 // the CLI flow verbatim correct, rather than merely convenient.
 func (b *tuiBackend) Login(ctx context.Context) (string, error) {
 	if err := b.prog.ReleaseTerminal(); err != nil {
-		return "", fmt.Errorf("no se pudo liberar la terminal: %w", err)
+		return "", fmt.Errorf("could not release the terminal: %w", err)
 	}
 	defer b.prog.RestoreTerminal() //nolint:errcheck
 
@@ -99,7 +99,7 @@ func (b *tuiBackend) Login(ctx context.Context) (string, error) {
 	dl.SetUI(b.prog)
 	b.dl = dl
 	b.bootErr = nil
-	return "sesión iniciada", nil
+	return ui.T("signed in successfully"), nil
 }
 
 func (b *tuiBackend) Search(ctx context.Context, kind, query string, limit int) ([]ui.Item, error) {
@@ -130,24 +130,26 @@ func (b *tuiBackend) CSV(ctx context.Context, path string) (string, error) {
 		return "", err
 	}
 	if _, err := os.Stat(path); err != nil {
-		return "", fmt.Errorf("no se encuentra el CSV: %s", path)
+		return "", fmt.Errorf("CSV not found: %s", path)
 	}
-	b.dl.DownloadCSV(ctx, path, "failed_downloads.csv")
-	return "importación CSV terminada", nil
+	if err := b.dl.DownloadCSV(ctx, path, "failed_downloads.csv"); err != nil {
+		return "", err
+	}
+	return ui.T("CSV import finished"), nil
 }
 
 // Lyrics needs no Qobuz session — LRCLIB is public — so it deliberately skips
 // the b.dl check and works before login.
 func (b *tuiBackend) Lyrics(ctx context.Context, dir string) (string, error) {
-	resolved, err := resolveScanDir(dir)
+	resolved, err := config.ResolveDir(dir, false)
 	if err != nil {
 		return "", err
 	}
 
-	b.prog.Send(ui.MsgStatus{Text: "escaneando " + resolved + "…"})
+	b.prog.Send(ui.MsgStatus{Text: fmt.Sprintf(ui.T("scanning %s…"), resolved)})
 	res, err := lyrics.FetchAll(ctx, resolved, func(done, total int, title, artist string) {
 		if done == 0 {
-			b.prog.Send(ui.MsgStatus{Text: fmt.Sprintf("%d archivos de audio encontrados", total)})
+			b.prog.Send(ui.MsgStatus{Text: fmt.Sprintf(ui.T("%d audio files found"), total)})
 			return
 		}
 		b.prog.Send(ui.MsgStatus{Text: fmt.Sprintf("[%d/%d] %s — %s", done, total, title, artist)})
@@ -156,9 +158,9 @@ func (b *tuiBackend) Lyrics(ctx context.Context, dir string) (string, error) {
 		return "", err
 	}
 	if res.Total == 0 {
-		return "no se encontró audio en esa carpeta", nil
+		return ui.T("no audio found in that folder"), nil
 	}
-	return fmt.Sprintf("letras: %d nuevas · %d ya estaban · %d sin resultado",
+	return fmt.Sprintf(ui.T("lyrics: %d new · %d already there · %d without a match"),
 		res.Fetched, res.Skipped, len(res.Warnings)), nil
 }
 
@@ -166,7 +168,7 @@ func (b *tuiBackend) Config() string {
 	path := filepath.Join(config.ConfigDir(), "config.ini")
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "no se pudo leer la configuración: " + err.Error()
+		return ui.T("could not read the settings") + ": " + err.Error()
 	}
 	return path + "\n\n" + string(data)
 }

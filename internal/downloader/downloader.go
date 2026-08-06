@@ -27,7 +27,9 @@ const (
 	bookletFile = "booklet.pdf"
 )
 
-var qualities = map[int]string{
+// Qualities maps a Qobuz format id to its human label. Exported so the CLI
+// prints the same names the downloader uses.
+var Qualities = map[int]string{
 	5:  "5 - MP3",
 	6:  "6 - 16 bit, 44.1kHz",
 	7:  "7 - 24 bit, <96kHz",
@@ -210,7 +212,7 @@ func (d *Downloader) HandleURL(ctx context.Context, rawURL string) error {
 		if err != nil {
 			return err
 		}
-		return d.downloadArtist(ctx, pages)
+		return d.downloadAlbumCollection(ctx, pages, "albums", "discography", d.Opts.SmartDiscog)
 	case "playlist":
 		pages, err := d.Client.GetPlaylistMeta(ctx, itemID)
 		if err != nil {
@@ -222,7 +224,7 @@ func (d *Downloader) HandleURL(ctx context.Context, rawURL string) error {
 		if err != nil {
 			return err
 		}
-		return d.downloadLabelOrArtist(ctx, pages, "albums", "label")
+		return d.downloadAlbumCollection(ctx, pages, "albums", "label", false)
 	default:
 		return fmt.Errorf("unsupported URL type: %s", urlType)
 	}
