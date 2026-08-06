@@ -210,7 +210,7 @@ func (d *Downloader) HandleURL(ctx context.Context, rawURL string) error {
 		if err != nil {
 			return err
 		}
-		return d.downloadArtist(ctx, pages)
+		return d.downloadAlbumCollection(ctx, pages, "albums", "discography", d.Opts.SmartDiscog)
 	case "playlist":
 		pages, err := d.Client.GetPlaylistMeta(ctx, itemID)
 		if err != nil {
@@ -222,7 +222,7 @@ func (d *Downloader) HandleURL(ctx context.Context, rawURL string) error {
 		if err != nil {
 			return err
 		}
-		return d.downloadLabelOrArtist(ctx, pages, "albums", "label")
+		return d.downloadAlbumCollection(ctx, pages, "albums", "label", false)
 	default:
 		return fmt.Errorf("unsupported URL type: %s", urlType)
 	}
