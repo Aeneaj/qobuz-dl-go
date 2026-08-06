@@ -74,7 +74,17 @@ Cualquier nueva feature con feedback visual debe reutilizar este patrón para co
 
 Usa la primera cuando el mensaje deba verse al momento (un track que falla), la segunda cuando sea un resumen.
 
-Con `--tui` la regla es más estricta: bubbletea está en alt-screen y **nada** puede llegar a stdout, así que `termOut()` devuelve `io.Discard`. Por eso todos los mensajes del paquete (incluidos `lastfm.go` y `csvbatch.go`) van por `d.termOut()` y no por `fmt.Printf`. Las funciones libres (`makeM3U`, `printBatchSummary`) reciben el `io.Writer` como parámetro.
+Con `--tui` la regla es más estricta: bubbletea está en alt-screen y **nada** puede llegar a stdout, así que `termOut()` devuelve `io.Discard`. Por eso todos los mensajes del paquete (incluidos `lastfm.go` y `csvbatch.go`) van por `d.termOut()` y no por `fmt.Printf`. Las funciones libres (`makeM3U`, `printBatchSummary`, `tagFLAC`) reciben el `io.Writer` como parámetro.
+
+Las dos excepciones son `interactive.go` y `oauth.go`: el REPL de `fun` es dueño de su
+terminal y nunca corre con barras, y OAuth solo imprime con la terminal liberada por
+`ReleaseTerminal`. Están en la allowlist de `TestNoDirectStdoutWrites`.
+
+**Esa regla se rompió tres veces sin que nada lo notara** (arreglado 2026-08-06):
+`tagFLAC`, `csvbatch.go` y `lastfm.go` tenían un `fmt.Print*` a un par de líneas de
+código que sí usaba `termOut()`. `TestTermOutDiscardsUnderTUI` no lo veía porque prueba
+que `termOut()` **devuelve** `io.Discard`, no que alguien lo **use**.
+`TestNoDirectStdoutWrites` escanea el paquete y cierra esa diferencia.
 
 ### Idioma de la TUI
 
