@@ -30,7 +30,8 @@ const (
 	bookletFile = "booklet.pdf"
 )
 
-var qualities = map[int]string{
+// Qualities maps a Qobuz format id to its human-readable name.
+var Qualities = map[int]string{
 	5:  "5 - MP3",
 	6:  "6 - 16 bit, 44.1kHz",
 	7:  "7 - 24 bit, <96kHz",
@@ -646,7 +647,7 @@ func (d *Downloader) fallbackQuality(ctx context.Context, trackID string) (map[s
 		}
 		info, err := d.Client.GetTrackURL(ctx, trackID, q, "")
 		if err == nil {
-			fmt.Printf("\033[33mQuality fallback to %s for track %s\033[0m\n", qualities[q], trackID)
+			fmt.Printf("\033[33mQuality fallback to %s for track %s\033[0m\n", Qualities[q], trackID)
 			return info, nil
 		}
 	}
@@ -1028,7 +1029,6 @@ func cleanTmp(dir string) {
 
 var (
 	reRemaster = regexp.MustCompile(`(?i)(re)?master(ed)?`)
-	reExtra    = regexp.MustCompile(`(?i)(anniversary|deluxe|live|collector|demo|expanded)`)
 	reEssence  = regexp.MustCompile(`^([^(]+)`)
 )
 
@@ -1069,7 +1069,7 @@ func smartDiscogFilter(requestedArtist string, items []map[string]interface{}) [
 
 		remasterExists := false
 		for _, a := range albums {
-			if isAlbumType("remaster", a) {
+			if isRemaster(a) {
 				remasterExists = true
 				break
 			}
@@ -1080,7 +1080,7 @@ func smartDiscogFilter(requestedArtist string, items []map[string]interface{}) [
 			sr, _ := a["maximum_sampling_rate"].(float64)
 			aName := nestedStr(a, "artist", "name")
 			if bd == bestBD && sr == bestSR && aName == requestedArtist &&
-				!(remasterExists && !isAlbumType("remaster", a)) {
+				!(remasterExists && !isRemaster(a)) {
 				result = append(result, a)
 				break
 			}
@@ -1097,17 +1097,12 @@ func essenceTitle(title string) string {
 	return strings.ToLower(strings.TrimSpace(m))
 }
 
-func isAlbumType(t string, album map[string]interface{}) bool {
+// isRemaster reports whether the album's title or version marks it as a
+// remaster.
+func isRemaster(album map[string]interface{}) bool {
 	title, _ := album["title"].(string)
 	version, _ := album["version"].(string)
-	combined := title + " " + version
-	switch t {
-	case "remaster":
-		return reRemaster.MatchString(combined)
-	case "extra":
-		return reExtra.MatchString(combined)
-	}
-	return false
+	return reRemaster.MatchString(title + " " + version)
 }
 
 // ---- format string helpers ----

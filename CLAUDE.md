@@ -39,13 +39,12 @@ Cualquier nueva feature con feedback visual debe reutilizar este patrón para co
 
 ## Dependencias externas
 
-Las dependencias de módulo son:
+Hay **una sola** dependencia directa:
 - `github.com/vbauerster/mpb/v8` — barras de progreso
-- `github.com/acarl005/stripansi` — limpieza de secuencias ANSI
-- `github.com/VividCortex/ewma` — media móvil (usada por mpb)
-- `github.com/mattn/go-runewidth` — ancho de caracteres Unicode
-- `github.com/clipperhouse/uax29/v2` — segmentación de texto Unicode
-- `golang.org/x/sys` — syscalls de bajo nivel
+
+Las demás son transitivas de mpb (marcadas `// indirect` en `go.mod`) y no se
+importan desde este código: `acarl005/stripansi`, `VividCortex/ewma`,
+`mattn/go-runewidth`, `clipperhouse/uax29/v2`, `golang.org/x/sys`.
 
 No añadir dependencias nuevas sin discusión. En particular no añadir librerías de parseo de audio (dhowden/tag, mewkiz/flac, bogem/id3v2, etc.) — ya tenemos implementaciones propias.
 
@@ -63,13 +62,16 @@ No añadir dependencias nuevas sin discusión. En particular no añadir librerí
 
 | Paquete | Tests | Cobertura | Archivos de test |
 |---|---|---|---|
-| api | — | ~42% | api_test.go |
-| bundle | — | ~64% | bundle_test.go |
-| config | — | ~46% | config_test.go |
-| downloader | 30+ | ~35% | metadata_test.go, db_test.go, lastfm_test.go, helpers_test.go |
-| lyrics | 42 | ~100% | metadata_test.go, lrclib_test.go, lyrics_test.go |
+| api | 15 | 44% | client_test.go |
+| bundle | 12 | 60% | bundle_test.go |
+| config | 12 | 45% | config_test.go |
+| downloader | 42 | 25% | metadata_test.go, db_test.go, lastfm_test.go, helpers_test.go |
+| lyrics | 46 | 74% | metadata_test.go, lrclib_test.go, lyrics_test.go |
 
-`helpers_test.go` en downloader cubre: `sanitize`, `expandPlaceholders`, `renderFormat`, `formatDuration`, `idStr`, `nestedStr`, `releaseYear`, `essenceTitle`, `isAlbumType`.
+Regenerar con `go test -cover ./...`; los números de arriba son de la última
+pasada, no una meta.
+
+`helpers_test.go` en downloader cubre: `sanitize`, `expandPlaceholders`, `renderFormat`, `formatDuration`, `idStr`, `nestedStr`, `releaseYear`, `essenceTitle`, `isRemaster`.
 
 ### CI (`.github/workflows/ci.yml`)
 
@@ -94,7 +96,7 @@ No añadir dependencias nuevas sin discusión. En particular no añadir librerí
 - `go vet ./...` ✅
 - `go fmt ./...` ✅ (CI falla si hay archivos sin formatear)
 - `go test -cover ./...` ✅ (todos los paquetes pasan)
-- Cobertura: api 42%, bundle 64%, config 46%, downloader ~35% (30+ tests), lyrics 100% (42 tests)
+- Cobertura: api 44%, bundle 60%, config 45%, downloader 25%, lyrics 74% (135 tests, incluidos 8 de subproceso en cmd/)
 
 ## Comandos de construcción
 
@@ -155,8 +157,8 @@ Jerarquía de prioridad al resolver la ruta de descarga:
 
 Implementación:
 - `config.ResolveDir(dir string, create bool) (string, error)` — expande `~`, llama `filepath.Abs`; devuelve error descriptivo si hay problema de permisos (sin panic)
-- `Config.DownloadDir` — campo separado de `DefaultFolder` (que es el formato de nombre de álbum, no una ruta)
-- `Reset()` pregunta al usuario por el directorio antes de `default_folder`
+- `Config.DownloadDir` — la ruta base. El formato del nombre de carpeta de cada álbum es `folder_format`, cosa distinta
+- `Reset()` pregunta al usuario por el directorio antes que por la calidad
 - `downloader.New()` ya no tiene fallback hardcodeado — la ruta llega siempre resuelta desde `initDownloader`
 
 **Importante**: el flag `create` distingue los dos usos. Los comandos de descarga llaman `ResolveDir(dir, true)` y crean el árbol con `os.MkdirAll`. El comando `lyrics` llama `ResolveDir(dir, false)`, que exige que el directorio ya exista y sea un directorio — nunca lo crea. El usuario debe apuntar a una biblioteca ya existente.

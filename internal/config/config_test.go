@@ -186,19 +186,23 @@ func TestWriteINI_StableKeyOrder(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.ini")
 	kv := map[string]string{
-		"email":    "a@b.com",
-		"password": "hash",
+		"user_id":  "42",
+		"no_m3u":   "false",
 		"app_id":   "123",
 		"secrets":  "s1,s2",
+		"obsolete": "leftover",
 	}
 	writeINI(path, kv)
 
 	data, _ := os.ReadFile(path)
 	content := string(data)
-	// email should appear before app_id (per ordered list)
-	emailPos := strings.Index(content, "email")
-	appIDPos := strings.Index(content, "app_id")
-	if emailPos > appIDPos {
-		t.Errorf("expected email before app_id in output")
+	// user_id, then no_m3u, then app_id — per the ordered list.
+	if strings.Index(content, "user_id") > strings.Index(content, "no_m3u") ||
+		strings.Index(content, "no_m3u") > strings.Index(content, "app_id") {
+		t.Errorf("keys out of order:\n%s", content)
+	}
+	// Unlisted keys are kept, not dropped.
+	if !strings.Contains(content, "obsolete = leftover") {
+		t.Errorf("unlisted key was dropped:\n%s", content)
 	}
 }

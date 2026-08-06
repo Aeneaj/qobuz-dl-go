@@ -233,25 +233,20 @@ func TestEssenceTitle(t *testing.T) {
 
 // ---- isAlbumType --------------------------------------------------------
 
-func TestIsAlbumType(t *testing.T) {
+func TestIsRemaster(t *testing.T) {
 	cases := []struct {
-		albumType string
-		album     map[string]interface{}
-		want      bool
+		album map[string]interface{}
+		want  bool
 	}{
-		{"remaster", map[string]interface{}{"title": "Dark Side (Remastered)", "version": ""}, true},
-		{"remaster", map[string]interface{}{"title": "OK Computer", "version": ""}, false},
-		{"remaster", map[string]interface{}{"title": "OK Computer", "version": "Remastered"}, true},
-		{"extra", map[string]interface{}{"title": "Deluxe Edition", "version": ""}, true},
-		{"extra", map[string]interface{}{"title": "Anniversary Edition", "version": ""}, true},
-		{"extra", map[string]interface{}{"title": "Normal Album", "version": ""}, false},
-		{"extra", map[string]interface{}{"title": "Normal", "version": "Live at MSG"}, true},
-		{"unknown", map[string]interface{}{"title": "Anything", "version": ""}, false},
+		{map[string]interface{}{"title": "Dark Side (Remastered)", "version": ""}, true},
+		{map[string]interface{}{"title": "OK Computer", "version": ""}, false},
+		{map[string]interface{}{"title": "OK Computer", "version": "Remastered"}, true},
+		{map[string]interface{}{"title": "Deluxe Edition", "version": ""}, false},
+		{map[string]interface{}{}, false},
 	}
 	for _, c := range cases {
-		got := isAlbumType(c.albumType, c.album)
-		if got != c.want {
-			t.Errorf("isAlbumType(%q, %v) = %v, want %v", c.albumType, c.album, got, c.want)
+		if got := isRemaster(c.album); got != c.want {
+			t.Errorf("isRemaster(%v) = %v, want %v", c.album, got, c.want)
 		}
 	}
 }

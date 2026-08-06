@@ -162,7 +162,6 @@ func TestErrorTypes(t *testing.T) {
 		&InvalidAppIDError{"test"},
 		&InvalidAppSecretError{"test"},
 		&InvalidQualityError{"test"},
-		&NonStreamableError{"test"},
 	}
 	for _, err := range errs {
 		if err.Error() == "" {

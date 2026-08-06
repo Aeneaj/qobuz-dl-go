@@ -154,11 +154,7 @@ func printQueue(queue []SearchResult) {
 	}
 	fmt.Printf("\n\033[33mQueue (%d item(s)):\033[0m\n", len(queue))
 	for i, r := range queue {
-		label := r.Text
-		if label == r.URL {
-			label = r.URL // direct URL entry
-		}
-		fmt.Printf("  \033[90m[%d]\033[0m %s\n", i+1, label)
+		fmt.Printf("  \033[90m[%d]\033[0m %s\n", i+1, r.Text)
 	}
 	fmt.Println()
 }

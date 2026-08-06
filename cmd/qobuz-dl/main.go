@@ -158,7 +158,7 @@ func main() {
 			fatalf("%v", err)
 		}
 		fmt.Printf("\033[33mSearching %ss for \"%s\" (top %d)...\033[0m\n", *luckyType, query, *luckyN)
-		urls, err := searchByType(ctx, dl.Client, *luckyType, query, *luckyN)
+		urls, err := downloader.SearchURLs(ctx, dl.Client, *luckyType, query, *luckyN)
 		if err != nil {
 			fatalf("%v", err)
 		}
@@ -301,8 +301,7 @@ func initDownloader(ctx context.Context, f *cliFlags) (*downloader.Downloader, e
 		return nil, err
 	}
 
-	qualityNames := map[int]string{5: "5 - MP3", 6: "6 - 16 bit, 44.1kHz", 7: "7 - 24 bit, <96kHz", 27: "27 - 24 bit, >96kHz"}
-	fmt.Printf("\033[33mSet max quality: %s\033[0m\n", qualityNames[quality])
+	fmt.Printf("\033[33mSet max quality: %s\033[0m\n", downloader.Qualities[quality])
 
 	opts := downloader.Options{
 		Directory:       dir,
@@ -321,8 +320,4 @@ func initDownloader(ctx context.Context, f *cliFlags) (*downloader.Downloader, e
 		Workers:         f.Workers,
 	}
 	return downloader.New(client, opts)
-}
-
-func searchByType(ctx context.Context, client *api.Client, itemType, query string, limit int) ([]string, error) {
-	return downloader.SearchURLs(ctx, client, itemType, query, limit)
 }
