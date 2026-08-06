@@ -7,6 +7,7 @@ package downloader
 // Both are pure-Go implementations with no external dependencies.
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
@@ -67,7 +68,7 @@ func buildFLACTags(track, album map[string]interface{}, isTrack bool) map[string
 		t["TRACKTOTAL"] = fmt.Sprintf("%v", nestedFloat(track, "album", "tracks_count"))
 		t["ALBUM"] = nestedStr(track, "album", "title")
 		t["DATE"] = nestedStr(track, "album", "release_date_original")
-		t["COPYRIGHT"] = formatCopyright(safeGetStr(track, "copyright"))
+		t["COPYRIGHT"] = formatCopyright(nestedStr(track, "copyright"))
 		t["LABEL"] = nestedStr(track, "album", "label", "name")
 	} else {
 		if performer == "" {
@@ -76,7 +77,7 @@ func buildFLACTags(track, album map[string]interface{}, isTrack bool) map[string
 		t["ARTIST"] = performer
 		t["GENRE"] = formatGenres(sliceStrings(album, "", "genres_list"))
 		t["ALBUMARTIST"] = nestedStr(album, "artist", "name")
-		t["TRACKTOTAL"] = fmt.Sprintf("%v", nestedFloat(album, "", "tracks_count"))
+		t["TRACKTOTAL"] = fmt.Sprintf("%v", nestedFloat(album, "tracks_count"))
 		t["ALBUM"] = nestedStr(album, "", "title")
 		if t["ALBUM"] == "" {
 			t["ALBUM"], _ = album["title"].(string)
@@ -84,7 +85,7 @@ func buildFLACTags(track, album map[string]interface{}, isTrack bool) map[string
 		if rd, _ := album["release_date_original"].(string); rd != "" {
 			t["DATE"] = rd
 		}
-		t["COPYRIGHT"] = formatCopyright(safeGetStr(album, "copyright"))
+		t["COPYRIGHT"] = formatCopyright(nestedStr(album, "copyright"))
 		t["LABEL"] = nestedStr(album, "label", "name")
 	}
 
@@ -199,18 +200,14 @@ func buildVorbisComment(tags map[string]string) []byte {
 		size += 4 + len(c)
 	}
 	buf := make([]byte, 0, size)
-	buf = appendU32LE(buf, uint32(len(vendorBytes)))
+	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(vendorBytes)))
 	buf = append(buf, vendorBytes...)
-	buf = appendU32LE(buf, uint32(len(comments)))
+	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(comments)))
 	for _, c := range comments {
-		buf = appendU32LE(buf, uint32(len(c)))
+		buf = binary.LittleEndian.AppendUint32(buf, uint32(len(c)))
 		buf = append(buf, c...)
 	}
 	return buf
-}
-
-func appendU32LE(b []byte, v uint32) []byte {
-	return append(b, byte(v), byte(v>>8), byte(v>>16), byte(v>>24))
 }
 
 func buildFLACPictureBlock(imgData []byte) []byte {
@@ -219,23 +216,20 @@ func buildFLACPictureBlock(imgData []byte) []byte {
 	// FLAC picture block layout (all big-endian uint32):
 	// picture_type, mime_length, mime, desc_length, desc,
 	// width, height, color_depth, color_count, data_length, data
+	be := binary.BigEndian
 	buf := make([]byte, 0, 32+len(mimeType)+len(imgData))
-	buf = appendU32BE(buf, 3) // Front cover
-	buf = appendU32BE(buf, uint32(len(mimeType)))
+	buf = be.AppendUint32(buf, 3) // Front cover
+	buf = be.AppendUint32(buf, uint32(len(mimeType)))
 	buf = append(buf, []byte(mimeType)...)
-	buf = appendU32BE(buf, uint32(len(desc)))
+	buf = be.AppendUint32(buf, uint32(len(desc)))
 	buf = append(buf, []byte(desc)...)
-	buf = appendU32BE(buf, 0) // width (unknown)
-	buf = appendU32BE(buf, 0) // height
-	buf = appendU32BE(buf, 0) // color depth
-	buf = appendU32BE(buf, 0) // color count
-	buf = appendU32BE(buf, uint32(len(imgData)))
+	buf = be.AppendUint32(buf, 0) // width (unknown)
+	buf = be.AppendUint32(buf, 0) // height
+	buf = be.AppendUint32(buf, 0) // color depth
+	buf = be.AppendUint32(buf, 0) // color count
+	buf = be.AppendUint32(buf, uint32(len(imgData)))
 	buf = append(buf, imgData...)
 	return buf
-}
-
-func appendU32BE(b []byte, v uint32) []byte {
-	return append(b, byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
 }
 
 // readCover loads the cover image next to (or one level above) dir.
@@ -286,7 +280,7 @@ func buildMP3Tags(track, album map[string]interface{}, isTrack bool) map[string]
 		t["TPE2"] = nestedStr(track, "album", "artist", "name")
 		t["TALB"] = nestedStr(track, "album", "title")
 		t["TDRC"] = nestedStr(track, "album", "release_date_original")
-		t["TCOP"] = formatCopyright(safeGetStr(track, "copyright"))
+		t["TCOP"] = formatCopyright(nestedStr(track, "copyright"))
 		t["TPUB"] = nestedStr(track, "album", "label", "name")
 		trackTotal = fmt.Sprintf("%v", nestedFloat(track, "album", "tracks_count"))
 	} else {
@@ -301,9 +295,9 @@ func buildMP3Tags(track, album map[string]interface{}, isTrack bool) map[string]
 		if v, ok := album["release_date_original"].(string); ok {
 			t["TDRC"] = v
 		}
-		t["TCOP"] = formatCopyright(safeGetStr(album, "copyright"))
+		t["TCOP"] = formatCopyright(nestedStr(album, "copyright"))
 		t["TPUB"] = nestedStr(album, "label", "name")
-		trackTotal = fmt.Sprintf("%v", getFloat(album, "tracks_count"))
+		trackTotal = fmt.Sprintf("%v", nestedFloat(album, "tracks_count"))
 	}
 	t["TPE1"] = performer
 	if t["TDRC"] != "" && len(t["TDRC"]) >= 4 {
@@ -504,23 +498,4 @@ func sliceStrings(m map[string]interface{}, subKey, key string) []string {
 		}
 	}
 	return result
-}
-
-func safeGetStr(m map[string]interface{}, key string) string {
-	v, _ := m[key].(string)
-	return v
-}
-
-func nestedFloat(m map[string]interface{}, subKey, key string) float64 {
-	var src interface{} = m
-	if subKey != "" {
-		sub, _ := m[subKey].(map[string]interface{})
-		if sub == nil {
-			return 0
-		}
-		src = sub
-	}
-	mm, _ := src.(map[string]interface{})
-	v, _ := mm[key].(float64)
-	return v
 }

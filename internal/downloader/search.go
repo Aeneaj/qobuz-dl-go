@@ -59,7 +59,7 @@ func Search(ctx context.Context, client *api.Client, itemType, query string, lim
 		}
 		text := renderFormat(format, m)
 		if requiresExtra {
-			dur := formatDuration(int(getFloat(m, "duration")))
+			dur := formatDuration(int(nestedFloat(m, "duration")))
 			hires := "LOSSLESS"
 			if b, _ := m["hires_streamable"].(bool); b {
 				hires = "HI-RES"
@@ -75,9 +75,11 @@ func Search(ctx context.Context, client *api.Client, itemType, query string, lim
 	return results, nil
 }
 
+// Simple key substitution: {key} → m[key], {obj[key]} → m[obj][key].
+// Package-level so it is not recompiled once per search result.
+var reKey = regexp.MustCompile(`\{(\w+)(?:\[(\w+)\])?\}`)
+
 func renderFormat(format string, m map[string]interface{}) string {
-	// Simple key substitution: {key} → m[key], {obj[key]} → m[obj][key]
-	reKey := regexp.MustCompile(`\{(\w+)(?:\[(\w+)\])?\}`)
 	return reKey.ReplaceAllStringFunc(format, func(match string) string {
 		parts := reKey.FindStringSubmatch(match)
 		if parts[2] != "" {

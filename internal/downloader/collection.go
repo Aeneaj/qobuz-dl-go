@@ -86,7 +86,6 @@ func (d *Downloader) downloadPlaylist(ctx context.Context, pages []map[string]in
 
 var (
 	reRemaster = regexp.MustCompile(`(?i)(re)?master(ed)?`)
-	reExtra    = regexp.MustCompile(`(?i)(anniversary|deluxe|live|collector|demo|expanded)`)
 	reEssence  = regexp.MustCompile(`^([^(]+)`)
 )
 
@@ -135,7 +134,7 @@ func pickBest(requestedArtist string, albums []map[string]interface{}) (map[stri
 	// One pass for the aggregates, caching each album's "is remaster" flag so
 	// the regex runs once per album rather than again in the selection loop.
 	var q groupQuality
-	isRemaster := make([]bool, len(albums))
+	remastered := make([]bool, len(albums))
 	for i, a := range albums {
 		bd, _ := a["maximum_bit_depth"].(float64)
 		sr, _ := a["maximum_sampling_rate"].(float64)
@@ -145,14 +144,14 @@ func pickBest(requestedArtist string, albums []map[string]interface{}) (map[stri
 		case bd == q.bestBitDepth && sr > q.bestSampleRate:
 			q.bestSampleRate = sr
 		}
-		if isAlbumType("remaster", a) {
-			isRemaster[i] = true
+		if isRemaster(a) {
+			remastered[i] = true
 			q.hasRemaster = true
 		}
 	}
 
 	for i, a := range albums {
-		if qualifies(a, q, isRemaster[i], requestedArtist) {
+		if qualifies(a, q, remastered[i], requestedArtist) {
 			return a, true
 		}
 	}
@@ -181,15 +180,8 @@ func essenceTitle(title string) string {
 	return strings.ToLower(strings.TrimSpace(m))
 }
 
-func isAlbumType(t string, album map[string]interface{}) bool {
+func isRemaster(album map[string]interface{}) bool {
 	title, _ := album["title"].(string)
 	version, _ := album["version"].(string)
-	combined := title + " " + version
-	switch t {
-	case "remaster":
-		return reRemaster.MatchString(combined)
-	case "extra":
-		return reExtra.MatchString(combined)
-	}
-	return false
+	return reRemaster.MatchString(title + " " + version)
 }

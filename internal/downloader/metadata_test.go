@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"bytes"
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"strings"
@@ -541,3 +542,36 @@ func containsBytes(data, sub []byte) bool {
 
 // suppress unused import
 var _ = filepath.Join
+
+// TestBuildFLACPictureBlock pins the field layout, and specifically that every
+// uint32 is big-endian — the FLAC spec's byte order, and the opposite of the
+// Vorbis Comment block right next to it in the same file.
+func TestBuildFLACPictureBlock(t *testing.T) {
+	img := bytes.Repeat([]byte{0xAB}, 300) // >255 so the length bytes disagree LE vs BE
+	b := buildFLACPictureBlock(img)
+
+	be := binary.BigEndian
+	if got := be.Uint32(b[0:4]); got != 3 {
+		t.Errorf("picture_type = %d, want 3 (front cover)", got)
+	}
+	mimeLen := be.Uint32(b[4:8])
+	if mimeLen != uint32(len("image/jpeg")) {
+		t.Fatalf("mime_length = %d, want %d", mimeLen, len("image/jpeg"))
+	}
+	if got := string(b[8 : 8+mimeLen]); got != "image/jpeg" {
+		t.Errorf("mime = %q, want %q", got, "image/jpeg")
+	}
+
+	// desc_length, then four zeroed image properties, then data_length.
+	p := 8 + mimeLen
+	if got := be.Uint32(b[p : p+4]); got != 0 {
+		t.Errorf("desc_length = %d, want 0", got)
+	}
+	p += 4 + 16 // empty desc + width/height/depth/count
+	if got := be.Uint32(b[p : p+4]); got != uint32(len(img)) {
+		t.Errorf("data_length = %d, want %d", got, len(img))
+	}
+	if got := b[p+4:]; !bytes.Equal(got, img) {
+		t.Errorf("image payload truncated: %d bytes, want %d", len(got), len(img))
+	}
+}
