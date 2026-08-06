@@ -89,12 +89,31 @@ lleva lock y no es seguro con el bucle de render corriendo. Va en `main()` y no 
 `runTUI` porque las dos pantallas lo necesitan (`tui` y `--tui`), y así `internal/ui`
 no depende de `internal/config`. Idioma ausente o desconocido → inglés.
 
-**Lección de los tests**: los tres tests de datos (tabla completa, sin claves
-huérfanas, sin español en el código) pasaban mientras la fila **seleccionada** del
-menú se renderizaba en inglés — se construía con `m.label` crudo mientras todas las
-demás pasaban por `T()`. Una tabla de traducción completa no puede detectar un sitio
-de render que no la consulta. `TestMenuRendersFullySpanish` mueve el cursor por todas
-las entradas y compara la salida real; es el único que lo caza.
+Los **errores** son la excepción y se quedan en inglés sin `T()`, igual que los de
+`api`, `config` y `downloader`: traducir solo los del backend TUI sería incoherente y
+los `%w` no son claves de tabla. Los mensajes de estado sí van por `T()` — el patrón
+lo marca `shell.go` (`s.status = T("working…")`, `fmt.Sprintf(T("%d in the queue"), n)`).
+`cmd/qobuz-dl/tui_cmd.go` está en `package main` y llama `ui.T()`.
+
+**Lección de los tests, en dos rondas.** Primera: los tres tests de datos (tabla
+completa, sin claves huérfanas, sin español en el código) pasaban mientras la fila
+**seleccionada** del menú se renderizaba en inglés — se construía con `m.label` crudo
+mientras todas las demás pasaban por `T()`. Una tabla de traducción completa no puede
+detectar un sitio de render que no la consulta. `TestMenuRendersFullySpanish` mueve el
+cursor por todas las entradas y compara la salida real.
+
+Segunda (2026-08-06): esos cuatro tests seguían verdes con 16 cadenas en español
+hardcodeadas. Tres agujeros distintos, los tres ahora cerrados:
+
+- `readUISources` leía una **lista fija de seis ficheros** de `internal/ui`, así que
+  `cmd/qobuz-dl/tui_cmd.go` no se miraba nunca. Ahora lee por directorio — una lista de
+  ficheros deja de cubrir todo lo que se añada después de escribirla.
+- La regex de `TestNoSpanishLeftInSources` solo miraba `ñÑ¿¡`; `"(vacío)"` pasaba.
+  Ampliada a vocales acentuadas.
+- **Español sin carácter distintivo** (`"%d completadas"`, `"Ctrl+C cancelar"`) es
+  invisible para cualquier escaneo de fuentes. Lo caza `TestEnglishRenderStaysEnglish`:
+  renderiza en inglés y falla si aparece cualquier **valor** del mapa `es`. Una cadena
+  hardcodeada sale idéntica en los dos idiomas, y eso no necesita lista de palabras.
 
 ### La TUI completa (`tui`)
 
@@ -164,7 +183,7 @@ Medido con `go test -cover ./...` el 2026-08-06:
 | config | 45.1% | config_test.go |
 | downloader | 45.1% | integration_test.go, oauth_test.go, tui_test.go, metadata_test.go, db_test.go, lastfm_test.go, helpers_test.go, redownload_test.go |
 | lyrics | 75.6% | metadata_test.go, lrclib_test.go, lyrics_test.go |
-| ui | 54.7% | shell_test.go, handle_test.go, lang_test.go |
+| ui | 55.8% | shell_test.go, handle_test.go, lang_test.go |
 | cmd/qobuz-dl | 0% | main_test.go |
 
 `cmd/qobuz-dl` marca 0% porque sus tests son **black-box**: compilan el binario en `TestMain` y lo ejecutan como subproceso, así que la cobertura no se instrumenta. No es falta de tests.
