@@ -11,7 +11,7 @@ cmd/qobuz-dl/        CLI entry point (flag stdlib, sin dependencias externas)
   flags.go           wiring CLI→downloader: cliFlags, registerDownloadFlags,
                      loadOrInitConfig, initDownloader
   oauth_cmd.go       runOAuth
-  lyrics_cmd.go      runLyrics, resolveScanDir
+  lyrics_cmd.go      runLyrics
 internal/api/        Cliente HTTP Qobuz API (qopy.py)
 internal/bundle/     Scraper de app_id/secrets/private_key de bundle.js
 internal/config/     Lector/escritor de config.ini (INI casero, sin deps)
@@ -155,16 +155,16 @@ No añadir dependencias nuevas sin discusión. En particular no añadir librerí
 
 ### Cobertura por paquete
 
-Medido con `go test -cover ./...` el 2026-08-04:
+Medido con `go test -cover ./...` el 2026-08-06:
 
 | Paquete | Cobertura | Archivos de test |
 |---|---|---|
-| api | 42.3% | client_test.go |
+| api | 42.9% | client_test.go |
 | bundle | 59.7% | bundle_test.go |
-| config | 37.9% | config_test.go |
-| downloader | 41.5% | integration_test.go, oauth_test.go, tui_test.go, metadata_test.go, db_test.go, lastfm_test.go, helpers_test.go, redownload_test.go |
+| config | 45.1% | config_test.go |
+| downloader | 45.1% | integration_test.go, oauth_test.go, tui_test.go, metadata_test.go, db_test.go, lastfm_test.go, helpers_test.go, redownload_test.go |
 | lyrics | 75.6% | metadata_test.go, lrclib_test.go, lyrics_test.go |
-| ui | 53.3% | shell_test.go, handle_test.go, lang_test.go |
+| ui | 54.7% | shell_test.go, handle_test.go, lang_test.go |
 | cmd/qobuz-dl | 0% | main_test.go |
 
 `cmd/qobuz-dl` marca 0% porque sus tests son **black-box**: compilan el binario en `TestMain` y lo ejecutan como subproceso, así que la cobertura no se instrumenta. No es falta de tests.
@@ -176,7 +176,7 @@ invariante de la que depende el diseño — un `p.Send()` por `Read` satura el b
 Filtra los mensajes propios de bubbletea (window size) porque si no los conteos no significan nada.
 Validado con 6 mutaciones, todas detectadas.
 
-`helpers_test.go` en downloader cubre: `sanitize`, `expandPlaceholders`, `renderFormat`, `formatDuration`, `idStr`, `nestedStr`, `releaseYear`, `essenceTitle`, `isAlbumType`.
+`helpers_test.go` en downloader cubre: `sanitize`, `expandPlaceholders`, `renderFormat`, `formatDuration`, `idStr`, `nestedStr`, `releaseYear`, `essenceTitle`, `isRemaster`.
 
 ### Tests de integración del downloader (`integration_test.go`)
 
@@ -309,12 +309,11 @@ Jerarquía de prioridad al resolver la ruta de descarga:
 3. Fallback: `./qobuz-downloader` (relativo al CWD)
 
 Implementación:
-- `config.ResolveDir(dir string) (string, error)` — expande `~`, llama `filepath.Abs`, crea con `os.MkdirAll`; devuelve error descriptivo si hay problema de permisos (sin panic)
-- `Config.DownloadDir` — campo separado de `DefaultFolder` (que es el formato de nombre de álbum, no una ruta)
-- `Reset()` pregunta al usuario por el directorio antes de `default_folder`
+- `config.ResolveDir(dir string, create bool) (string, error)` — expande `~`, llama `filepath.Abs`; con `create` crea el árbol con `os.MkdirAll`, sin él exige que el directorio ya exista. Devuelve error descriptivo si hay problema de permisos (sin panic)
+- `Config.DownloadDir` — no confundir con la **constante** `config.DefaultFolder`, que es el formato de nombre de álbum (el default de `folder_format`), no una ruta. El campo `Config.DefaultFolder` se retiró: nadie lo leía.
 - `downloader.New()` ya no tiene fallback hardcodeado — la ruta llega siempre resuelta desde `initDownloader`
 
-**Importante**: el comando `lyrics` usa `resolveScanDir` (en `lyrics_cmd.go`), que es igual a `ResolveDir` pero **sin** `os.MkdirAll` — no crea el directorio si no existe. El usuario debe apuntar a una biblioteca ya existente.
+**Importante**: el comando `lyrics` (y `tuiBackend.Lyrics`) llama `config.ResolveDir(dir, false)` — no crea el directorio si no existe. El usuario debe apuntar a una biblioteca ya existente.
 
 ## Comando `lyrics` — detalles de implementación
 
@@ -365,6 +364,18 @@ lyrics_test.go    — buildLabel (formato, ancho fijo, truncado), lrcPathFor, sc
 
 ## Pendiente / Ideas
 
+- [x] Auditoría de sobreingeniería (`/ponytail-audit` sobre v1.5.0) — cerrada 2026-08-06.
+      15 hallazgos, −198 líneas, 0 dependencias eliminables. Los 2 primeros en `ec3b40a`
+      (dedup de reescritura FLAC y aplanado de páginas); los 13 restantes en cinco commits
+      temáticos: `rightAlign` en ui, `ResolveDir(dir, create)` + alias de flags por `BoolVar`
+      + `downloader.Qualities` en cmd, claves muertas de config, accesores/`encoding/binary`/
+      `isRemaster` en downloader, y código muerto en api.
+      Dos lecciones: (a) un test de datos completo no cubre un sitio de render que no consulta
+      la tabla — la mutación de `rightAlign` sin relleno pasaba `TestMenuRendersFullySpanish`
+      y solo la caza una aserción sobre el ancho real; (b) `buildFLACPictureBlock` aceptaba
+      `BigEndian`→`LittleEndian` sin que fallara nada, así que el swap a stdlib llegó con su
+      propio test de layout.
+
 - [x] Tests de integración con servidor mock completo para `downloader` — `integration_test.go`
       8 tests (11 con subtests): álbum completo, tagging real, tracks no disponibles, multi-disco,
       salto por DB entre ejecuciones, paridad con 1/2/3/8 workers, contexto cancelado, `HandleURL`.
@@ -394,7 +405,8 @@ lyrics_test.go    — buildLabel (formato, ancho fijo, truncado), lrcPathFor, sc
       `album.go` (545) seguía partido en dos clusters (0.57 y 0.40) → `album.go` + `track.go`.
       `smartDiscogFilter` vive con `downloadArtist`, su único llamador; los helpers de
       `downloadWithProgress` salen enteros a `transfer.go` (cluster de cohesión 0.93).
-      `getFloat` se queda en `helpers.go`, no en `search.go`: `metadata.go` también lo llama.
+      `getFloat` se quedó en `helpers.go`, no en `search.go`: `metadata.go` también lo llamaba.
+      (Desde 2026-08-06 ya no existe: era `nestedFloat` con la clave anidada vacía.)
 - [x] Deuda de complejidad cognitiva — cerrada 2026-07-27 (ver tabla arriba):
       `main()` repartido en dispatcher + `flags.go`; `decodeID3Text` partido por codificación
       (y arreglado el bug de Latin-1); `smartDiscogFilter` partido en
