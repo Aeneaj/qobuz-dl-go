@@ -76,15 +76,23 @@ Usa la primera cuando el mensaje deba verse al momento (un track que falla), la 
 
 Con `--tui` la regla es más estricta: bubbletea está en alt-screen y **nada** puede llegar a stdout, así que `termOut()` devuelve `io.Discard`. Por eso todos los mensajes del paquete (incluidos `lastfm.go` y `csvbatch.go`) van por `d.termOut()` y no por `fmt.Printf`. Las funciones libres (`makeM3U`, `printBatchSummary`, `tagFLAC`) reciben el `io.Writer` como parámetro.
 
+**`os.Stderr` cuenta igual que stdout**: la alt-screen se traga los dos. Un error que el
+usuario tiene que ver se **devuelve**, no se imprime — `DownloadCSV` devuelve el fallo de
+parseo y `runDisplay` propaga el de `fn`, que se reporta con la pantalla ya cerrada. Bajo
+la TUI el shell lo pinta en su línea de estado; en CLI acaba en `fatalf`, o sea stderr y
+exit 1.
+
 Las dos excepciones son `interactive.go` y `oauth.go`: el REPL de `fun` es dueño de su
 terminal y nunca corre con barras, y OAuth solo imprime con la terminal liberada por
 `ReleaseTerminal`. Están en la allowlist de `TestNoDirectStdoutWrites`.
 
-**Esa regla se rompió tres veces sin que nada lo notara** (arreglado 2026-08-06):
+**Esa regla se rompió ocho veces sin que nada lo notara** (arreglado 2026-08-06):
 `tagFLAC`, `csvbatch.go` y `lastfm.go` tenían un `fmt.Print*` a un par de líneas de
-código que sí usaba `termOut()`. `TestTermOutDiscardsUnderTUI` no lo veía porque prueba
-que `termOut()` **devuelve** `io.Discard`, no que alguien lo **use**.
-`TestNoDirectStdoutWrites` escanea el paquete y cierra esa diferencia.
+código que sí usaba `termOut()`, y `csvbatch.go` otros cinco `os.Stderr` —tres de ellos
+dentro de `ParseCSV`, que corre bajo la TUI vía `DownloadCSV`.
+`TestTermOutDiscardsUnderTUI` no lo veía porque prueba que `termOut()` **devuelve**
+`io.Discard`, no que alguien lo **use**. `TestNoDirectStdoutWrites` escanea el paquete y
+cierra esa diferencia.
 
 ### Idioma de la TUI
 
@@ -191,7 +199,7 @@ Medido con `go test -cover ./...` el 2026-08-06:
 | api | 42.9% | client_test.go |
 | bundle | 59.7% | bundle_test.go |
 | config | 45.1% | config_test.go |
-| downloader | 45.1% | integration_test.go, oauth_test.go, tui_test.go, metadata_test.go, db_test.go, lastfm_test.go, helpers_test.go, redownload_test.go |
+| downloader | 48.7% | integration_test.go, oauth_test.go, tui_test.go, metadata_test.go, db_test.go, lastfm_test.go, helpers_test.go, redownload_test.go, csvbatch_test.go |
 | lyrics | 75.6% | metadata_test.go, lrclib_test.go, lyrics_test.go |
 | ui | 55.8% | shell_test.go, handle_test.go, lang_test.go |
 | cmd/qobuz-dl | 0% | main_test.go |
