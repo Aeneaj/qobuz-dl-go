@@ -7,6 +7,58 @@ import (
 	"testing"
 )
 
+func TestResolveDir(t *testing.T) {
+	base := t.TempDir()
+	existing := filepath.Join(base, "library")
+	if err := os.Mkdir(existing, 0755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(base, "not-a-dir.txt")
+	if err := os.WriteFile(file, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	absent := filepath.Join(base, "absent")
+
+	cases := []struct {
+		name    string
+		dir     string
+		create  bool
+		wantErr bool
+	}{
+		{"creates missing tree", filepath.Join(base, "new", "nested"), true, false},
+		{"accepts existing dir", existing, false, false},
+		{"rejects missing dir", absent, false, true},
+		{"rejects plain file", file, false, true},
+		{"rejects empty path", "", true, true},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := ResolveDir(c.dir, c.create)
+			if c.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got %q", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ResolveDir: %v", err)
+			}
+			if !filepath.IsAbs(got) {
+				t.Errorf("path %q is not absolute", got)
+			}
+			if info, statErr := os.Stat(got); statErr != nil || !info.IsDir() {
+				t.Errorf("%q is not an existing directory", got)
+			}
+		})
+	}
+
+	// The whole point of create=false: scanning must never create the library.
+	if _, err := os.Stat(absent); !os.IsNotExist(err) {
+		t.Errorf("ResolveDir(create=false) created %q", absent)
+	}
+}
+
 func TestWriteReadINI_RoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.ini")

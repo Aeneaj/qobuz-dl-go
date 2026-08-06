@@ -14,9 +14,11 @@ import (
 	"github.com/Aeneaj/qobuz-dl-go/internal/bundle"
 )
 
-// ResolveDir expands ~ and relative paths, then creates the directory tree.
-// Returns the absolute path ready to use, or an error if creation fails.
-func ResolveDir(dir string) (string, error) {
+// ResolveDir expands ~ and relative paths and returns the absolute path.
+// With create set the directory tree is created (download targets); without
+// it the directory must already exist, which is what scanning an existing
+// music library needs.
+func ResolveDir(dir string, create bool) (string, error) {
 	if dir == "" {
 		return "", fmt.Errorf("directory path is empty")
 	}
@@ -31,8 +33,18 @@ func ResolveDir(dir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve path %q: %w", dir, err)
 	}
-	if err := os.MkdirAll(abs, 0755); err != nil {
-		return "", fmt.Errorf("create directory %q: %w", abs, err)
+	if create {
+		if err := os.MkdirAll(abs, 0755); err != nil {
+			return "", fmt.Errorf("create directory %q: %w", abs, err)
+		}
+		return abs, nil
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return "", fmt.Errorf("directory not found: %q", abs)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("%q is not a directory", abs)
 	}
 	return abs, nil
 }

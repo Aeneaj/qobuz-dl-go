@@ -154,12 +154,12 @@ Jerarquía de prioridad al resolver la ruta de descarga:
 3. Fallback: `./qobuz-downloader` (relativo al CWD)
 
 Implementación:
-- `config.ResolveDir(dir string) (string, error)` — expande `~`, llama `filepath.Abs`, crea con `os.MkdirAll`; devuelve error descriptivo si hay problema de permisos (sin panic)
+- `config.ResolveDir(dir string, create bool) (string, error)` — expande `~`, llama `filepath.Abs`; devuelve error descriptivo si hay problema de permisos (sin panic)
 - `Config.DownloadDir` — campo separado de `DefaultFolder` (que es el formato de nombre de álbum, no una ruta)
 - `Reset()` pregunta al usuario por el directorio antes de `default_folder`
 - `downloader.New()` ya no tiene fallback hardcodeado — la ruta llega siempre resuelta desde `initDownloader`
 
-**Importante**: el comando `lyrics` usa `resolveScanDir` (en `lyrics_cmd.go`), que es igual a `ResolveDir` pero **sin** `os.MkdirAll` — no crea el directorio si no existe. El usuario debe apuntar a una biblioteca ya existente.
+**Importante**: el flag `create` distingue los dos usos. Los comandos de descarga llaman `ResolveDir(dir, true)` y crean el árbol con `os.MkdirAll`. El comando `lyrics` llama `ResolveDir(dir, false)`, que exige que el directorio ya exista y sea un directorio — nunca lo crea. El usuario debe apuntar a una biblioteca ya existente.
 
 ## Comando `lyrics` — detalles de implementación
 

@@ -91,7 +91,7 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, params 
 		case 400:
 			return nil, &InvalidAppIDError{"Invalid app id. " + resetMsg}
 		}
-	} else if (endpoint == "track/getFileUrl" || endpoint == "favorite/getUserFavorites") && resp.StatusCode == 400 {
+	} else if endpoint == "track/getFileUrl" && resp.StatusCode == 400 {
 		return nil, &InvalidAppSecretError{fmt.Sprintf("Invalid app secret: %s. %s", string(respBody), resetMsg)}
 	}
 
@@ -311,22 +311,6 @@ func (c *Client) GetTrackURL(ctx context.Context, trackID string, fmtID int, sec
 		"track_id":    {trackID},
 		"format_id":   {strconv.Itoa(fmtID)},
 		"intent":      {"stream"},
-	})
-}
-
-// GetFavoriteAlbums returns the user's favorite albums.
-func (c *Client) GetFavoriteAlbums(ctx context.Context, offset, limit int) (map[string]interface{}, error) {
-	unix := strconv.FormatInt(time.Now().Unix(), 10)
-	rawSig := "favoritegetUserFavorites" + unix + c.Secret
-	sig := md5hex(rawSig)
-	return c.doGet(ctx, "favorite/getUserFavorites", url.Values{
-		"app_id":          {c.AppID},
-		"user_auth_token": {c.UAT},
-		"type":            {"albums"},
-		"request_ts":      {unix},
-		"request_sig":     {sig},
-		"limit":           {strconv.Itoa(limit)},
-		"offset":          {strconv.Itoa(offset)},
 	})
 }
 

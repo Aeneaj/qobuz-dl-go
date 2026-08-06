@@ -269,7 +269,7 @@ func initDownloader(ctx context.Context, f *cliFlags) (*downloader.Downloader, e
 	if dir == "" {
 		dir = "./qobuz-downloader"
 	}
-	resolvedDir, err := config.ResolveDir(dir)
+	resolvedDir, err := config.ResolveDir(dir, true)
 	if err != nil {
 		return nil, fmt.Errorf("download directory: %w", err)
 	}
