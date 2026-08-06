@@ -1,6 +1,7 @@
 package downloader
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,8 +25,8 @@ func TestWriteFLACTags_RoundTrip(t *testing.T) {
 		"TRACKNUMBER": "3",
 		"DATE":        "2024-04-01",
 	}
-	if err := writeFLACTags(tmp, tags); err != nil {
-		t.Fatalf("writeFLACTags: %v", err)
+	if err := writeFLACMeta(tmp, tags, nil); err != nil {
+		t.Fatalf("writeFLACMeta: %v", err)
 	}
 
 	// Read back and verify the Vorbis Comment block is present
@@ -70,10 +71,85 @@ func TestWriteFLACTags_RoundTrip(t *testing.T) {
 	}
 }
 
+// Tags and cover art are written in a single rewrite: the Vorbis Comment must
+// land right after STREAMINFO, the stale PICTURE block must be replaced (not
+// duplicated), and the audio data must survive untouched.
+func TestWriteFLACMeta_TagsAndCoverInOnePass(t *testing.T) {
+	flac := append([]byte("fLaC"), 0x00, 0x00, 0x00, 0x22) // STREAMINFO, not last, len 34
+	flac = append(flac, make([]byte, 34)...)
+	flac = append(flac, 0x86, 0x00, 0x00, 0x03) // PICTURE, last, len 3
+	flac = append(flac, "old"...)
+	audio := []byte{0xff, 0xf8, 0x00, 0x00}
+	flac = append(flac, audio...)
+
+	tmp := tempFile(t, "*.flac")
+	if err := os.WriteFile(tmp, flac, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cover := []byte("JPEGDATA")
+	if err := writeFLACMeta(tmp, map[string]string{"TITLE": "One Pass"}, cover); err != nil {
+		t.Fatalf("writeFLACMeta: %v", err)
+	}
+
+	out, err := os.ReadFile(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocks, tail := walkFLAC(t, out)
+
+	var types []byte
+	for _, b := range blocks {
+		types = append(types, b.blockType)
+	}
+	if want := []byte{typeStreamInfo, typeVorbisComment, typePicture}; !bytes.Equal(types, want) {
+		t.Fatalf("block types = %v, want %v", types, want)
+	}
+	if !strings.Contains(string(blocks[1].data), "TITLE=One Pass") {
+		t.Error("TITLE tag missing from Vorbis Comment block")
+	}
+	if !bytes.HasSuffix(blocks[2].data, cover) {
+		t.Error("new cover not found in PICTURE block")
+	}
+	if bytes.Contains(blocks[2].data, []byte("old")) {
+		t.Error("stale PICTURE block was not replaced")
+	}
+	if !bytes.Equal(tail, audio) {
+		t.Errorf("audio data = %q, want %q", tail, audio)
+	}
+}
+
+// walkFLAC parses an encoded FLAC into its metadata blocks and trailing audio,
+// failing the test unless exactly the final block carries the last-block flag.
+func walkFLAC(t *testing.T, data []byte) ([]flacBlock, []byte) {
+	t.Helper()
+	if len(data) < 4 || string(data[:4]) != "fLaC" {
+		t.Fatal("output is not a FLAC file")
+	}
+	var blocks []flacBlock
+	pos := 4
+	for pos+4 <= len(data) {
+		isLast := data[pos]&0x80 != 0
+		bType := data[pos] & 0x7F
+		n := int(data[pos+1])<<16 | int(data[pos+2])<<8 | int(data[pos+3])
+		pos += 4
+		if pos+n > len(data) {
+			t.Fatalf("block %d overruns end of file", len(blocks))
+		}
+		blocks = append(blocks, flacBlock{bType, data[pos : pos+n]})
+		pos += n
+		if isLast {
+			return blocks, data[pos:]
+		}
+	}
+	t.Fatal("no block carries the last-block flag")
+	return nil, nil
+}
+
 func TestWriteFLACTags_NotFLAC(t *testing.T) {
 	tmp := tempFile(t, "*.flac")
 	os.WriteFile(tmp, []byte("not a flac file"), 0644)
-	err := writeFLACTags(tmp, map[string]string{"TITLE": "x"})
+	err := writeFLACMeta(tmp, map[string]string{"TITLE": "x"}, nil)
 	if err == nil {
 		t.Error("expected error for non-FLAC file")
 	}
