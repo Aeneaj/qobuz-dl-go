@@ -54,14 +54,17 @@ func main() {
 	fs := flag.NewFlagSet("qobuz-dl", flag.ExitOnError)
 	fs.Usage = func() { fmt.Print(usage) }
 
-	reset := fs.Bool("r", false, "")
-	resetLong := fs.Bool("reset", false, "")
-	showCfg := fs.Bool("s", false, "")
-	showCfgLong := fs.Bool("show-config", false, "")
-	purge := fs.Bool("p", false, "")
-	purgeLong := fs.Bool("purge", false, "")
-	showVer := fs.Bool("v", false, "")
-	showVerLong := fs.Bool("version", false, "")
+	// Short and long spelling of each option share one variable, so either
+	// form sets it.
+	var reset, showCfg, purge, showVer bool
+	fs.BoolVar(&reset, "r", false, "")
+	fs.BoolVar(&reset, "reset", false, "")
+	fs.BoolVar(&showCfg, "s", false, "")
+	fs.BoolVar(&showCfg, "show-config", false, "")
+	fs.BoolVar(&purge, "p", false, "")
+	fs.BoolVar(&purge, "purge", false, "")
+	fs.BoolVar(&showVer, "v", false, "")
+	fs.BoolVar(&showVer, "version", false, "")
 
 	flags := registerDownloadFlags(fs)
 	luckyType := fs.String("lucky-type", "album", "")
@@ -70,11 +73,7 @@ func main() {
 
 	fs.Parse(os.Args[1:])
 
-	doReset := *reset || *resetLong
-	doShow := *showCfg || *showCfgLong
-	doPurge := *purge || *purgeLong
-
-	if *showVer || *showVerLong {
+	if showVer {
 		fmt.Println("qobuz-dl", version)
 		return
 	}
@@ -94,7 +93,7 @@ func main() {
 		os.Exit(1)
 	}()
 
-	if doReset {
+	if reset {
 		if err := config.Reset(ctx); err != nil {
 			fmt.Fprintf(os.Stderr, "\033[31mError: %v\n", err)
 			os.Exit(1)
@@ -102,7 +101,7 @@ func main() {
 		return
 	}
 
-	if doShow {
+	if showCfg {
 		cfgFile := config.ConfigDir() + "/config.ini"
 		fmt.Printf("Configuration: %s\n---\n", cfgFile)
 		data, _ := os.ReadFile(cfgFile)
@@ -110,7 +109,7 @@ func main() {
 		return
 	}
 
-	if doPurge {
+	if purge {
 		dbPath := config.ConfigDir() + "/qobuz_dl.db"
 		os.Remove(dbPath)
 		fmt.Println("\033[32mThe database was deleted.\033[0m")

@@ -7,6 +7,7 @@ package downloader
 // Both are pure-Go implementations with no external dependencies.
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
@@ -196,18 +197,14 @@ func buildVorbisComment(tags map[string]string) []byte {
 		size += 4 + len(c)
 	}
 	buf := make([]byte, 0, size)
-	buf = appendU32LE(buf, uint32(len(vendorBytes)))
+	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(vendorBytes)))
 	buf = append(buf, vendorBytes...)
-	buf = appendU32LE(buf, uint32(len(comments)))
+	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(comments)))
 	for _, c := range comments {
-		buf = appendU32LE(buf, uint32(len(c)))
+		buf = binary.LittleEndian.AppendUint32(buf, uint32(len(c)))
 		buf = append(buf, c...)
 	}
 	return buf
-}
-
-func appendU32LE(b []byte, v uint32) []byte {
-	return append(b, byte(v), byte(v>>8), byte(v>>16), byte(v>>24))
 }
 
 func buildFLACPictureBlock(imgData []byte) []byte {
@@ -217,22 +214,18 @@ func buildFLACPictureBlock(imgData []byte) []byte {
 	// picture_type, mime_length, mime, desc_length, desc,
 	// width, height, color_depth, color_count, data_length, data
 	buf := make([]byte, 0, 32+len(mimeType)+len(imgData))
-	buf = appendU32BE(buf, 3) // Front cover
-	buf = appendU32BE(buf, uint32(len(mimeType)))
+	buf = binary.BigEndian.AppendUint32(buf, 3) // Front cover
+	buf = binary.BigEndian.AppendUint32(buf, uint32(len(mimeType)))
 	buf = append(buf, []byte(mimeType)...)
-	buf = appendU32BE(buf, uint32(len(desc)))
+	buf = binary.BigEndian.AppendUint32(buf, uint32(len(desc)))
 	buf = append(buf, []byte(desc)...)
-	buf = appendU32BE(buf, 0) // width (unknown)
-	buf = appendU32BE(buf, 0) // height
-	buf = appendU32BE(buf, 0) // color depth
-	buf = appendU32BE(buf, 0) // color count
-	buf = appendU32BE(buf, uint32(len(imgData)))
+	buf = binary.BigEndian.AppendUint32(buf, 0) // width (unknown)
+	buf = binary.BigEndian.AppendUint32(buf, 0) // height
+	buf = binary.BigEndian.AppendUint32(buf, 0) // color depth
+	buf = binary.BigEndian.AppendUint32(buf, 0) // color count
+	buf = binary.BigEndian.AppendUint32(buf, uint32(len(imgData)))
 	buf = append(buf, imgData...)
 	return buf
-}
-
-func appendU32BE(b []byte, v uint32) []byte {
-	return append(b, byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
 }
 
 // readCover loads the cover image next to (or one level above) dir.
