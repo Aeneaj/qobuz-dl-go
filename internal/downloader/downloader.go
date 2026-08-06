@@ -1300,7 +1300,7 @@ func Search(ctx context.Context, client *api.Client, itemType, query string, lim
 		}
 		text := renderFormat(format, m)
 		if requiresExtra {
-			dur := formatDuration(int(getFloat(m, "duration")))
+			dur := formatDuration(int(nestedFloat(m, "duration")))
 			hires := "LOSSLESS"
 			if b, _ := m["hires_streamable"].(bool); b {
 				hires = "HI-RES"
@@ -1348,11 +1348,6 @@ func formatDuration(secs int) string {
 		return fmt.Sprintf("%02d:%02d:%02d", h, m, s)
 	}
 	return fmt.Sprintf("%02d:%02d", m, s)
-}
-
-func getFloat(m map[string]interface{}, key string) float64 {
-	v, _ := m[key].(float64)
-	return v
 }
 
 // ---- lucky search helper used by CLI ----

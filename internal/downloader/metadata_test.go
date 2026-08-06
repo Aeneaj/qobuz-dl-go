@@ -278,6 +278,42 @@ func TestBuildFLACTags_IsTrack(t *testing.T) {
 	check("COPYRIGHT", "\u2117 2024")
 }
 
+// The album branch reads its fields straight off the album map rather than
+// through an "album" sub-key, which is what distinguishes it from IsTrack.
+func TestBuildFLACTags_FromAlbum(t *testing.T) {
+	track := map[string]interface{}{
+		"title":        "My Song",
+		"track_number": float64(2),
+	}
+	album := map[string]interface{}{
+		"title":                 "My Album",
+		"artist":                map[string]interface{}{"name": "Album Artist"},
+		"release_date_original": "2024-01-15",
+		"tracks_count":          float64(9),
+		"genres_list":           []interface{}{"Pop/Rock", "Pop/Rock→Rock"},
+		"label":                 map[string]interface{}{"name": "Best Label"},
+		"copyright":             "(C) 2024",
+	}
+	tags := buildFLACTags(track, album, false)
+
+	check := func(key, want string) {
+		t.Helper()
+		if got := tags[key]; got != want {
+			t.Errorf("tag %s = %q, want %q", key, got, want)
+		}
+	}
+	check("TITLE", "My Song")
+	check("TRACKNUMBER", "2")
+	check("ARTIST", "Album Artist")
+	check("ALBUMARTIST", "Album Artist")
+	check("ALBUM", "My Album")
+	check("DATE", "2024-01-15")
+	check("TRACKTOTAL", "9")
+	check("GENRE", "Pop, Rock")
+	check("LABEL", "Best Label")
+	check("COPYRIGHT", "© 2024")
+}
+
 func TestBuildFLACTags_WithVersion(t *testing.T) {
 	track := map[string]interface{}{
 		"title":   "Track",

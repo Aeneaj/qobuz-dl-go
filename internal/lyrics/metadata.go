@@ -224,57 +224,46 @@ func decodeID3Text(data []byte) string {
 	if len(data) == 0 {
 		return ""
 	}
-	enc := data[0]
 	payload := data[1:]
 
-	stripNulUTF8 := func(s string) string { return strings.TrimRight(s, "\x00") }
-
-	switch enc {
-	case 0x01: // UTF-16 with BOM
+	switch data[0] {
+	case 0x01: // UTF-16 with BOM — absent BOM means little-endian
 		if len(payload) < 2 {
 			return ""
 		}
-		bigEndian := payload[0] == 0xFE && payload[1] == 0xFF
-		// advance past BOM if present (FF FE or FE FF)
-		if (payload[0] == 0xFF && payload[1] == 0xFE) || bigEndian {
+		order := binary.ByteOrder(binary.LittleEndian)
+		switch {
+		case payload[0] == 0xFE && payload[1] == 0xFF:
+			order = binary.BigEndian
+			payload = payload[2:]
+		case payload[0] == 0xFF && payload[1] == 0xFE:
 			payload = payload[2:]
 		}
-		// strip trailing UTF-16 null terminator
-		for len(payload) >= 2 && payload[len(payload)-2] == 0 && payload[len(payload)-1] == 0 {
-			payload = payload[:len(payload)-2]
-		}
-		if len(payload)%2 != 0 && len(payload) > 0 {
-			payload = payload[:len(payload)-1]
-		}
-		u16 := make([]uint16, len(payload)/2)
-		for i := range u16 {
-			if bigEndian {
-				u16[i] = uint16(payload[2*i])<<8 | uint16(payload[2*i+1])
-			} else {
-				u16[i] = uint16(payload[2*i]) | uint16(payload[2*i+1])<<8
-			}
-		}
-		return string(utf16.Decode(u16))
+		return decodeUTF16(payload, order)
 
 	case 0x02: // UTF-16BE without BOM
-		for len(payload) >= 2 && payload[len(payload)-2] == 0 && payload[len(payload)-1] == 0 {
-			payload = payload[:len(payload)-2]
-		}
-		if len(payload)%2 != 0 && len(payload) > 0 {
-			payload = payload[:len(payload)-1]
-		}
-		u16 := make([]uint16, len(payload)/2)
-		for i := range u16 {
-			u16[i] = uint16(payload[2*i])<<8 | uint16(payload[2*i+1])
-		}
-		return string(utf16.Decode(u16))
+		return decodeUTF16(payload, binary.BigEndian)
 
 	case 0x03: // UTF-8
-		return stripNulUTF8(string(payload))
+		return strings.TrimRight(string(payload), "\x00")
 
 	default: // 0x00 Latin-1
-		return stripNulUTF8(string(payload))
+		return strings.TrimRight(string(payload), "\x00")
 	}
+}
+
+// decodeUTF16 decodes b as UTF-16 code units in the given byte order, after
+// dropping any trailing null terminators and a stray odd byte.
+func decodeUTF16(b []byte, order binary.ByteOrder) string {
+	for len(b) >= 2 && b[len(b)-2] == 0 && b[len(b)-1] == 0 {
+		b = b[:len(b)-2]
+	}
+	b = b[:len(b)-len(b)%2]
+	u16 := make([]uint16, len(b)/2)
+	for i := range u16 {
+		u16[i] = order.Uint16(b[2*i:])
+	}
+	return string(utf16.Decode(u16))
 }
 
 // ---- MPEG duration helpers ----------------------------------------------

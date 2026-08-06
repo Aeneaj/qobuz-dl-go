@@ -293,40 +293,28 @@ func TestReadMP3_NoID3Tag(t *testing.T) {
 
 // ---- decodeID3Text unit tests -------------------------------------------
 
-func TestDecodeID3Text_Latin1(t *testing.T) {
-	data := []byte{0x00, 'H', 'e', 'l', 'l', 'o', 0x00}
-	if got := decodeID3Text(data); got != "Hello" {
-		t.Errorf("got %q", got)
+func TestDecodeID3Text(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []byte
+		want string
+	}{
+		{"latin1", []byte{0x00, 'H', 'e', 'l', 'l', 'o', 0x00}, "Hello"},
+		{"utf16 LE with BOM", []byte{0x01, 0xFF, 0xFE, 'H', 0x00, 'i', 0x00, 0x00, 0x00}, "Hi"},
+		{"utf16 BE with BOM", []byte{0x01, 0xFE, 0xFF, 0x00, 'H', 0x00, 'i', 0x00, 0x00}, "Hi"},
+		{"utf16 without BOM falls back to LE", []byte{0x01, 'H', 0x00, 'i', 0x00}, "Hi"},
+		{"utf16BE encoding byte, no BOM", []byte{0x02, 0x00, 'H', 0x00, 'i', 0x00, 0x00}, "Hi"},
+		{"utf8", []byte{0x03, 'H', 'e', 'l', 'l', 'o', 0x00}, "Hello"},
+		{"truncated BOM", []byte{0x01, 0xFF}, ""},
+		{"nil", nil, ""},
+		{"empty", []byte{}, ""},
 	}
-}
-
-func TestDecodeID3Text_UTF16LE(t *testing.T) {
-	data := []byte{0x01, 0xFF, 0xFE, 'H', 0x00, 'i', 0x00, 0x00, 0x00}
-	if got := decodeID3Text(data); got != "Hi" {
-		t.Errorf("got %q", got)
-	}
-}
-
-func TestDecodeID3Text_UTF16BE(t *testing.T) {
-	data := []byte{0x01, 0xFE, 0xFF, 0x00, 'H', 0x00, 'i', 0x00, 0x00}
-	if got := decodeID3Text(data); got != "Hi" {
-		t.Errorf("got %q", got)
-	}
-}
-
-func TestDecodeID3Text_UTF8(t *testing.T) {
-	data := []byte{0x03, 'H', 'e', 'l', 'l', 'o', 0x00}
-	if got := decodeID3Text(data); got != "Hello" {
-		t.Errorf("got %q", got)
-	}
-}
-
-func TestDecodeID3Text_EmptyInput(t *testing.T) {
-	if got := decodeID3Text(nil); got != "" {
-		t.Errorf("nil input: got %q", got)
-	}
-	if got := decodeID3Text([]byte{}); got != "" {
-		t.Errorf("empty input: got %q", got)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := decodeID3Text(c.in); got != c.want {
+				t.Errorf("decodeID3Text(%v) = %q, want %q", c.in, got, c.want)
+			}
+		})
 	}
 }
 

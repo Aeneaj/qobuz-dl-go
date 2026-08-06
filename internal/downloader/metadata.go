@@ -67,24 +67,21 @@ func buildFLACTags(track, album map[string]interface{}, isTrack bool) map[string
 		t["TRACKTOTAL"] = fmt.Sprintf("%v", nestedFloat(track, "album", "tracks_count"))
 		t["ALBUM"] = nestedStr(track, "album", "title")
 		t["DATE"] = nestedStr(track, "album", "release_date_original")
-		t["COPYRIGHT"] = formatCopyright(safeGetStr(track, "copyright"))
+		t["COPYRIGHT"] = formatCopyright(nestedStr(track, "copyright"))
 		t["LABEL"] = nestedStr(track, "album", "label", "name")
 	} else {
 		if performer == "" {
 			performer = nestedStr(album, "artist", "name")
 		}
 		t["ARTIST"] = performer
-		t["GENRE"] = formatGenres(sliceStrings(album, "", "genres_list"))
+		t["GENRE"] = formatGenres(sliceStrings(album, "genres_list"))
 		t["ALBUMARTIST"] = nestedStr(album, "artist", "name")
-		t["TRACKTOTAL"] = fmt.Sprintf("%v", nestedFloat(album, "", "tracks_count"))
-		t["ALBUM"] = nestedStr(album, "", "title")
-		if t["ALBUM"] == "" {
-			t["ALBUM"], _ = album["title"].(string)
-		}
+		t["TRACKTOTAL"] = fmt.Sprintf("%v", nestedFloat(album, "tracks_count"))
+		t["ALBUM"] = nestedStr(album, "title")
 		if rd, _ := album["release_date_original"].(string); rd != "" {
 			t["DATE"] = rd
 		}
-		t["COPYRIGHT"] = formatCopyright(safeGetStr(album, "copyright"))
+		t["COPYRIGHT"] = formatCopyright(nestedStr(album, "copyright"))
 		t["LABEL"] = nestedStr(album, "label", "name")
 	}
 
@@ -286,14 +283,14 @@ func buildMP3Tags(track, album map[string]interface{}, isTrack bool) map[string]
 		t["TPE2"] = nestedStr(track, "album", "artist", "name")
 		t["TALB"] = nestedStr(track, "album", "title")
 		t["TDRC"] = nestedStr(track, "album", "release_date_original")
-		t["TCOP"] = formatCopyright(safeGetStr(track, "copyright"))
+		t["TCOP"] = formatCopyright(nestedStr(track, "copyright"))
 		t["TPUB"] = nestedStr(track, "album", "label", "name")
 		trackTotal = fmt.Sprintf("%v", nestedFloat(track, "album", "tracks_count"))
 	} else {
 		if performer == "" {
 			performer = nestedStr(album, "artist", "name")
 		}
-		t["TCON"] = formatGenres(sliceStrings(album, "", "genres_list"))
+		t["TCON"] = formatGenres(sliceStrings(album, "genres_list"))
 		t["TPE2"] = nestedStr(album, "artist", "name")
 		if v, ok := album["title"].(string); ok {
 			t["TALB"] = v
@@ -301,9 +298,9 @@ func buildMP3Tags(track, album map[string]interface{}, isTrack bool) map[string]
 		if v, ok := album["release_date_original"].(string); ok {
 			t["TDRC"] = v
 		}
-		t["TCOP"] = formatCopyright(safeGetStr(album, "copyright"))
+		t["TCOP"] = formatCopyright(nestedStr(album, "copyright"))
 		t["TPUB"] = nestedStr(album, "label", "name")
-		trackTotal = fmt.Sprintf("%v", getFloat(album, "tracks_count"))
+		trackTotal = fmt.Sprintf("%v", nestedFloat(album, "tracks_count"))
 	}
 	t["TPE1"] = performer
 	if t["TDRC"] != "" && len(t["TDRC"]) >= 4 {
@@ -486,17 +483,18 @@ func formatGenres(genres []string) string {
 	return strings.Join(unique, ", ")
 }
 
-func sliceStrings(m map[string]interface{}, subKey, key string) []string {
-	var src interface{} = m
-	if subKey != "" {
-		sub, _ := m[subKey].(map[string]interface{})
-		if sub == nil {
+// sliceStrings walks nested maps and returns the string entries of the list at
+// the end of the path, skipping anything that is not a string.
+func sliceStrings(m map[string]interface{}, keys ...string) []string {
+	var cur interface{} = m
+	for _, k := range keys {
+		mm, ok := cur.(map[string]interface{})
+		if !ok {
 			return nil
 		}
-		src = sub
+		cur = mm[k]
 	}
-	mm, _ := src.(map[string]interface{})
-	raw, _ := mm[key].([]interface{})
+	raw, _ := cur.([]interface{})
 	var result []string
 	for _, r := range raw {
 		if s, ok := r.(string); ok {
@@ -506,21 +504,18 @@ func sliceStrings(m map[string]interface{}, subKey, key string) []string {
 	return result
 }
 
-func safeGetStr(m map[string]interface{}, key string) string {
-	v, _ := m[key].(string)
-	return v
-}
-
-func nestedFloat(m map[string]interface{}, subKey, key string) float64 {
-	var src interface{} = m
-	if subKey != "" {
-		sub, _ := m[subKey].(map[string]interface{})
-		if sub == nil {
+// nestedFloat walks nested maps and returns the float64 at the end of the
+// path, or 0 if any step is missing or has the wrong type. Counterpart of
+// nestedStr.
+func nestedFloat(m map[string]interface{}, keys ...string) float64 {
+	var cur interface{} = m
+	for _, k := range keys {
+		mm, ok := cur.(map[string]interface{})
+		if !ok {
 			return 0
 		}
-		src = sub
+		cur = mm[k]
 	}
-	mm, _ := src.(map[string]interface{})
-	v, _ := mm[key].(float64)
+	v, _ := cur.(float64)
 	return v
 }
