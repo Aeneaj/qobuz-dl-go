@@ -29,12 +29,16 @@ const (
 // tagFLAC writes Vorbis Comment metadata — and, when embedArt is set, the
 // cover art — to a FLAC file in a single rewrite, then renames tmpFile →
 // finalFile.
-func tagFLAC(tmpFile, coverDir, finalFile string, track, album map[string]interface{}, isTrack, embedArt bool) error {
+//
+// w is where the missing-cover warning goes. It must be the downloader's
+// termOut(), never os.Stdout: this runs from the worker pool with progress
+// bars live, and under the TUI nothing may reach the terminal at all.
+func tagFLAC(w io.Writer, tmpFile, coverDir, finalFile string, track, album map[string]interface{}, isTrack, embedArt bool) error {
 	var cover []byte
 	if embedArt {
 		var err error
 		if cover, err = readCover(coverDir); err != nil {
-			fmt.Printf("\033[33mWarning: could not embed cover: %v\033[0m\n", err)
+			fmt.Fprintf(w, "\033[33mWarning: could not embed cover: %v\033[0m\n", err)
 		}
 	}
 	if err := writeFLACMeta(tmpFile, buildFLACTags(track, album, isTrack), cover); err != nil {

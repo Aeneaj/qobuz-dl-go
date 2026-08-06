@@ -123,7 +123,7 @@ func (d *Downloader) downloadLastFMPlaylist(ctx context.Context, username, listT
 		return err
 	}
 	if len(tracks) == 0 {
-		fmt.Println("\033[33mNo tracks found in Last.fm playlist.\033[0m")
+		fmt.Fprintln(d.termOut(), "\033[33mNo tracks found in Last.fm playlist.\033[0m")
 		return nil
 	}
 	fmt.Fprintf(d.termOut(), "\033[33mFound %d tracks — searching Qobuz...\033[0m\n\n", len(tracks))

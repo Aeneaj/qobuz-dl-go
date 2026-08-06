@@ -240,7 +240,7 @@ func (d *Downloader) downloadAndTag(
 			os.Rename(tmpFile, finalFile)
 		}
 	} else {
-		if err := tagFLAC(tmpFile, dir, finalFile, trackMeta, albumMeta, isTrack, d.Opts.EmbedArt); err != nil {
+		if err := tagFLAC(d.termOut(), tmpFile, dir, finalFile, trackMeta, albumMeta, isTrack, d.Opts.EmbedArt); err != nil {
 			fmt.Fprintf(d.termOut(), "\033[31mWarning: could not tag %s: %v\033[0m\n", filepath.Base(finalFile), err)
 			os.Rename(tmpFile, finalFile)
 		}

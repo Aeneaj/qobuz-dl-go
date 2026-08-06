@@ -3,6 +3,7 @@ package downloader
 import (
 	"context"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -87,5 +88,47 @@ func TestTermOutDiscardsUnderTUI(t *testing.T) {
 	}
 	if d.termOut() == os.Stdout {
 		t.Error("with a TUI active, termOut must not write to stdout")
+	}
+}
+
+// TestNoDirectStdoutWrites guards the invariant that TestTermOutDiscardsUnderTUI
+// cannot: that one proves termOut() returns io.Discard under the TUI, this one
+// proves the package actually goes through it.
+//
+// It found three live leaks when it was written — tagFLAC's missing-cover
+// warning plus the empty-playlist notices in csvbatch.go and lastfm.go — each
+// sitting a couple of lines from code that did use termOut(). A bare fmt.Printf
+// corrupts mpb's redraw and, under the TUI, paints over the alt screen.
+//
+// Static on purpose: reaching these branches for real needs a live download.
+func TestNoDirectStdoutWrites(t *testing.T) {
+	// interactive.go is the `fun` REPL: it owns the terminal and never runs
+	// with bars or the TUI up. oauth.go prints only with the terminal
+	// released, which is what makes reusing the CLI flow correct.
+	allowed := map[string]bool{"interactive.go": true, "oauth.go": true}
+
+	reDirect := regexp.MustCompile(`fmt\.Print(f|ln)?\(|fmt\.Fprint(f|ln)?\(os\.Stdout`)
+
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	scanned := 0
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") || allowed[name] {
+			continue
+		}
+		src, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		scanned++
+		for _, m := range reDirect.FindAllString(string(src), -1) {
+			t.Errorf("%s writes straight to stdout with %s — use d.termOut(), or take an io.Writer parameter", name, m)
+		}
+	}
+	if scanned == 0 {
+		t.Fatal("scanned no files — the walk is broken")
 	}
 }

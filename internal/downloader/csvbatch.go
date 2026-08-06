@@ -132,7 +132,7 @@ func (d *Downloader) DownloadCSV(ctx context.Context, csvPath, failedPath string
 		return
 	}
 	if len(tracks) == 0 {
-		fmt.Println("No tracks found in CSV.")
+		fmt.Fprintln(d.termOut(), "No tracks found in CSV.")
 		return
 	}
 
