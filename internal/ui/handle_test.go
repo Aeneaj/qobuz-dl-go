@@ -245,3 +245,86 @@ func TestTrackHandleAbortFailureCarriesError(t *testing.T) {
 		t.Error("MsgFailed.Err is nil — the model has nothing to display")
 	}
 }
+
+// ---- multi-item runs (issue #18) ----------------------------------------
+
+func applyMsgs(m Model, msgs ...tea.Msg) Model {
+	for _, msg := range msgs {
+		out, _ := m.Update(msg)
+		m = out.(Model)
+	}
+	return m
+}
+
+// TestModelAccumulatesAcrossAnnouncements is the regression test for #18.
+//
+// downloadTrackByID announces every loose track with its own MsgAlbum{Tracks:1}
+// — that is the CSV import path, and the artist path does the same once per
+// album. MsgAlbum used to clear the track list and the counters, so the screen
+// showed one track at a time and the counter restarted on each song, which read
+// as "downloads are sequential" even where the worker pool was running fine.
+func TestModelAccumulatesAcrossAnnouncements(t *testing.T) {
+	cases := []struct {
+		name              string
+		msgs              []tea.Msg
+		wantTotal, wantN  int
+		wantDone, wantBad int
+	}{
+		{
+			name: "csv import: one announcement per track",
+			msgs: []tea.Msg{
+				MsgAlbum{Title: "a", Tracks: 1}, MsgRegisterTrack{ID: "1"}, MsgDone{ID: "1"},
+				MsgAlbum{Title: "b", Tracks: 1}, MsgRegisterTrack{ID: "2"}, MsgDone{ID: "2"},
+				MsgAlbum{Title: "c", Tracks: 1}, MsgRegisterTrack{ID: "3"},
+			},
+			wantTotal: 3, wantN: 3, wantDone: 2,
+		},
+		{
+			name: "artist discography: one announcement per album",
+			msgs: []tea.Msg{
+				MsgAlbum{Title: "LP1", Tracks: 2}, MsgRegisterTrack{ID: "1"}, MsgRegisterTrack{ID: "2"},
+				MsgAlbum{Title: "LP2", Tracks: 3}, MsgRegisterTrack{ID: "3"},
+			},
+			wantTotal: 5, wantN: 3,
+		},
+		{
+			name: "a failure is kept across the next announcement",
+			msgs: []tea.Msg{
+				MsgAlbum{Title: "a", Tracks: 1}, MsgRegisterTrack{ID: "1"}, MsgFailed{ID: "1"},
+				MsgAlbum{Title: "b", Tracks: 1}, MsgRegisterTrack{ID: "2"},
+			},
+			wantTotal: 2, wantN: 2, wantBad: 1,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := applyMsgs(NewModel(), c.msgs...)
+			if m.totalTracks != c.wantTotal {
+				t.Errorf("totalTracks = %d, want %d", m.totalTracks, c.wantTotal)
+			}
+			if len(m.tracks) != c.wantN {
+				t.Errorf("tracks listed = %d, want %d", len(m.tracks), c.wantN)
+			}
+			if m.done != c.wantDone {
+				t.Errorf("done = %d, want %d", m.done, c.wantDone)
+			}
+			if m.failed != c.wantBad {
+				t.Errorf("failed = %d, want %d", m.failed, c.wantBad)
+			}
+		})
+	}
+}
+
+// The counters must still start clean for each new run — that reset lives in
+// Shell.start (and runDisplay for --tui), which build a fresh Model.
+func TestNewModelStartsClean(t *testing.T) {
+	m := applyMsgs(NewModel(), MsgAlbum{Title: "a", Tracks: 4}, MsgRegisterTrack{ID: "1"}, MsgDone{ID: "1"})
+	if m.totalTracks == 0 || m.done == 0 {
+		t.Fatal("test setup did not accumulate anything")
+	}
+	if fresh := NewModel(); fresh.totalTracks != 0 || fresh.done != 0 || len(fresh.tracks) != 0 {
+		t.Errorf("NewModel carries state: total=%d done=%d tracks=%d",
+			fresh.totalTracks, fresh.done, len(fresh.tracks))
+	}
+}

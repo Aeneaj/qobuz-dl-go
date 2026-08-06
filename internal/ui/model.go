@@ -112,14 +112,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 
 	case MsgAlbum:
+		// The header follows whatever is being fetched right now, but the
+		// track list and counters accumulate: one run can cover many albums
+		// (an artist discography) or many loose tracks (a CSV import, where
+		// downloadTrackByID announces every single track). Clearing here made
+		// each announcement wipe the screen — the list showed one track at a
+		// time and the counter restarted on every song.
+		//
+		// Resetting belongs to the start of a run, and already happens there:
+		// Shell.start builds a fresh Model, and so does runDisplay for --tui.
 		m.album = msg.Title
 		m.artist = msg.Artist
 		m.format = msg.Format
-		m.totalTracks = msg.Tracks
-		m.tracks = nil
-		m.index = make(map[string]int)
-		m.done = 0
-		m.failed = 0
+		m.totalTracks += msg.Tracks
 
 	case MsgRegisterTrack:
 		e := trackEntry{
