@@ -384,14 +384,14 @@ func (m Model) viewFooter() string {
 			active++
 		}
 	}
-	parts := []string{sDim.Render(fmt.Sprintf("%d completadas", m.done))}
+	parts := []string{sDim.Render(fmt.Sprintf(T("%d done"), m.done))}
 	if m.failed > 0 {
-		parts = append(parts, sRed.Render(fmt.Sprintf("%d errores", m.failed)))
+		parts = append(parts, sRed.Render(fmt.Sprintf(T("%d failed"), m.failed)))
 	}
 	if active > 0 {
-		parts = append(parts, sBlue.Render(fmt.Sprintf("%d activas", active)))
+		parts = append(parts, sBlue.Render(fmt.Sprintf(T("%d active"), active)))
 	}
-	parts = append(parts, sDim.Render("Ctrl+C cancelar"))
+	parts = append(parts, sDim.Render(T("Ctrl+C to cancel")))
 	return "  " + strings.Join(parts, sDim.Render("  ·  "))
 }
 

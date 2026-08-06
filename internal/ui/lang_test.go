@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -81,10 +82,12 @@ func TestSpanishHasNoOrphanKeys(t *testing.T) {
 func TestNoSpanishLeftInSources(t *testing.T) {
 	src := readUISources(t)
 
-	// Spanish-only characters. Accented vowels alone would also match loan
-	// words, but ñ/¿/¡ plus the inverted marks are unambiguous enough, and the
-	// menu table is covered exhaustively by the test above.
-	reSpanish := regexp.MustCompile(`"[^"]*[ñÑ¿¡][^"]*"`)
+	// Characters that do not occur in the English this program writes. Accented
+	// vowels are included: in principle they match loan words, in practice this
+	// codebase has none, and leaving them out let "(vacío)" sit in widgets.go
+	// unnoticed. Spanish with no accent at all ("%d completadas") still slips
+	// through here — TestEnglishRenderStaysEnglish is what catches that.
+	reSpanish := regexp.MustCompile(`"[^"]*[ñÑ¿¡áéíóúÁÉÍÓÚ][^"]*"`)
 	if m := reSpanish.FindAllString(src, -1); m != nil {
 		t.Errorf("Spanish literals outside lang.go: %v", m)
 	}
@@ -92,22 +95,39 @@ func TestNoSpanishLeftInSources(t *testing.T) {
 
 func quoteForGo(s string) string { return `"` + s + `"` }
 
-// readUISources returns the package's non-test, non-lang.go sources.
+// readUISources returns every non-test Go source that can put text on the TUI
+// screen: this package plus cmd/qobuz-dl, where the Backend implementation
+// builds its own status messages. lang.go is excluded — it is the one place
+// Spanish belongs.
+//
+// Read by directory rather than from a list of filenames: a list silently
+// stops covering any file added after it was written, which is how the backend
+// messages went unchecked in the first place.
 func readUISources(t *testing.T) string {
 	t.Helper()
 	var b strings.Builder
-	for _, f := range []string{"shell.go", "model.go", "widgets.go", "handle.go", "styles.go", "backend.go"} {
-		b.WriteString(readFile(t, f))
-		b.WriteString("\n")
+	for _, dir := range []string{".", filepath.Join("..", "..", "cmd", "qobuz-dl")} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("read dir %s: %v", dir, err)
+		}
+		for _, e := range entries {
+			name := e.Name()
+			if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") || name == "lang.go" {
+				continue
+			}
+			b.WriteString(readFile(t, filepath.Join(dir, name)))
+			b.WriteString("\n")
+		}
 	}
 	return b.String()
 }
 
-func readFile(t *testing.T, name string) string {
+func readFile(t *testing.T, path string) string {
 	t.Helper()
-	b, err := os.ReadFile(name)
+	b, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read %s: %v", name, err)
+		t.Fatalf("read %s: %v", path, err)
 	}
 	return string(b)
 }
@@ -146,3 +166,40 @@ func TestMenuRendersFullySpanish(t *testing.T) {
 var reANSI = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 
 func stripANSI(s string) string { return reANSI.ReplaceAllString(s, "") }
+
+// TestEnglishRenderStaysEnglish is the counterpart to the test above: it walks
+// the screens in English and fails if any Spanish text shows up.
+//
+// This is the only check that sees Spanish carrying no distinctive character.
+// "%d completadas" and "Ctrl+C cancelar" sat hardcoded in viewFooter through
+// every other test in this file: the table tests only look at the table, and
+// the source scan keys on ñ/¿/¡/accents, none of which those two contain.
+// A hardcoded string renders identically in both languages — that is the
+// signal, and it needs no word list.
+func TestEnglishRenderStaysEnglish(t *testing.T) {
+	SetLang("")
+	t.Cleanup(func() { SetLang("") })
+
+	m := Model{
+		done:   3,
+		failed: 2,
+		tracks: []trackEntry{{state: stateActive}, {state: stateDone}},
+	}
+	p := newPicker(nil, false)
+	rendered := stripANSI(m.viewFooter() + "\n" + p.view(40))
+
+	for key, val := range es {
+		if val == key {
+			continue
+		}
+		// Compare on the literal part: "%d completadas" renders as "3 completadas".
+		frag := strings.TrimSpace(strings.ReplaceAll(val, "%d", ""))
+		if frag == "" {
+			continue
+		}
+		if strings.Contains(rendered, frag) {
+			t.Errorf("English render contains Spanish %q (key %q) — that string is hardcoded, not translated:\n%s",
+				frag, key, rendered)
+		}
+	}
+}

@@ -105,7 +105,7 @@ func (p *picker) selection() []int {
 
 func (p *picker) view(width int) string {
 	if len(p.rows) == 0 {
-		return sDim.Render("  (vacío)")
+		return sDim.Render(T("  (empty)"))
 	}
 
 	var b strings.Builder
