@@ -59,9 +59,7 @@ type Config struct {
 	UserAuthToken  string
 	DownloadDir    string
 	Lang           string
-	DefaultFolder  string
 	DefaultQuality int
-	DefaultLimit   int
 	NoM3U          bool
 	AlbumsOnly     bool
 	NoFallback     bool
@@ -142,9 +140,7 @@ func Load() (*Config, error) {
 		UserAuthToken:  get("user_auth_token", ""),
 		DownloadDir:    get("download_dir", ""),
 		Lang:           get("lang", ""),
-		DefaultFolder:  get("default_folder", "Qobuz Downloads"),
 		DefaultQuality: getInt("default_quality", 6),
-		DefaultLimit:   getInt("default_limit", 20),
 		NoM3U:          getBool("no_m3u"),
 		AlbumsOnly:     getBool("albums_only"),
 		NoFallback:     getBool("no_fallback"),
@@ -168,9 +164,7 @@ func Load() (*Config, error) {
 // Shared by Reset and InitConfig. ctx cancels the bundle.Fetch HTTP calls.
 func setupPreferences(ctx context.Context, kv map[string]string) error {
 	kv["download_dir"] = prompt("Enter default download directory (leave blank for ./qobuz-downloader):\n- ")
-	kv["default_folder"] = promptDefault("Folder for downloads (leave empty for 'Qobuz Downloads')\n- ", "Qobuz Downloads")
 	kv["default_quality"] = promptDefault("Download quality (5, 6, 7, 27) [320, LOSSLESS, 24B <96KHZ, 24B >96KHZ]\n(leave empty for '6')\n- ", "6")
-	kv["default_limit"] = "20"
 	kv["no_m3u"] = "false"
 	kv["albums_only"] = "false"
 	kv["no_fallback"] = "false"
@@ -180,9 +174,6 @@ func setupPreferences(ctx context.Context, kv map[string]string) error {
 	kv["no_database"] = "false"
 	kv["smart_discography"] = "false"
 	kv["workers"] = "3"
-	// Kept for backward compat reading old configs; never written by Reset
-	kv["email"] = ""
-	kv["password"] = ""
 	kv["folder_format"] = DefaultFolder
 	kv["track_format"] = DefaultTrack
 
@@ -330,10 +321,11 @@ func readINI(path string) (map[string]string, error) {
 }
 
 func writeINI(path string, kv map[string]string) error {
+	// Keys this version writes, in output order. Anything else already in the
+	// file (keys from older versions) is preserved after these — see below.
 	order := []string{
 		"user_id", "user_auth_token",
-		"email", "password", // legacy — kept for reading old configs
-		"download_dir", "default_folder", "default_quality", "default_limit",
+		"download_dir", "default_quality",
 		"no_m3u", "albums_only", "no_fallback", "og_cover",
 		"embed_art", "no_cover", "no_database", "smart_discography",
 		"workers",

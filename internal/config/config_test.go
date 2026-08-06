@@ -211,20 +211,23 @@ func TestWriteINI_StableKeyOrder(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.ini")
 	kv := map[string]string{
-		"email":    "a@b.com",
-		"password": "hash",
-		"app_id":   "123",
-		"secrets":  "s1,s2",
+		"secrets": "s1,s2",
+		"app_id":  "123",
+		"user_id": "42",
+		"email":   "a@b.com", // retired key, not in the ordered list
 	}
 	writeINI(path, kv)
 
 	data, _ := os.ReadFile(path)
 	content := string(data)
-	// email should appear before app_id (per ordered list)
-	emailPos := strings.Index(content, "email")
-	appIDPos := strings.Index(content, "app_id")
-	if emailPos > appIDPos {
-		t.Errorf("expected email before app_id in output")
+	// user_id comes before app_id per the ordered list, whatever order the
+	// map iterates in.
+	if strings.Index(content, "user_id") > strings.Index(content, "app_id") {
+		t.Errorf("expected user_id before app_id in output:\n%s", content)
+	}
+	// Retired keys are written after the ordered ones, never dropped.
+	if strings.Index(content, "email") < strings.Index(content, "app_id") {
+		t.Errorf("expected the retired email key after app_id in output:\n%s", content)
 	}
 }
 
