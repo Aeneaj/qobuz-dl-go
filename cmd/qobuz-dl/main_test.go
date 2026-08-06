@@ -179,8 +179,9 @@ func TestAdvertisedFlagsExist(t *testing.T) {
 	root := filepath.Dir(filepath.Dir(wd)) // repo root, from cmd/qobuz-dl
 
 	var (
-		reAdvice   = regexp.MustCompile(`qobuz-dl ((?:--[a-z-]+ ?)+)`)
-		reRegister = regexp.MustCompile(`fs\.(?:Bool|String|Int)\("([a-z-]+)"`)
+		reAdvice = regexp.MustCompile(`qobuz-dl ((?:--[a-z-]+ ?)+)`)
+		// Both spellings: fs.Bool("x", …) and fs.BoolVar(&v, "x", …).
+		reRegister = regexp.MustCompile(`fs\.(?:Bool|String|Int)(?:Var\(&\w+, )?\(?"([a-z-]+)"`)
 		advertised = map[string]string{} // flag -> file advertising it
 		registered = map[string]bool{}
 	)

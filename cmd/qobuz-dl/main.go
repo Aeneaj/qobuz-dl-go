@@ -58,14 +58,17 @@ func main() {
 	fs := flag.NewFlagSet("qobuz-dl", flag.ExitOnError)
 	fs.Usage = func() { fmt.Print(usage) }
 
-	reset := fs.Bool("r", false, "")
-	resetLong := fs.Bool("reset", false, "")
-	showCfg := fs.Bool("s", false, "")
-	showCfgLong := fs.Bool("show-config", false, "")
-	purge := fs.Bool("p", false, "")
-	purgeLong := fs.Bool("purge", false, "")
-	showVer := fs.Bool("v", false, "")
-	showVerLong := fs.Bool("version", false, "")
+	// Short and long spellings bind to the same variable, so there is nothing
+	// to OR together at the use site.
+	var reset, showCfg, purge, showVer bool
+	fs.BoolVar(&reset, "r", false, "")
+	fs.BoolVar(&reset, "reset", false, "")
+	fs.BoolVar(&showCfg, "s", false, "")
+	fs.BoolVar(&showCfg, "show-config", false, "")
+	fs.BoolVar(&purge, "p", false, "")
+	fs.BoolVar(&purge, "purge", false, "")
+	fs.BoolVar(&showVer, "v", false, "")
+	fs.BoolVar(&showVer, "version", false, "")
 
 	flags := registerDownloadFlags(fs)
 	luckyType := fs.String("lucky-type", "album", "")
@@ -74,7 +77,7 @@ func main() {
 
 	fs.Parse(os.Args[1:])
 
-	if *showVer || *showVerLong {
+	if showVer {
 		fmt.Println("qobuz-dl", version)
 		return
 	}
@@ -87,13 +90,13 @@ func main() {
 
 	// Config actions need no credentials and never fall through to a command.
 	switch {
-	case *reset || *resetLong:
+	case reset:
 		runReset(ctx)
 		return
-	case *showCfg || *showCfgLong:
+	case showCfg:
 		showConfig()
 		return
-	case *purge || *purgeLong:
+	case purge:
 		purgeDB()
 		return
 	}

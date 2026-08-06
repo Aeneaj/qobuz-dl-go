@@ -227,3 +227,37 @@ func TestWriteINI_StableKeyOrder(t *testing.T) {
 		t.Errorf("expected email before app_id in output")
 	}
 }
+
+func TestResolveDir_CreateFlag(t *testing.T) {
+	base := t.TempDir()
+	missing := filepath.Join(base, "nope")
+
+	// create=false must not bring the directory into existence.
+	if _, err := ResolveDir(missing, false); err == nil {
+		t.Fatal("ResolveDir(missing, false) = nil error, want 'directory not found'")
+	}
+	if _, err := os.Stat(missing); err == nil {
+		t.Fatal("ResolveDir(missing, false) created the directory")
+	}
+
+	// create=true must.
+	got, err := ResolveDir(missing, true)
+	if err != nil {
+		t.Fatalf("ResolveDir(missing, true): %v", err)
+	}
+	if got != missing {
+		t.Errorf("ResolveDir = %q, want %q", got, missing)
+	}
+	if info, err := os.Stat(missing); err != nil || !info.IsDir() {
+		t.Fatal("ResolveDir(missing, true) did not create the directory")
+	}
+
+	// A file is not a directory, whatever the flag says.
+	file := filepath.Join(base, "f.txt")
+	if err := os.WriteFile(file, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveDir(file, false); err == nil {
+		t.Error("ResolveDir(file, false) = nil error, want 'is not a directory'")
+	}
+}

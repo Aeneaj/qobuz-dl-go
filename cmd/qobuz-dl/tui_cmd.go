@@ -139,7 +139,7 @@ func (b *tuiBackend) CSV(ctx context.Context, path string) (string, error) {
 // Lyrics needs no Qobuz session — LRCLIB is public — so it deliberately skips
 // the b.dl check and works before login.
 func (b *tuiBackend) Lyrics(ctx context.Context, dir string) (string, error) {
-	resolved, err := resolveScanDir(dir)
+	resolved, err := config.ResolveDir(dir, false)
 	if err != nil {
 		return "", err
 	}
