@@ -135,6 +135,16 @@ func (p *picker) view(width int) string {
 	return b.String()
 }
 
+// rightAlign packs left and right onto one line of width w, pushing right to
+// the far edge and keeping at least one space between them when they overflow.
+func rightAlign(left, right string, w int) string {
+	pad := w - lipgloss.Width(left) - lipgloss.Width(right)
+	if pad < 1 {
+		pad = 1
+	}
+	return left + strings.Repeat(" ", pad) + right
+}
+
 func truncate(s string, width int) string {
 	if width < 4 {
 		width = 4

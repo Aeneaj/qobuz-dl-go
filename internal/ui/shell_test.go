@@ -322,3 +322,24 @@ func TestMenuTableIsWellFormed(t *testing.T) {
 		seen[m.act] = true
 	}
 }
+
+// ---- rightAlign ---------------------------------------------------------
+
+func TestRightAlign(t *testing.T) {
+	cases := []struct {
+		left, right string
+		w           int
+		want        string
+	}{
+		{"ab", "cd", 10, "ab      cd"},
+		{"ab", "", 6, "ab    "},
+		{"abc", "def", 6, "abc def"},     // overflow: one space, never zero
+		{"abcd", "efgh", 4, "abcd efgh"}, // no room at all: still separated
+		{"é", "ñ", 5, "é   ñ"},           // width is measured in cells, not bytes
+	}
+	for _, c := range cases {
+		if got := rightAlign(c.left, c.right, c.w); got != c.want {
+			t.Errorf("rightAlign(%q, %q, %d) = %q, want %q", c.left, c.right, c.w, got, c.want)
+		}
+	}
+}

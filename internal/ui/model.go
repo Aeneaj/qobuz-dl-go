@@ -270,14 +270,7 @@ func (m Model) viewHeader(w int) string {
 
 	inner := brand
 	if meta != "" {
-		brandW := lipgloss.Width(brand)
-		metaW := lipgloss.Width(meta)
-		pad := w - 6 - brandW - metaW
-		if pad > 0 {
-			inner += strings.Repeat(" ", pad) + meta
-		} else {
-			inner += "  " + meta
-		}
+		inner = rightAlign(brand, meta, w-6)
 	}
 
 	return lipgloss.NewStyle().
@@ -337,23 +330,9 @@ func (m Model) viewTrack(e trackEntry, w int) string {
 	case stateDone:
 		badge := sBadgeDone.Render(T("DONE"))
 		size := sDim.Render(fmtBytes(e.current))
-		rightPart := badge + " " + size
-		pad := w - lipgloss.Width(firstLine) - lipgloss.Width(rightPart) - 1
-		if pad > 0 {
-			firstLine += strings.Repeat(" ", pad)
-		} else {
-			firstLine += " "
-		}
-		firstLine += rightPart
+		firstLine = rightAlign(firstLine, badge+" "+size, w-1)
 	case stateFailed:
-		badge := sBadgeErr.Render("ERROR")
-		pad := w - lipgloss.Width(firstLine) - lipgloss.Width(badge) - 1
-		if pad > 0 {
-			firstLine += strings.Repeat(" ", pad)
-		} else {
-			firstLine += " "
-		}
-		firstLine += badge
+		firstLine = rightAlign(firstLine, sBadgeErr.Render("ERROR"), w-1)
 	}
 
 	lines := []string{firstLine}

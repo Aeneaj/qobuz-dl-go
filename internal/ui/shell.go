@@ -484,16 +484,12 @@ func (s *Shell) viewHeader(w int) string {
 	}
 
 	right := session + sFaint.Render("  │  ") + queue
-	pad := w - 6 - lipgloss.Width(title) - lipgloss.Width(right)
-	if pad < 1 {
-		pad = 1
-	}
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(cFaint).
 		Padding(0, 1).
 		Width(w - 2).
-		Render(title + strings.Repeat(" ", pad) + right)
+		Render(rightAlign(title, right, w-6))
 }
 
 func (s *Shell) viewMenu(w int) string {
@@ -514,11 +510,7 @@ func (s *Shell) viewMenu(w int) string {
 			if m.hint != "" {
 				text += "  ·  " + T(m.hint)
 			}
-			text = truncate(text, w-6)
-			pad := w - 4 - lipgloss.Width(text)
-			if pad > 0 {
-				text += strings.Repeat(" ", pad)
-			}
+			text = rightAlign(truncate(text, w-6), "", w-4)
 			b.WriteString("  " + sSelected.Render(text) + "\n")
 			continue
 		}
