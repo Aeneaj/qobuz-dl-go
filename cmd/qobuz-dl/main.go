@@ -185,16 +185,20 @@ func mustDownloader(ctx context.Context, f *cliFlags) *downloader.Downloader {
 	return dl
 }
 
-// runDisplay runs fn, wrapped in the bubbletea TUI when --tui is set.
+// runDisplay runs fn, wrapped in the bubbletea TUI when --tui is set, and
+// returns fn's error once the screen is down.
 //
 // The TUI runs in alt-screen raw mode, where Ctrl+C arrives as a key event
 // instead of SIGINT — so the signal context in main() never fires and the
 // download goroutine would keep running after the screen is gone. A derived
 // context cancelled on exit is what actually stops it.
-func runDisplay(ctx context.Context, dl *downloader.Downloader, f *cliFlags, fn func(context.Context)) {
+//
+// The error comes back rather than being printed inside fn for the same
+// reason: bubbletea owns the terminal until p.Run() returns, so reporting it
+// any earlier would land on the alt screen.
+func runDisplay(ctx context.Context, dl *downloader.Downloader, f *cliFlags, fn func(context.Context) error) error {
 	if !f.TUI {
-		fn(ctx)
-		return
+		return fn(ctx)
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -203,20 +207,22 @@ func runDisplay(ctx context.Context, dl *downloader.Downloader, f *cliFlags, fn 
 	p := tea.NewProgram(ui.NewModel(), tea.WithAltScreen(), tea.WithContext(ctx))
 	dl.SetUI(p)
 
+	errc := make(chan error, 1)
 	go func() {
-		fn(ctx)
+		errc <- fn(ctx)
 		p.Quit()
 	}()
 
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
 	}
+	return <-errc
 }
 
 func runDL(ctx context.Context, args []string, f *cliFlags) {
 	requireArgs(args, "dl", "provide at least one URL")
 	dl := mustDownloader(ctx, f)
-	runDisplay(ctx, dl, f, func(ctx context.Context) { dl.DownloadURLs(ctx, args) })
+	runDisplay(ctx, dl, f, func(ctx context.Context) error { dl.DownloadURLs(ctx, args); return nil })
 }
 
 func runLucky(ctx context.Context, args []string, f *cliFlags, itemType string, n int) {
@@ -231,13 +237,18 @@ func runLucky(ctx context.Context, args []string, f *cliFlags, itemType string, 
 	if err != nil {
 		fatalf("%v", err)
 	}
-	runDisplay(ctx, dl, f, func(ctx context.Context) { dl.DownloadURLs(ctx, urls) })
+	runDisplay(ctx, dl, f, func(ctx context.Context) error { dl.DownloadURLs(ctx, urls); return nil })
 }
 
 func runCSV(ctx context.Context, args []string, f *cliFlags, failedCSV string) {
 	requireArgs(args, "csv", "provide path to a TuneMyMusic CSV file")
 	dl := mustDownloader(ctx, f)
-	runDisplay(ctx, dl, f, func(ctx context.Context) { dl.DownloadCSV(ctx, args[0], failedCSV) })
+	err := runDisplay(ctx, dl, f, func(ctx context.Context) error {
+		return dl.DownloadCSV(ctx, args[0], failedCSV)
+	})
+	if err != nil {
+		fatalf("csv: %v", err)
+	}
 }
 
 func fatalf(format string, a ...interface{}) {

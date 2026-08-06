@@ -26,7 +26,10 @@ type TrackRequest struct {
 //
 // Handles the common TuneMyMusic anomaly where Artist name is empty and
 // Track name contains "Artist - Title" format.
-func ParseCSV(path string) ([]TrackRequest, error) {
+// w receives the per-row warnings. It must be the downloader's termOut() —
+// these run under the TUI via DownloadCSV, where stdout and stderr both land
+// on top of the alt screen.
+func ParseCSV(w io.Writer, path string) ([]TrackRequest, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open csv: %w", err)
@@ -55,7 +58,7 @@ func ParseCSV(path string) ([]TrackRequest, error) {
 
 	// Warn if the critical column is missing — helps diagnose future format changes.
 	if _, ok := colIdx["Track name"]; !ok {
-		fmt.Fprintf(os.Stderr, "\033[33mWarning: 'Track name' column not found in header. Got: %v\033[0m\n", header)
+		fmt.Fprintf(w, "\033[33mWarning: 'Track name' column not found in header. Got: %v\033[0m\n", header)
 	}
 
 	get := func(record []string, name string) string {
@@ -75,13 +78,13 @@ func ParseCSV(path string) ([]TrackRequest, error) {
 		}
 		rowNum++
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "\033[33m  [row %d] skipped: parse error: %v\033[0m\n", rowNum, err)
+			fmt.Fprintf(w, "\033[33m  [row %d] skipped: parse error: %v\033[0m\n", rowNum, err)
 			continue
 		}
 
 		raw := get(record, "Track name")
 		if raw == "" {
-			fmt.Fprintf(os.Stderr, "\033[33m  [row %d] skipped: empty Track name\033[0m\n", rowNum)
+			fmt.Fprintf(w, "\033[33m  [row %d] skipped: empty Track name\033[0m\n", rowNum)
 			continue
 		}
 
@@ -125,15 +128,14 @@ type failedEntry struct {
 
 // DownloadCSV parses the CSV at csvPath and downloads each track via Qobuz.
 // If failedPath is non-empty, writes a CSV report of skipped/failed tracks there.
-func (d *Downloader) DownloadCSV(ctx context.Context, csvPath, failedPath string) {
-	tracks, err := ParseCSV(csvPath)
+func (d *Downloader) DownloadCSV(ctx context.Context, csvPath, failedPath string) error {
+	tracks, err := ParseCSV(d.termOut(), csvPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "\033[31mCSV parse error: %v\033[0m\n", err)
-		return
+		return fmt.Errorf("CSV parse error: %w", err)
 	}
 	if len(tracks) == 0 {
 		fmt.Fprintln(d.termOut(), "No tracks found in CSV.")
-		return
+		return nil
 	}
 
 	fmt.Fprintf(d.termOut(), "\033[33mCSV loaded: %d tracks to process\033[0m\n\n", len(tracks))
@@ -175,11 +177,12 @@ func (d *Downloader) DownloadCSV(ctx context.Context, csvPath, failedPath string
 
 	if failedPath != "" && len(failures) > 0 {
 		if err := writeFailedCSV(failedPath, failures); err != nil {
-			fmt.Fprintf(os.Stderr, "  \033[31mCould not write failed report: %v\033[0m\n", err)
+			fmt.Fprintf(d.termOut(), "  \033[31mCould not write failed report: %v\033[0m\n", err)
 		} else {
 			fmt.Fprintf(d.termOut(), "  Failed tracks saved to: %s\n", failedPath)
 		}
 	}
+	return nil
 }
 
 func printBatchSummary(w io.Writer, total, downloaded int, failures []failedEntry) {

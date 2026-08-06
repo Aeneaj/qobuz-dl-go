@@ -107,7 +107,9 @@ func TestNoDirectStdoutWrites(t *testing.T) {
 	// released, which is what makes reusing the CLI flow correct.
 	allowed := map[string]bool{"interactive.go": true, "oauth.go": true}
 
-	reDirect := regexp.MustCompile(`fmt\.Print(f|ln)?\(|fmt\.Fprint(f|ln)?\(os\.Stdout`)
+	// os.Stderr counts too: the alt screen swallows both streams the same way,
+	// and stderr is where the CSV parse warnings used to go.
+	reDirect := regexp.MustCompile(`fmt\.Print(f|ln)?\(|fmt\.Fprint(f|ln)?\(os\.(Stdout|Stderr)`)
 
 	entries, err := os.ReadDir(".")
 	if err != nil {
