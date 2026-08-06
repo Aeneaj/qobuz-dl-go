@@ -63,6 +63,12 @@ type Downloader struct {
 	Opts       Options
 	db         *downloadDB
 	httpClient *http.Client
+
+	// Test seams, mirroring the pattern in lyrics.Client. retryDelay is the
+	// base of the download backoff (doubling each attempt); progressOut
+	// redirects the mpb bars away from stdout when non-nil.
+	retryDelay  time.Duration
+	progressOut io.Writer
 }
 
 // New creates a Downloader. Returns an error if the download directory cannot
@@ -88,6 +94,7 @@ func New(client *api.Client, opts Options) (*Downloader, error) {
 		Client:     client,
 		Opts:       opts,
 		httpClient: &http.Client{Timeout: 10 * time.Minute},
+		retryDelay: time.Second,
 	}
 	if !opts.NoDB && opts.DBPath != "" {
 		db, err := openDB(opts.DBPath)
@@ -285,7 +292,7 @@ func (d *Downloader) downloadAlbum(ctx context.Context, albumID, baseDir string)
 	trackFmt := cleanFormatStr(d.Opts.TrackFormat, fileFormat)
 	isMP3 := d.Opts.Quality == 5
 
-	p := mpb.NewWithContext(ctx, mpb.WithRefreshRate(150*time.Millisecond))
+	p := d.newProgress(ctx)
 	jobs := d.collectTrackJobs(ctx, p, rawItems, albumDir, isMultiDisc)
 	d.runTrackJobs(ctx, jobs, meta, isMP3, trackFmt)
 	p.Wait()
@@ -523,7 +530,7 @@ func (d *Downloader) downloadTrackByID(ctx context.Context, trackID, baseDir str
 	if tn, ok := meta["track_number"].(float64); ok {
 		trackNum = int(tn)
 	}
-	p := mpb.NewWithContext(ctx, mpb.WithRefreshRate(150*time.Millisecond))
+	p := d.newProgress(ctx)
 	bar := p.New(0,
 		mpb.BarStyle().Lbound("╢").Filler("█").Tip("█").Padding("░").Rbound("╟"),
 		mpb.PrependDecorators(decor.Name(barLabel(trackNum, title))),
@@ -704,7 +711,7 @@ func (d *Downloader) downloadWithProgress(ctx context.Context, rawURL, dest stri
 	)
 
 	for attempt := 0; attempt < maxDownloadRetries; attempt++ {
-		if err := waitBeforeRetry(ctx, attempt); err != nil {
+		if err := d.waitBeforeRetry(ctx, attempt); err != nil {
 			return err
 		}
 
@@ -791,20 +798,33 @@ func (d *Downloader) downloadWithProgress(ctx context.Context, rawURL, dest stri
 	return fmt.Errorf("download failed after %d attempts", maxDownloadRetries)
 }
 
-// waitBeforeRetry sleeps with exponential backoff (1s, 2s, 4s, 8s) before a
-// retry attempt. attempt 0 is the first try and returns immediately. Returns
-// ctx.Err() if the context is cancelled while sleeping.
-func waitBeforeRetry(ctx context.Context, attempt int) error {
+// waitBeforeRetry sleeps with exponential backoff (1s, 2s, 4s, 8s by default)
+// before a retry attempt. attempt 0 is the first try and returns immediately.
+// Returns ctx.Err() if the context is cancelled while sleeping.
+func (d *Downloader) waitBeforeRetry(ctx context.Context, attempt int) error {
 	if attempt == 0 {
 		return nil
 	}
-	delay := time.Duration(1<<(attempt-1)) * time.Second
+	base := d.retryDelay
+	if base <= 0 {
+		base = time.Second
+	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-time.After(delay):
+	case <-time.After(base << (attempt - 1)):
 		return nil
 	}
+}
+
+// newProgress builds the mpb container for a download. Tests set progressOut
+// to keep the bars' ANSI redraws out of the test log.
+func (d *Downloader) newProgress(ctx context.Context) *mpb.Progress {
+	opts := []mpb.ContainerOption{mpb.WithRefreshRate(150 * time.Millisecond)}
+	if d.progressOut != nil {
+		opts = append(opts, mpb.WithOutput(d.progressOut))
+	}
+	return mpb.NewWithContext(ctx, opts...)
 }
 
 // currentOffset reports the size of an existing partial file at dest, or 0 if

@@ -5,23 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
-	"strings"
 	"testing"
 )
-
-func mockServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *Client) {
-	t.Helper()
-	srv := httptest.NewServer(handler)
-	c := &Client{
-		AppID:   "123456789",
-		Secrets: []string{"testsecret"},
-		http:    srv.Client(),
-	}
-	// Point baseURL at mock — we override via the transport
-	// Instead, use a wrapper that redirects calls
-	return srv, c
-}
 
 func TestMD5Hex(t *testing.T) {
 	tests := []struct{ in, want string }{
@@ -138,21 +123,14 @@ func TestDoGet_401_ReturnsAuthError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := &Client{AppID: "123", http: srv.Client()}
-	// Temporarily repoint base
-	origBase := baseURL
-	_ = origBase // read to satisfy linter if baseURL were a var; it's a const so we use a shim
-
-	// We test via AuthWithPassword which calls user/login
-	// Since baseURL is const, we test the error type from a manual HTTP call
-	resp, err := srv.Client().Get(srv.URL + "/user/login")
-	if err != nil {
-		t.Fatal(err)
+	c := clientForServer(t, srv)
+	err := c.AuthWithToken(context.Background(), "1", "badtoken")
+	if err == nil {
+		t.Fatal("expected an error for HTTP 401")
 	}
-	if resp.StatusCode != 401 {
-		t.Errorf("mock returned %d, want 401", resp.StatusCode)
+	if _, ok := err.(*AuthenticationError); !ok {
+		t.Errorf("expected *AuthenticationError, got %T: %v", err, err)
 	}
-	_ = c
 }
 
 func TestErrorTypes(t *testing.T) {
@@ -380,37 +358,10 @@ func TestHTTP500_ReturnsError(t *testing.T) {
 // clientForServer creates a Client whose HTTP calls go to the given test server.
 func clientForServer(t *testing.T, srv *httptest.Server) *Client {
 	t.Helper()
-	c := &Client{
+	return &Client{
 		AppID:   "123456789",
 		Secrets: []string{"testsecret"},
+		BaseURL: srv.URL + "/api.json/0.2/",
 		http:    srv.Client(),
 	}
-	// Monkey-patch baseURL by wrapping the transport to rewrite URLs
-	origTransport := srv.Client().Transport
-	srv.Client().Transport = &rewriteTransport{
-		base:    baseURL,
-		target:  srv.URL + "/api.json/0.2/",
-		wrapped: origTransport,
-	}
-	return c
-}
-
-type rewriteTransport struct {
-	base, target string
-	wrapped      http.RoundTripper
-}
-
-func (r *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if r.wrapped == nil {
-		r.wrapped = http.DefaultTransport
-	}
-	// Replace baseURL prefix with test server URL
-	newURL := strings.Replace(req.URL.String(), r.base, r.target, 1)
-	newReq := req.Clone(req.Context())
-	parsed, err := url.Parse(newURL)
-	if err != nil {
-		return nil, err
-	}
-	newReq.URL = parsed
-	return r.wrapped.RoundTrip(newReq)
 }

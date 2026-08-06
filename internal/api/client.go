@@ -30,6 +30,7 @@ type Client struct {
 	UserID  string
 	Label   string // subscription tier
 	Secret  string // validated app secret
+	BaseURL string // API root; tests point this at a mock server
 	http    *http.Client
 }
 
@@ -38,6 +39,7 @@ func New(appID string, secrets []string) *Client {
 	return &Client{
 		AppID:   appID,
 		Secrets: secrets,
+		BaseURL: baseURL,
 		http:    &http.Client{Timeout: 30 * time.Second},
 	}
 }
@@ -51,7 +53,11 @@ func (c *Client) doPost(ctx context.Context, endpoint, body string) (map[string]
 }
 
 func (c *Client) doRequest(ctx context.Context, method, endpoint string, params url.Values, body string) (map[string]interface{}, error) {
-	fullURL := baseURL + endpoint
+	root := c.BaseURL
+	if root == "" {
+		root = baseURL
+	}
+	fullURL := root + endpoint
 	var reqBody io.Reader
 	if body != "" {
 		reqBody = strings.NewReader(body)
