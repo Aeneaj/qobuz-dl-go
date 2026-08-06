@@ -248,8 +248,19 @@ func decodeID3Text(data []byte) string {
 		return strings.TrimRight(string(payload), "\x00")
 
 	default: // 0x00 Latin-1
-		return strings.TrimRight(string(payload), "\x00")
+		return strings.TrimRight(decodeLatin1(payload), "\x00")
 	}
+}
+
+// decodeLatin1 decodes ISO-8859-1, where every byte maps onto the code point
+// of the same value. Converting the bytes directly with string() would instead
+// read them as UTF-8 and turn every accented character into U+FFFD.
+func decodeLatin1(b []byte) string {
+	runes := make([]rune, len(b))
+	for i, c := range b {
+		runes[i] = rune(c)
+	}
+	return string(runes)
 }
 
 // decodeUTF16 decodes b as UTF-16 code units in the given byte order, after

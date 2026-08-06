@@ -1,6 +1,7 @@
 package lyrics
 
 import (
+	"bytes"
 	"encoding/binary"
 	"os"
 	"testing"
@@ -97,9 +98,14 @@ func id3Syncsafe(n int) [4]byte {
 	return b
 }
 
-// id3FrameLatin1 builds an ID3v2.3 text frame with Latin-1 encoding.
+// id3FrameLatin1 builds an ID3v2.3 text frame with Latin-1 encoding: one byte
+// per rune. Callers must stay within U+0000–U+00FF; []byte(text) would emit
+// UTF-8 instead and no longer be a Latin-1 frame.
 func id3FrameLatin1(id, text string) []byte {
-	payload := append([]byte{0x00}, []byte(text)...)
+	payload := []byte{0x00}
+	for _, r := range text {
+		payload = append(payload, byte(r))
+	}
 	payload = append(payload, 0x00)
 	size := len(payload)
 	hdr := []byte{id[0], id[1], id[2], id[3],
@@ -235,6 +241,41 @@ func TestReadMP3_Latin1Tags(t *testing.T) {
 	}
 }
 
+// Round trip through a real Latin-1 tag: accented characters live in the
+// 0x80–0xFF range, which is invalid UTF-8. Reading those bytes with string()
+// yields U+FFFD, and the mangled artist then produces an LRCLIB miss.
+func TestReadMP3_Latin1Accents(t *testing.T) {
+	frames := id3FrameLatin1("TIT2", "Cañón")
+	frames = append(frames, id3FrameLatin1("TPE1", "Björk")...)
+	frames = append(frames, id3FrameLatin1("TALB", "Café Müller")...)
+
+	path := writeTmp(t, ".mp3", fakeMP3(frames))
+
+	// Guard the fixture itself: ö must be the single byte 0xF6 on disk, not
+	// the UTF-8 pair C3 B6, or the test would not be exercising Latin-1.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte{'B', 'j', 0xF6, 'r', 'k'}) {
+		t.Fatal("fixture is not Latin-1 encoded")
+	}
+
+	info, err := ReadAudio(path)
+	if err != nil {
+		t.Fatalf("ReadAudio: %v", err)
+	}
+	if info.Title != "Cañón" {
+		t.Errorf("Title = %q, want %q", info.Title, "Cañón")
+	}
+	if info.Artist != "Björk" {
+		t.Errorf("Artist = %q, want %q", info.Artist, "Björk")
+	}
+	if info.Album != "Café Müller" {
+		t.Errorf("Album = %q, want %q", info.Album, "Café Müller")
+	}
+}
+
 func TestReadMP3_UTF16LEFrames(t *testing.T) {
 	// qobuz-dl tags all text frames with UTF-16LE + BOM.
 	frames := id3FrameUTF16LE("TIT2", "UTF-16 Song")
@@ -300,6 +341,7 @@ func TestDecodeID3Text(t *testing.T) {
 		want string
 	}{
 		{"latin1", []byte{0x00, 'H', 'e', 'l', 'l', 'o', 0x00}, "Hello"},
+		{"latin1 high bytes", []byte{0x00, 'B', 'j', 0xF6, 'r', 'k', 0x00}, "Björk"},
 		{"utf16 LE with BOM", []byte{0x01, 0xFF, 0xFE, 'H', 0x00, 'i', 0x00, 0x00, 0x00}, "Hi"},
 		{"utf16 BE with BOM", []byte{0x01, 0xFE, 0xFF, 0x00, 'H', 0x00, 'i', 0x00, 0x00}, "Hi"},
 		{"utf16 without BOM falls back to LE", []byte{0x01, 'H', 0x00, 'i', 0x00}, "Hi"},
