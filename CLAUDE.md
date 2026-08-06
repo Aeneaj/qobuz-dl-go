@@ -56,7 +56,7 @@ No añadir dependencias nuevas sin discusión. En particular no añadir librerí
 - **Tests rápidos y offline.** Ningún test hace peticiones reales a internet. Servidores mock con `httptest.NewServer`.
 - **Table-driven por defecto.** Slice de `struct{ in, want }` + bucle `for _, c := range cases`. Subtests con `t.Run` cuando hay nombre descriptivo.
 - **Inyección de dependencias por parámetro.** La función pública (`Run`) recibe un cliente real; la interna (`runWithClient`) acepta el cliente como argumento para que los tests pasen uno falso. No usar variables globales para el cliente.
-- **Seams de test como campos, con default de producción.** Cuando algo no se puede inyectar por parámetro (una URL base, un backoff, un destino de salida), va como campo del struct con su valor real puesto en el constructor, y el test lo reescribe. Los que hay: `api.Client.BaseURL`, `lyrics.Client.baseURL/retryDelay/StepDelay`, `Downloader.retryDelay/progressOut`. Sin esto los tests tardarían 15 s en el backoff o llenarían el log de ANSI de las barras.
+- **Seams de test como campos, con default de producción.** Cuando algo no se puede inyectar por parámetro (una URL base, un backoff, un destino de salida), va como campo del struct con su valor real puesto en el constructor, y el test lo reescribe. Los que hay: `api.Client.BaseURL`, `lyrics.Client.baseURL/retryDelay/StepDelay`, `Downloader.retryDelay/progressOut/lastfmBase`. Sin esto los tests tardarían 15 s en el backoff o llenarían el log de ANSI de las barras.
 - **Helpers de test mínimos.** Los constructores de datos falsos (`fakeFLAC`, `fakeMP3`) viven en `*_test.go`, no en producción.
 
 ### Cobertura por paquete
@@ -66,7 +66,7 @@ No añadir dependencias nuevas sin discusión. En particular no añadir librerí
 | api | 15 | 44% | client_test.go |
 | bundle | 12 | 60% | bundle_test.go |
 | config | 12 | 45% | config_test.go |
-| downloader | 62 | 51% | metadata_test.go, db_test.go, lastfm_test.go, helpers_test.go, integration_test.go |
+| downloader | 73 | 60% | metadata_test.go, db_test.go, lastfm_test.go, helpers_test.go, integration_test.go |
 | lyrics | 46 | 74% | metadata_test.go, lrclib_test.go, lyrics_test.go |
 
 Regenerar con `go test -cover ./...`; los números de arriba son de la última
@@ -97,7 +97,7 @@ pasada, no una meta.
 - `go vet ./...` ✅
 - `go fmt ./...` ✅ (CI falla si hay archivos sin formatear)
 - `go test -cover ./...` ✅ (todos los paquetes pasan)
-- Cobertura: api 44%, bundle 60%, config 45%, downloader 51%, lyrics 74% (155 tests, incluidos 8 de subproceso en cmd/)
+- Cobertura: api 44%, bundle 60%, config 45%, downloader 60%, lyrics 74% (166 tests, incluidos 8 de subproceso en cmd/)
 
 ## Comandos de construcción
 

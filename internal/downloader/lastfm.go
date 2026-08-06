@@ -54,12 +54,19 @@ func parseLastFMURL(rawURL string) (username, listType string, err error) {
 	return parts[1], parts[2], nil
 }
 
+// lastfmAPIBase is the root of the key-less Last.fm 1.0 API.
+const lastfmAPIBase = "https://ws.audioscrobbler.com/1.0/user/"
+
 // fetchLastFMTracks downloads and parses the XSPF playlist from the Last.fm
 // 1.0 API. No API key is required.
 //
 // Supported listType values: "loved", "library".
-func fetchLastFMTracks(ctx context.Context, username, listType string) ([]LastFMTrack, error) {
-	base := "https://ws.audioscrobbler.com/1.0/user/" + url.PathEscape(username) + "/"
+func (d *Downloader) fetchLastFMTracks(ctx context.Context, username, listType string) ([]LastFMTrack, error) {
+	root := d.lastfmBase
+	if root == "" {
+		root = lastfmAPIBase
+	}
+	base := root + url.PathEscape(username) + "/"
 	var xspfURL string
 	switch listType {
 	case "loved":
@@ -118,7 +125,7 @@ func (d *Downloader) downloadLastFMPlaylist(ctx context.Context, username, listT
 	}
 
 	fmt.Printf("\033[33mFetching Last.fm %s for user %q...\033[0m\n", label, username)
-	tracks, err := fetchLastFMTracks(ctx, username, listType)
+	tracks, err := d.fetchLastFMTracks(ctx, username, listType)
 	if err != nil {
 		return err
 	}

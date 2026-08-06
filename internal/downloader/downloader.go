@@ -66,9 +66,11 @@ type Downloader struct {
 
 	// Test seams, mirroring the pattern in lyrics.Client. retryDelay is the
 	// base of the download backoff (doubling each attempt); progressOut
-	// redirects the mpb bars away from stdout when non-nil.
+	// redirects the mpb bars away from stdout when non-nil; lastfmBase
+	// overrides the Last.fm API root.
 	retryDelay  time.Duration
 	progressOut io.Writer
+	lastfmBase  string
 }
 
 // New creates a Downloader. Returns an error if the download directory cannot

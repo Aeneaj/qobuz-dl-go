@@ -287,8 +287,19 @@ type qobuzMock struct {
 	album map[string]interface{}
 	audio []byte
 
+	// searchMisses marks queries that track/search should answer with no
+	// results, so the "not on Qobuz" path can be exercised.
+	searchMisses map[string]bool
+
 	mu       sync.Mutex
 	fileHits int
+	searches []string
+}
+
+func (m *qobuzMock) searchQueries() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.searches...)
 }
 
 func newQobuzMock(t *testing.T, album map[string]interface{}) *qobuzMock {
@@ -322,6 +333,20 @@ func (m *qobuzMock) route(w http.ResponseWriter, r *http.Request) {
 		m.mu.Unlock()
 		w.Header().Set("Content-Length", strconv.Itoa(len(m.audio)))
 		w.Write(m.audio)
+
+	case r.URL.Path == "/track/search":
+		query := r.URL.Query().Get("query")
+		m.mu.Lock()
+		m.searches = append(m.searches, query)
+		m.mu.Unlock()
+
+		items := []interface{}{}
+		if !m.searchMisses[query] && len(m.tracks()) > 0 {
+			items = append(items, m.tracks()[0])
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"tracks": map[string]interface{}{"items": items},
+		})
 
 	case r.URL.Path == "/artist/get":
 		json.NewEncoder(w).Encode(map[string]interface{}{
@@ -587,6 +612,148 @@ func TestHandleURL_TrackDownloadsSingleFile(t *testing.T) {
 		t.Error("single-track download was not tagged")
 	}
 	assertNoTmpFiles(t, dir)
+}
+
+// ---- MP3 flow ------------------------------------------------------------
+
+// utf16le encodes s the way ID3v2.3 text frames carry it (BOM + LE units).
+// Deliberately independent of the production encoder.
+func utf16le(s string) []byte {
+	out := []byte{0xFF, 0xFE}
+	for _, r := range s {
+		out = append(out, byte(r), byte(r>>8))
+	}
+	return out
+}
+
+// Quality 5 takes the MP3 branch: .mp3 extension, ID3v2.3 tags and, with
+// EmbedArt, an APIC frame carrying the cover downloaded alongside the album.
+func TestDownloadAlbum_MP3TaggingEndToEnd(t *testing.T) {
+	m := newQobuzMock(t, nil)
+	m.album = testAlbum(m.srv.URL+"/cover.jpg", track(1001, 7, 2, "Mp3 Song"))
+	m.audio = []byte("\xff\xfb\x90\x00fake mpeg audio frames")
+
+	d, dir := m.downloaderFor(t, func(o *Options) {
+		o.Quality = 5
+		o.EmbedArt = true
+	})
+
+	if err := d.downloadAlbum(context.Background(), "alb1", dir); err != nil {
+		t.Fatalf("downloadAlbum: %v", err)
+	}
+
+	path := filepath.Join(dir, "Test Artist - Test Album", "07. Mp3 Song.mp3")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("MP3 not written: %v", err)
+	}
+
+	if string(data[:3]) != "ID3" || data[3] != 0x03 {
+		t.Fatalf("not an ID3v2.3 tag: % x", data[:5])
+	}
+	// Text frames are UTF-16LE with a BOM.
+	for frame, text := range map[string]string{
+		"TIT2": "Mp3 Song",
+		"TPE1": "Test Artist",
+		"TALB": "Test Album",
+		"TRCK": "7/1",
+		"TPOS": "2",
+	} {
+		if !bytes.Contains(data, []byte(frame)) {
+			t.Errorf("frame %s missing", frame)
+		}
+		if !bytes.Contains(data, utf16le(text)) {
+			t.Errorf("frame %s does not carry %q", frame, text)
+		}
+	}
+	// Cover embedded as APIC, and the audio payload survived the rewrite.
+	if !bytes.Contains(data, []byte("APIC")) {
+		t.Error("no APIC frame — cover was not embedded")
+	}
+	if !bytes.Contains(data, []byte("JFIF-ish cover bytes")) {
+		t.Error("APIC frame does not contain the downloaded cover")
+	}
+	if !bytes.HasSuffix(data, m.audio) {
+		t.Error("MPEG audio payload was lost or reordered")
+	}
+	assertNoTmpFiles(t, dir)
+}
+
+// buildMP3Tags has an album branch and a single-track branch that read their
+// fields from different places; only the album one runs during an album
+// download.
+func TestBuildMP3Tags_TrackBranch(t *testing.T) {
+	trackMeta := map[string]interface{}{
+		"title":        "Solo Song",
+		"track_number": float64(4),
+		"media_number": float64(1),
+		"performer":    map[string]interface{}{"name": "Performer"},
+		"composer":     map[string]interface{}{"name": "Composer"},
+		"copyright":    "(C) 2024",
+		"album": map[string]interface{}{
+			"title":                 "Parent Album",
+			"artist":                map[string]interface{}{"name": "Album Artist"},
+			"release_date_original": "2024-07-09",
+			"tracks_count":          float64(11),
+			"genres_list":           []interface{}{"Jazz"},
+			"label":                 map[string]interface{}{"name": "Label Co"},
+		},
+	}
+	tags := buildMP3Tags(trackMeta, nil, true)
+
+	want := map[string]string{
+		"TIT2": "Solo Song",
+		"TPE1": "Performer",
+		"TPE2": "Album Artist",
+		"TALB": "Parent Album",
+		"TCOM": "Composer",
+		"TDRC": "2024-07-09",
+		"TYER": "2024",
+		"TRCK": "4/11",
+		"TPOS": "1",
+		"TCON": "Jazz",
+		"TPUB": "Label Co",
+		"TCOP": "© 2024",
+	}
+	for k, v := range want {
+		if tags[k] != v {
+			t.Errorf("tag %s = %q, want %q", k, tags[k], v)
+		}
+	}
+}
+
+// findCover looks next to the track and then one directory up, which is where
+// the cover lives for multi-disc albums.
+func TestFindCover(t *testing.T) {
+	base := t.TempDir()
+	discDir := filepath.Join(base, "Disc 1")
+	if err := os.MkdirAll(discDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := findCover(discDir); got != "" {
+		t.Errorf("found %q when there is no cover anywhere", got)
+	}
+
+	parentCover := filepath.Join(base, "cover.jpg")
+	if err := os.WriteFile(parentCover, []byte("parent"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if got := findCover(discDir); got != parentCover {
+		t.Errorf("findCover = %q, want the parent cover %q", got, parentCover)
+	}
+
+	ownCover := filepath.Join(discDir, "cover.jpg")
+	if err := os.WriteFile(ownCover, []byte("own"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if got := findCover(discDir); got != ownCover {
+		t.Errorf("findCover = %q, want the local cover %q", got, ownCover)
+	}
+
+	if _, err := readCover(t.TempDir()); err == nil {
+		t.Error("readCover should fail when there is no cover")
+	}
 }
 
 // ---- collection flows ----------------------------------------------------
