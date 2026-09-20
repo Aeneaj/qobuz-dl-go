@@ -107,9 +107,9 @@ work:
 ./qobuz-dl dl https://... -q 27
 ```
 
-Until v1.5.0 only the first form worked and the other two were silently
-ignored, which tripped up everybody who tried them. If you are on an older
-build and a setting seems to have no effect, that is why.
+This needs a build newer than v1.5.0. Up to and including that release only the
+first form worked and the other two were silently ignored, which tripped up
+everybody who tried them — if a setting seems to have no effect, that is why.
 
 As usual, a literal `--` ends the options: everything after it is treated as an
 argument even if it looks like a flag.
