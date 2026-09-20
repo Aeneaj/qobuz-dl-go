@@ -204,6 +204,70 @@ func TestInvalidQualityRejectedBeforeLogin(t *testing.T) {
 	}
 }
 
+// Options used to be accepted only before the command: the stdlib flag package
+// stops at the first non-flag argument, so "dl <URL> -q 27" left -q in
+// fs.Args() and it was read as another URL. Silently.
+//
+// -q 99 is the probe because it is rejected before any network call, so an
+// error naming 99 proves the option was parsed no matter where it was written.
+func TestOptionsParsedInAnyPosition(t *testing.T) {
+	const url = "https://open.qobuz.com/album/abc"
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"before the command", []string{"-q", "99", "dl", url}},
+		{"between command and arguments", []string{"dl", "-q", "99", url}},
+		{"after the arguments", []string{"dl", url, "-q", "99"}},
+		{"long spelling after the arguments", []string{"dl", url, "-q=99"}},
+		{"interleaved with several URLs", []string{"dl", url, "-q", "99", url}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			cfgDir := filepath.Join(tmp, ".config", "qobuz-dl")
+			os.MkdirAll(cfgDir, 0755)
+			os.WriteFile(filepath.Join(cfgDir, "config.ini"), []byte("[DEFAULT]\n"), 0644)
+
+			cmd := exec.Command(binaryPath, c.args...)
+			cmd.Env = testEnv(tmp)
+			out, err := cmd.CombinedOutput()
+			got := string(out)
+
+			if err == nil {
+				t.Errorf("exited 0, want the quality to be rejected; output: %q", got)
+			}
+			if !strings.Contains(got, "99") {
+				t.Errorf("option not parsed at this position: %q", got)
+			}
+		})
+	}
+}
+
+// A literal "--" ends option parsing, so what follows is positional even when
+// it is spelled like an option. Without it, peeling positionals one at a time
+// would keep parsing past the terminator.
+func TestDoubleDashEndsOptions(t *testing.T) {
+	tmp := t.TempDir()
+	cfgDir := filepath.Join(tmp, ".config", "qobuz-dl")
+	os.MkdirAll(cfgDir, 0755)
+	os.WriteFile(filepath.Join(cfgDir, "config.ini"), []byte("[DEFAULT]\n"), 0644)
+
+	cmd := exec.Command(binaryPath, "dl", "--", "https://open.qobuz.com/album/abc", "-q", "99")
+	cmd.Env = testEnv(tmp)
+	out, _ := cmd.CombinedOutput()
+	got := string(out)
+
+	// -q was not parsed, so the quality is the config default and the run gets
+	// as far as the credentials check instead of dying on quality 99.
+	if strings.Contains(got, "invalid quality") {
+		t.Errorf("option after \"--\" was parsed: %q", got)
+	}
+	if !strings.Contains(got, "no credentials") {
+		t.Errorf("expected the run to reach the credentials check, got: %q", got)
+	}
+}
+
 // TestAdvertisedFlagsExist guards a whole bug class: error paths that tell the
 // user to run "qobuz-dl --something" where --something was never registered.
 // That advice is printed exactly when the user is already stuck (auth failed),

@@ -96,18 +96,23 @@ commands there.
 
 ---
 
-## One rule about options
+## Options go anywhere
 
-⚠️ **Options always go before the command**, never after it:
+Write them before the command, after it, or after its arguments — all three
+work:
 
 ```bash
-./qobuz-dl -q 27 dl https://...        ✅ works
-./qobuz-dl dl https://... -q 27        ❌ silently ignored
+./qobuz-dl -q 27 dl https://...
+./qobuz-dl dl -q 27 https://...
+./qobuz-dl dl https://... -q 27
 ```
 
-This trips everybody up once. If a setting seems to have no effect, this is
-almost certainly why. (The one exception is `lyrics`, which accepts `-d` after
-the command too.)
+Until v1.5.0 only the first form worked and the other two were silently
+ignored, which tripped up everybody who tried them. If you are on an older
+build and a setting seems to have no effect, that is why.
+
+As usual, a literal `--` ends the options: everything after it is treated as an
+argument even if it looks like a flag.
 
 ---
 

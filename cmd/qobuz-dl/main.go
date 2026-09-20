@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -19,7 +20,9 @@ import (
 // version is set at build time via -ldflags "-X main.version=v1.x.x".
 var version = "v1.5.0"
 
-const usage = `Usage: qobuz-dl [options] <command> [args]
+const usage = `Usage: qobuz-dl [options] <command> [args] [options]
+
+Options may be written before the command, after it, or after its arguments.
 
 Commands:
   dl  <URL...>       Download by URL (album/track/artist/label/playlist/last.fm)
@@ -29,6 +32,8 @@ Commands:
   fun                Interactive search and download mode (line based)
   tui                Full-screen interface: menu, search, queue, downloads
   lyrics [path]      Fetch .lrc files from LRCLIB for a music library
+                     (skips songs that already have one; path defaults to
+                     download_dir, and must already exist)
 
 Options:
   -r, --reset        Reconfigure credentials (prompts for user_id + token)
@@ -75,7 +80,7 @@ func main() {
 	luckyN := fs.Int("lucky-n", 1, "")
 	failed := fs.String("failed", "failed_downloads.csv", "")
 
-	fs.Parse(os.Args[1:])
+	args := parseArgs(fs, os.Args[1:])
 
 	if showVer {
 		fmt.Println("qobuz-dl", version)
@@ -109,7 +114,6 @@ func main() {
 		ui.SetLang(cfg.Lang)
 	}
 
-	args := fs.Args()
 	if len(args) == 0 {
 		fmt.Print(usage)
 		os.Exit(0)
@@ -130,11 +134,41 @@ func main() {
 	case "oauth":
 		runOAuth(ctx, cmdArgs)
 	case "lyrics":
-		runLyrics(ctx, cmdArgs)
+		runLyrics(ctx, cmdArgs, flags.Dir)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", args[0])
 		fmt.Print(usage)
 		os.Exit(1)
+	}
+}
+
+// parseArgs parses options wherever they appear — before the command, between
+// the command and its arguments, or after them — and returns the positional
+// arguments in the order given.
+//
+// The stdlib flag package stops at the first non-flag argument, which is why
+// options written after the command used to be **silently ignored**: they
+// stayed in fs.Args() and were read as URLs. So peel one positional at a time
+// and parse whatever is left.
+//
+// A literal "--" keeps its POSIX meaning: everything after it is positional and
+// is never parsed, however it is spelled.
+func parseArgs(fs *flag.FlagSet, argv []string) []string {
+	var trailing []string
+	if i := slices.Index(argv, "--"); i >= 0 {
+		trailing = argv[i+1:]
+		argv = argv[:i]
+	}
+
+	var positional []string
+	for {
+		fs.Parse(argv)
+		rest := fs.Args()
+		if len(rest) == 0 {
+			return append(positional, trailing...)
+		}
+		positional = append(positional, rest[0])
+		argv = rest[1:]
 	}
 }
 

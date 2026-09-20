@@ -209,6 +209,22 @@ Un comando se lleva su propio `<name>_cmd.go` **cuando tiene sustancia** (~80 l�
 
 No meter cobra ni urfave/cli — el proyecto usa `flag` de stdlib a propósito.
 
+**Un solo `FlagSet` y `parseArgs`, no un `FlagSet` por subcomando.** `flag` de
+stdlib para de parsear en el primer argumento que no es flag, así que todo lo
+escrito después del subcomando acababa en `fs.Args()` y se leía como URL —
+`dl <URL> -q 27` se ignoraba **en silencio**, y el README lo documentaba como
+"esto le pasa a todo el mundo una vez" en vez de arreglarlo. `parseArgs` pela un
+posicional a la vez y vuelve a parsear el resto, así que las tres posiciones
+funcionan; llamar a `fs.Parse` varias veces sobre el mismo `FlagSet` es seguro y
+los valores ya fijados se conservan. El `--` literal se separa **antes** del
+bucle: sin eso, un flag que no sea el primer elemento tras el terminador se
+volvería a parsear.
+
+`runLyrics` tenía su propio `FlagSet` solo para `-d`, y con el parseo global ese
+`-d` se consume arriba; el bloque de ayuda local dejó de ser alcanzable por `-h`,
+así que se borró y sus dos datos útiles pasaron al `usage` global. Es el motivo
+de que `runLyrics` reciba el directorio por parámetro.
+
 ## Dependencias externas
 
 Las dependencias de módulo son:
@@ -473,10 +489,11 @@ lyrics_test.go    — buildLabel (formato, ancho fijo, truncado), lrcPathFor, sc
       cambia el truncado de ruta-por-runas a nombre-por-bytes y valida `default_quality`
       antes de la red. Verificado contra Qobuz real en FLAC y MP3, incluida una ruta
       total de 551 bytes: 12/12 tracks con 12 nombres distintos.
-      Dos cabos sueltos conocidos, ninguno arreglado: los flags **después** del
-      subcomando se ignoran (`dl -d X URL` trata `-d` como URL — limitación del `flag`
-      de stdlib, documentada en el README, se arreglaría con un `FlagSet` por
-      subcomando); y `-q` sigue siendo la única forma de fijar calidad por run.
+      De la misma tanda salieron tres arreglos más, cada uno encontrado al probar
+      el anterior: `7f1fefb` hace que la extensión y el tagger sigan a los bytes
+      entregados y no a la calidad pedida (un fallback a 5 escribía MP3 en un
+      `.flac` pasado por `tagFLAC`); `14b4a86` es el #22; y los flags después del
+      subcomando ya no se ignoran (ver "CLI: main() solo despacha").
 
 - [x] Auditoría de sobreingeniería (`/ponytail-audit` sobre v1.5.0) — cerrada 2026-08-06.
       15 hallazgos, −198 líneas, 0 dependencias eliminables. Los 2 primeros en `ec3b40a`

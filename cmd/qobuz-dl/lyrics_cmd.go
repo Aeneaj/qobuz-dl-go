@@ -2,36 +2,20 @@ package main
 
 import (
 	"context"
-	"flag"
-	"fmt"
 
 	"github.com/Aeneaj/qobuz-dl-go/internal/config"
 	"github.com/Aeneaj/qobuz-dl-go/internal/lyrics"
 )
 
-func runLyrics(ctx context.Context, args []string) {
-	fs := flag.NewFlagSet("lyrics", flag.ExitOnError)
-	dir := fs.String("d", "", "directory to scan")
-	fs.Usage = func() {
-		fmt.Print(`Usage: qobuz-dl lyrics [options] [path]
-
-  Fetch synchronized .lrc files from LRCLIB for all FLAC and MP3 files found
-  recursively under the given path. Files that already have a matching .lrc
-  are skipped. Requests are rate-limited to 2/s to respect the LRCLIB API.
-
-Arguments:
-  path          Directory to scan (default: configured download_dir)
-
-Options:
-  -d <dir>      Directory to scan (alternative to positional argument)
-`)
-	}
-	fs.Parse(args)
-
+// dir is the -d value from the top-level FlagSet. Options are parsed wherever
+// they appear now, so "lyrics -d X" is consumed up there and this command needs
+// no FlagSet of its own — its former one only duplicated -d and carried a usage
+// block that -h could no longer reach.
+func runLyrics(ctx context.Context, args []string, dir string) {
 	// Resolution order: -d flag > positional arg > config download_dir > default.
-	scanDir := *dir
-	if scanDir == "" && fs.NArg() > 0 {
-		scanDir = fs.Arg(0)
+	scanDir := dir
+	if scanDir == "" && len(args) > 0 {
+		scanDir = args[0]
 	}
 	if scanDir == "" {
 		if cfg, err := config.Load(); err == nil && cfg.DownloadDir != "" {
