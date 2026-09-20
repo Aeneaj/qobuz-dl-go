@@ -629,3 +629,30 @@ func TestFinalTrackPathLongDirKeepsName(t *testing.T) {
 		t.Errorf("%q escaped the download directory", got)
 	}
 }
+
+// ---- deliveredIsMP3 -----------------------------------------------------
+
+func TestDeliveredIsMP3(t *testing.T) {
+	cases := []struct {
+		name      string
+		trackURL  map[string]interface{}
+		requested int
+		want      bool
+	}{
+		{"format_id 5 after a lossless request", map[string]interface{}{"format_id": float64(5)}, 7, true},
+		{"format_id 6 after an MP3 request", map[string]interface{}{"format_id": float64(6)}, 5, false},
+		{"format_id 27", map[string]interface{}{"format_id": float64(27)}, 27, false},
+		{"mime_type when format_id is absent", map[string]interface{}{"mime_type": "audio/mpeg"}, 7, true},
+		{"mime_type flac", map[string]interface{}{"mime_type": "audio/flac"}, 7, false},
+		{"format_id 0 falls through to mime_type", map[string]interface{}{"format_id": float64(0), "mime_type": "audio/mpeg"}, 7, true},
+		{"nothing to read: requested quality decides", map[string]interface{}{}, 5, true},
+		{"nothing to read, lossless requested", map[string]interface{}{}, 6, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := deliveredIsMP3(c.trackURL, c.requested); got != c.want {
+				t.Errorf("deliveredIsMP3(%v, %d) = %v, want %v", c.trackURL, c.requested, got, c.want)
+			}
+		})
+	}
+}

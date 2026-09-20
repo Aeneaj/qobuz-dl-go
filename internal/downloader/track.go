@@ -41,8 +41,9 @@ func (d *Downloader) downloadTrackByID(ctx context.Context, trackID, baseDir str
 
 	bitDepth, _ := trackURL["bit_depth"].(float64)
 	samplingRate, _ := trackURL["sampling_rate"].(float64)
+	isMP3 := deliveredIsMP3(trackURL, d.Opts.Quality)
 	fileFormat := "FLAC"
-	if d.Opts.Quality == 5 {
+	if isMP3 {
 		fileFormat = "MP3"
 	}
 
@@ -70,7 +71,6 @@ func (d *Downloader) downloadTrackByID(ctx context.Context, trackID, baseDir str
 		return fmt.Errorf("create track directory %q: %w", trackDir, err)
 	}
 
-	isMP3 := d.Opts.Quality == 5
 	trackFmt := cleanFormatStr(d.termOut(), d.Opts.TrackFormat, fileFormat)
 
 	// Skip only if recorded in the DB AND the file is still on disk. Done
@@ -106,7 +106,7 @@ func (d *Downloader) downloadTrackByID(ctx context.Context, trackID, baseDir str
 	restore := d.withBars(p)
 	bar := d.newBar(p, 0, trackNum, title, trackID)
 
-	if err := d.downloadAndTag(ctx, trackDir, 1, trackURL, meta, meta, true, isMP3, trackFmt, bar); err != nil {
+	if err := d.downloadAndTag(ctx, trackDir, 1, trackURL, meta, meta, true, trackFmt, bar); err != nil {
 		bar.Abort(false)
 		if p != nil {
 			p.Wait()
@@ -202,7 +202,6 @@ func (d *Downloader) downloadAndTag(
 	trackMeta map[string]interface{},
 	albumMeta map[string]interface{},
 	isTrack bool,
-	isMP3 bool,
 	trackFmt string,
 	bar ProgressBar,
 ) error {
@@ -211,6 +210,11 @@ func (d *Downloader) downloadAndTag(
 		fmt.Fprintf(d.termOut(), "\033[90mTrack not available for download\033[0m\n")
 		return nil
 	}
+
+	// Read off the response, not Options.Quality: a fallback to 5 delivers MP3
+	// bytes for a lossless request, and the extension and the tagger have to
+	// follow the bytes.
+	isMP3 := deliveredIsMP3(trackURLDict, d.Opts.Quality)
 
 	finalFile, err := finalTrackPath(dir, trackMeta, albumMeta, trackFmt, isMP3)
 	if err != nil {

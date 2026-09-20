@@ -83,12 +83,15 @@ func (d *Downloader) downloadAlbum(ctx context.Context, albumID, baseDir string)
 
 	isMultiDisc := detectMultiDisc(rawItems)
 	trackFmt := cleanFormatStr(d.termOut(), d.Opts.TrackFormat, fileFormat)
+	// Only for the pre-download skip probe: the delivered format is not known
+	// until the file URL comes back, and downloadAndTag reads it from there. A
+	// wrong guess here costs one extra track/getFileUrl, never a bad file.
 	isMP3 := d.Opts.Quality == 5
 
 	p := d.newProgress(ctx)
 	restore := d.withBars(p)
 	jobs := d.collectTrackJobs(ctx, p, rawItems, albumDir, isMultiDisc, meta, trackFmt, isMP3)
-	d.runTrackJobs(ctx, jobs, meta, isMP3, trackFmt)
+	d.runTrackJobs(ctx, jobs, meta, trackFmt)
 	if p != nil {
 		p.Wait()
 	}
@@ -223,7 +226,7 @@ func (d *Downloader) collectTrackJobs(ctx context.Context, p *mpb.Progress, rawI
 // jobs to a worker pool of size d.Opts.Workers, tags each track and records it
 // in the DB on success. Cancellation aborts the dispatch loop without
 // launching new goroutines; in-flight downloads observe ctx via downloadAndTag.
-func (d *Downloader) runTrackJobs(ctx context.Context, jobs []trackJob, meta map[string]interface{}, isMP3 bool, trackFmt string) {
+func (d *Downloader) runTrackJobs(ctx context.Context, jobs []trackJob, meta map[string]interface{}, trackFmt string) {
 	sem := make(chan struct{}, d.Opts.Workers)
 	var wg sync.WaitGroup
 
@@ -238,7 +241,7 @@ jobLoop:
 		go func(j trackJob) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			if err := d.downloadAndTag(ctx, j.trackDir, j.idx, j.trackURL, j.track, meta, false, isMP3, trackFmt, j.bar); err != nil {
+			if err := d.downloadAndTag(ctx, j.trackDir, j.idx, j.trackURL, j.track, meta, false, trackFmt, j.bar); err != nil {
 				j.bar.Abort(false)
 				fmt.Fprintf(d.termOut(), "\033[31mTrack %s failed: %v. Skipping...\033[0m\n", j.trackID, err)
 			} else if d.db != nil {
@@ -301,6 +304,9 @@ func (d *Downloader) resolveFormat(ctx context.Context, albumMeta map[string]int
 					fmt.Fprintf(d.termOut(), "\033[90mQuality downgraded for this release\033[0m\n")
 				}
 			}
+		}
+		if deliveredIsMP3(info, d.Opts.Quality) {
+			return "MP3", nil, nil
 		}
 		return "FLAC", info["bit_depth"], info["sampling_rate"]
 	}

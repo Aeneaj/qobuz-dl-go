@@ -156,11 +156,16 @@ func (q *fakeQobuz) handleFileURL(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]interface{}{"message": "no file url"})
 		return
 	}
+	ext := "flac"
+	if fid == 5 {
+		ext = "mp3"
+	}
 	resp := map[string]interface{}{
 		"track_id":      float64(n),
+		"format_id":     float64(fid),
 		"bit_depth":     float64(24),
 		"sampling_rate": float64(96),
-		"url":           fmt.Sprintf("%s/audio/%d.flac", q.srv.URL, n),
+		"url":           fmt.Sprintf("%s/audio/%d.%s", q.srv.URL, n, ext),
 	}
 	if q.zeroRateFor[n] {
 		resp["bit_depth"], resp["sampling_rate"] = float64(0), float64(0)
@@ -176,8 +181,11 @@ func (q *fakeQobuz) handleFileURL(w http.ResponseWriter, r *http.Request) {
 
 func (q *fakeQobuz) handleAudio(w http.ResponseWriter, r *http.Request) {
 	q.fileHits.Add(1)
-	body := makeFakeFLAC()
-	w.Header().Set("Content-Type", "audio/flac")
+	body, ctype := makeFakeFLAC(), "audio/flac"
+	if strings.HasSuffix(r.URL.Path, ".mp3") {
+		body, ctype = makeFakeMP3(), "audio/mpeg"
+	}
+	w.Header().Set("Content-Type", ctype)
 	w.Header().Set("Content-Length", fmt.Sprint(len(body)))
 	w.Write(body)
 }
@@ -527,5 +535,61 @@ func TestIntegration_FolderFormatSurvivesUnresolvableTrack(t *testing.T) {
 				t.Errorf("album folder = %v, want [%q]", dirs, c.want)
 			}
 		})
+	}
+}
+
+// A lossless request that the API can only satisfy at 320 comes back as MP3.
+// The extension and the tagger used to follow Options.Quality, so those bytes
+// were written to a .flac name and run through the FLAC tagger.
+func TestIntegration_QualityFallbackToMP3WritesMP3(t *testing.T) {
+	tracks := []fakeTrack{
+		{ID: 1, Title: "One", Number: 1, MediaNumber: 1, Performer: "P"},
+		{ID: 2, Title: "Two", Number: 2, MediaNumber: 1, Performer: "P"},
+	}
+	q := newFakeQobuz(t, tracks)
+	q.onlyQuality = 5 // nothing available losslessly
+
+	d, dir := newTestDownloader(t, q, func(o *Options) {
+		o.Quality = 7
+		o.QualityFallback = true
+		o.NoCover = true
+		// {format} makes resolveFormat's answer observable: it must report what
+		// was delivered, not what was asked for.
+		o.FolderFormat = "{album} [{format}]"
+	})
+	if err := d.downloadAlbum(context.Background(), "alb1", dir); err != nil {
+		t.Fatalf("downloadAlbum: %v", err)
+	}
+
+	if entries, _ := os.ReadDir(dir); len(entries) != 1 || entries[0].Name() != "Test Album [MP3]" {
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("album folder = %v, want [\"Test Album [MP3]\"]", names)
+	}
+
+	files := relFiles(t, dir)
+	var audio []string
+	for _, f := range files {
+		if strings.HasSuffix(f, ".mp3") || strings.HasSuffix(f, ".flac") {
+			audio = append(audio, f)
+		}
+	}
+	if len(audio) != 2 {
+		t.Fatalf("audio files = %v, want 2", audio)
+	}
+	for _, f := range audio {
+		if !strings.HasSuffix(f, ".mp3") {
+			t.Errorf("%q: MP3 bytes written under a lossless extension", f)
+		}
+		head, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(f)))
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		// ID3v2 means the MP3 tagger ran; "fLaC" would mean the FLAC one did.
+		if len(head) < 3 || string(head[:3]) != "ID3" {
+			t.Errorf("%q does not start with an ID3 header: % x", f, head[:min(8, len(head))])
+		}
 	}
 }

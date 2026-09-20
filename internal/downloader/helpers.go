@@ -124,6 +124,25 @@ func expandPlaceholders(format string, attrs map[string]string) string {
 	return result
 }
 
+// deliveredIsMP3 reports whether the file the API actually handed us is an MP3.
+// That is not the same question as "did the user ask for MP3": fallbackQuality
+// walks down to 5 when a lossless request fails, so a request for quality 7 can
+// come back as a 320 kbps file. Deciding from Options.Quality wrote those bytes
+// to a .flac name and ran the FLAC tagger over them.
+//
+// format_id is the same enum the request sends, so it is the direct answer;
+// mime_type covers a response that omits it, and the requested quality is the
+// last resort.
+func deliveredIsMP3(trackURL map[string]interface{}, requested int) bool {
+	if fid, ok := trackURL["format_id"].(float64); ok && fid != 0 {
+		return int(fid) == 5
+	}
+	if mt, _ := trackURL["mime_type"].(string); mt != "" {
+		return strings.Contains(mt, "mpeg") || strings.Contains(mt, "mp3")
+	}
+	return requested == 5
+}
+
 // maxNameBytes is the per-component file name limit on ext4, NTFS and APFS.
 // It is counted in bytes, not characters, so a 100-character CJK title
 // (3 bytes per rune) is already over it.

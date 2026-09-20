@@ -590,3 +590,10 @@ func TestBuildFLACPictureBlock(t *testing.T) {
 		t.Errorf("image payload truncated: %d bytes, want %d", len(got), len(img))
 	}
 }
+
+// makeFakeMP3 is the MP3 counterpart of makeFakeFLAC: an empty ID3v2.3 header
+// followed by one MPEG1 Layer 3 frame header (128 kbps, 44.1 kHz, stereo).
+func makeFakeMP3() []byte {
+	out := []byte{'I', 'D', '3', 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+	return append(out, 0xFF, 0xFB, 0x90, 0x00, 0x00, 0x00, 0x00, 0x00)
+}
