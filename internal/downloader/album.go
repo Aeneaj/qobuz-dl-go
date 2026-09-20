@@ -252,6 +252,15 @@ jobLoop:
 	wg.Wait()
 }
 
+// resolveFormat reports the format the album will actually be delivered in, by
+// asking the API for a real file URL.
+//
+// It walks the tracklist instead of trusting items[0], and honours the
+// configured quality fallback, because "Unknown" is not a harmless answer: it
+// makes cleanFormatStr discard the user's whole folder template (issue #22).
+// One track that cannot be resolved — unavailable in the region, a sample, or
+// simply not offered at the requested quality while the rest are — used to
+// rename the entire album.
 func (d *Downloader) resolveFormat(ctx context.Context, albumMeta map[string]interface{}) (fileFormat string, bitDepth, samplingRate interface{}) {
 	if d.Opts.Quality == 5 {
 		return "MP3", nil, nil
@@ -261,27 +270,39 @@ func (d *Downloader) resolveFormat(ctx context.Context, albumMeta map[string]int
 		return "Unknown", nil, nil
 	}
 	items, _ := tracks["items"].([]interface{})
-	if len(items) == 0 {
-		return "Unknown", nil, nil
-	}
-	firstTrack, _ := items[0].(map[string]interface{})
-	if firstTrack == nil {
-		return "Unknown", nil, nil
-	}
-	trackID := idStr(firstTrack["id"])
-	info, err := d.Client.GetTrackURL(ctx, trackID, d.Opts.Quality, "")
-	if err != nil {
-		return "Unknown", nil, nil
-	}
 
-	// Check quality restriction
-	if restrictions, ok := info["restrictions"].([]interface{}); ok {
-		for _, r := range restrictions {
-			rm, _ := r.(map[string]interface{})
-			if code, _ := rm["code"].(string); code == qlDowngrade {
-				fmt.Fprintf(d.termOut(), "\033[90mQuality downgraded for this release\033[0m\n")
+	for _, it := range items {
+		track, _ := it.(map[string]interface{})
+		if track == nil {
+			continue
+		}
+		trackID := idStr(track["id"])
+		info, err := d.Client.GetTrackURL(ctx, trackID, d.Opts.Quality, "")
+		if err != nil && d.Opts.QualityFallback {
+			info, err = d.fallbackQuality(ctx, trackID)
+		}
+		if err != nil {
+			continue
+		}
+		// The same gates collectTrackJobs applies: neither tells us anything
+		// about the format the album is served in.
+		if _, isSample := info["sample"]; isSample {
+			continue
+		}
+		sr, _ := info["sampling_rate"].(float64)
+		if sr == 0 {
+			continue
+		}
+
+		if restrictions, ok := info["restrictions"].([]interface{}); ok {
+			for _, r := range restrictions {
+				rm, _ := r.(map[string]interface{})
+				if code, _ := rm["code"].(string); code == qlDowngrade {
+					fmt.Fprintf(d.termOut(), "\033[90mQuality downgraded for this release\033[0m\n")
+				}
 			}
 		}
+		return "FLAC", info["bit_depth"], info["sampling_rate"]
 	}
-	return "FLAC", info["bit_depth"], info["sampling_rate"]
+	return "Unknown", nil, nil
 }

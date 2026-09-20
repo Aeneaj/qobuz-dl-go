@@ -62,6 +62,8 @@ type fakeQobuz struct {
 	// knobs for the failure-path tests
 	noFileURLFor map[int]bool // track IDs that fail track/getFileUrl
 	sampleOnly   map[int]bool // track IDs returned as unstreamable samples
+	onlyQuality  int          // when set, every other format_id fails (quality fallback path)
+	zeroRateFor  map[int]bool // track IDs served with sampling_rate 0 (nothing usable)
 
 	fileHits atomic.Int64 // audio bytes actually served
 	mu       sync.Mutex
@@ -74,6 +76,7 @@ func newFakeQobuz(t *testing.T, tracks []fakeTrack) *fakeQobuz {
 		tracks:       tracks,
 		noFileURLFor: map[int]bool{},
 		sampleOnly:   map[int]bool{},
+		zeroRateFor:  map[int]bool{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api.json/0.2/album/get", q.handleAlbumGet)
@@ -140,6 +143,14 @@ func (q *fakeQobuz) handleFileURL(w http.ResponseWriter, r *http.Request) {
 	var n int
 	fmt.Sscanf(id, "%d", &n)
 
+	var fid int
+	fmt.Sscanf(r.URL.Query().Get("format_id"), "%d", &fid)
+	if q.onlyQuality != 0 && fid != q.onlyQuality {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]interface{}{"message": "not available at this quality"})
+		return
+	}
+
 	if q.noFileURLFor[n] {
 		w.WriteHeader(http.StatusBadRequest)
 		writeJSON(w, map[string]interface{}{"message": "no file url"})
@@ -151,8 +162,14 @@ func (q *fakeQobuz) handleFileURL(w http.ResponseWriter, r *http.Request) {
 		"sampling_rate": float64(96),
 		"url":           fmt.Sprintf("%s/audio/%d.flac", q.srv.URL, n),
 	}
+	if q.zeroRateFor[n] {
+		resp["bit_depth"], resp["sampling_rate"] = float64(0), float64(0)
+	}
 	if q.sampleOnly[n] {
+		// A preview carries preview-quality numbers, so a caller that reads
+		// the format off a sample gets the wrong answer, not just a useless one.
 		resp["sample"] = true
+		resp["bit_depth"], resp["sampling_rate"] = float64(16), float64(44.1)
 	}
 	writeJSON(w, resp)
 }
@@ -433,5 +450,82 @@ func TestIntegration_HandleURL(t *testing.T) {
 	want := []string{"Test Artist - Test Album/01. First Song.flac"}
 	if got := relFiles(t, dir); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("files = %v, want %v", got, want)
+	}
+}
+
+// TestIntegration_FolderFormatSurvivesUnresolvableTrack is the regression test
+// for issue #22: a folder_format made only of valid placeholders was ignored
+// and the album got the default naming instead.
+//
+// resolveFormat used to ask items[0] alone for the delivered format. Any single
+// failure there returned "Unknown", which is what makes cleanFormatStr throw
+// away the user's whole template — so one track unavailable at the requested
+// quality renamed the entire album, even though every other track downloaded
+// fine.
+func TestIntegration_FolderFormatSurvivesUnresolvableTrack(t *testing.T) {
+	tracks := []fakeTrack{
+		{ID: 1, Title: "One", Number: 1, MediaNumber: 1, Performer: "P"},
+		{ID: 2, Title: "Two", Number: 2, MediaNumber: 1, Performer: "P"},
+		{ID: 3, Title: "Three", Number: 3, MediaNumber: 1, Performer: "P"},
+	}
+	// The reporter's own format, valid placeholders only.
+	const folderFmt = "{year}-{album}-{bit_depth}.{sampling_rate}"
+	const want = "2021-Test Album-24.96"
+
+	cases := []struct {
+		name   string
+		break_ func(*fakeQobuz, *Options)
+		want   string
+	}{
+		{"every track resolves", nil, want},
+		{"first track has no file URL", func(q *fakeQobuz, _ *Options) { q.noFileURLFor[1] = true }, want},
+		{"first track is a sample", func(q *fakeQobuz, _ *Options) { q.sampleOnly[1] = true }, want},
+		{"first track has no usable rate", func(q *fakeQobuz, _ *Options) { q.zeroRateFor[1] = true }, want},
+		{
+			// The issue #12 shape: not offered at the requested quality, fine
+			// one step down. The fallback must feed the folder name too.
+			"album only available below the requested quality",
+			func(q *fakeQobuz, o *Options) { q.onlyQuality = 6; o.QualityFallback = true },
+			"2021-Test Album-24.96",
+		},
+		{
+			// Last resort: nothing resolves at all. The template cannot be
+			// honoured (there is no bit depth to report) and cleanFormatStr's
+			// substitute stands — announced, since 42ae84d.
+			"no track resolves",
+			func(q *fakeQobuz, _ *Options) {
+				q.noFileURLFor[1], q.noFileURLFor[2], q.noFileURLFor[3] = true, true, true
+			},
+			"Test Artist - Test Album",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			q := newFakeQobuz(t, tracks)
+			d, dir := newTestDownloader(t, q, func(o *Options) {
+				o.FolderFormat = folderFmt
+				if c.break_ != nil {
+					c.break_(q, o)
+				}
+			})
+			if err := d.downloadAlbum(context.Background(), "alb1", dir); err != nil {
+				t.Fatalf("downloadAlbum: %v", err)
+			}
+
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				t.Fatalf("read dir: %v", err)
+			}
+			var dirs []string
+			for _, e := range entries {
+				if e.IsDir() {
+					dirs = append(dirs, e.Name())
+				}
+			}
+			if len(dirs) != 1 || dirs[0] != c.want {
+				t.Errorf("album folder = %v, want [%q]", dirs, c.want)
+			}
+		})
 	}
 }
