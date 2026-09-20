@@ -3,6 +3,7 @@ package downloader
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -499,5 +500,52 @@ func TestValidateFormats(t *testing.T) {
 				t.Errorf("error %q does not name %s", err, c.wantErrIn)
 			}
 		})
+	}
+}
+
+// ---- README/code placeholder parity -------------------------------------
+
+// TestREADMEPlaceholderParity keeps the placeholders the README advertises and
+// the ones expandPlaceholders actually substitutes in sync, in both
+// directions.
+//
+// It exists because the README documented {genre} and {composer}, which were
+// never implemented: a user following the docs got a format string full of
+// literal tokens, which collapsed every track of an album onto the same
+// filename (issue #23). Nothing tied the documented list to the code.
+//
+// Static by design, same trick as TestAdvertisedFlagsExist in cmd/qobuz-dl:
+// the README is scanned whole rather than by section, so a placeholder
+// mentioned anywhere in the docs must be one the code understands.
+func TestREADMEPlaceholderParity(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	readme := filepath.Join(filepath.Dir(filepath.Dir(wd)), "README.md") // repo root
+	src, err := os.ReadFile(readme)
+	if err != nil {
+		t.Fatalf("read README: %v", err)
+	}
+
+	supported := map[string]bool{}
+	for _, set := range [][]string{folderPlaceholders, trackPlaceholders} {
+		for _, p := range set {
+			supported[p] = true
+		}
+	}
+
+	documented := map[string]bool{}
+	for _, tok := range regexp.MustCompile(`\{[^{} ]+\}`).FindAllString(string(src), -1) {
+		documented[tok] = true
+		if !supported[tok] {
+			t.Errorf("README documents %s, which expandPlaceholders does not substitute — "+
+				"following the docs would produce a literal token in the path (issue #23)", tok)
+		}
+	}
+	for p := range supported {
+		if !documented[p] {
+			t.Errorf("%s is substituted by the code but absent from README.md", p)
+		}
 	}
 }
