@@ -162,6 +162,48 @@ func TestShowConfig_ExistingConfig_PrintsIt(t *testing.T) {
 	}
 }
 
+// An unknown quality id used to be forwarded to the API unchanged, after
+// printing an empty "Set max quality:" line, and surfaced as an opaque API
+// error. It is rejected before any network call, from either entry point.
+func TestInvalidQualityRejectedBeforeLogin(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  string
+		args []string
+	}{
+		{"from the -q flag", "[DEFAULT]\n", []string{"-q", "99", "dl", "https://open.qobuz.com/album/abc"}},
+		{"from config.ini", "[DEFAULT]\ndefault_quality = 99\n", []string{"dl", "https://open.qobuz.com/album/abc"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			cfgDir := filepath.Join(tmp, ".config", "qobuz-dl")
+			os.MkdirAll(cfgDir, 0755)
+			os.WriteFile(filepath.Join(cfgDir, "config.ini"), []byte(c.cfg), 0644)
+
+			cmd := exec.Command(binaryPath, c.args...)
+			cmd.Env = testEnv(tmp)
+			out, err := cmd.CombinedOutput()
+			got := string(out)
+
+			if err == nil {
+				t.Errorf("exited 0, want failure; output: %q", got)
+			}
+			if !strings.Contains(got, "99") {
+				t.Errorf("error does not name the rejected value: %q", got)
+			}
+			for _, q := range []string{"5", "6", "7", "27"} {
+				if !strings.Contains(got, q) {
+					t.Errorf("error does not list valid quality %s: %q", q, got)
+				}
+			}
+			if strings.Contains(got, "Logging in") {
+				t.Errorf("logged in before validating quality: %q", got)
+			}
+		})
+	}
+}
+
 // TestAdvertisedFlagsExist guards a whole bug class: error paths that tell the
 // user to run "qobuz-dl --something" where --something was never registered.
 // That advice is printed exactly when the user is already stuck (auth failed),

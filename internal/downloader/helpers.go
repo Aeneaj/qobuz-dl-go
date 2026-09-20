@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 func makeM3U(w io.Writer, dir string) {
@@ -121,6 +122,37 @@ func expandPlaceholders(format string, attrs map[string]string) string {
 		result = strings.ReplaceAll(result, k, sanitize(v))
 	}
 	return result
+}
+
+// maxNameBytes is the per-component file name limit on ext4, NTFS and APFS.
+// It is counted in bytes, not characters, so a 100-character CJK title
+// (3 bytes per rune) is already over it.
+const maxNameBytes = 255
+
+// limitNameBytes returns name+ext trimmed to fit maxNameBytes.
+//
+// Two things it must not do. It must not split a multi-byte character, so the
+// trim walks back whole runes. And it must not make two different titles
+// collapse onto the same file name: they would resolve to the same path, and
+// the second track would be skipped as "already downloaded" — the silent
+// track loss of issue #23, reached through a different door. So a trimmed name
+// carries the track id, which is unique by definition.
+//
+// Only the file name is limited, never the directories above it: the limit is
+// per component, and trimming a whole path would cut into the album folder.
+func limitNameBytes(name, ext, trackID string) string {
+	if len(name)+len(ext) <= maxNameBytes {
+		return name + ext
+	}
+	suffix := "-" + sanitize(trackID) + ext
+	for len(name)+len(suffix) > maxNameBytes {
+		_, size := utf8.DecodeLastRuneInString(name)
+		if size == 0 {
+			break
+		}
+		name = name[:len(name)-size]
+	}
+	return name + suffix
 }
 
 const barLabelWidth = 42

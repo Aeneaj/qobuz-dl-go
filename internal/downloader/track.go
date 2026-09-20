@@ -160,16 +160,22 @@ func finalTrackPath(dir string, trackMeta, albumMeta map[string]interface{}, tra
 		"{version}":       fmt.Sprintf("%v", trackMeta["version"]),
 	}
 	formatted := expandPlaceholders(trackFmt, filenameAttrs)
-	finalFile, err := safeJoin(dir, filepath.FromSlash(formatted))
+
+	// The length limit is per path component, so it applies to the file name
+	// alone — any subfolder segments the template produced are left as they
+	// are. Trimming the joined path instead (as this did until 2026-09-20)
+	// mangled every file name once dir grew past the cap.
+	prefix, name := "", formatted
+	if i := strings.LastIndex(formatted, "/"); i >= 0 {
+		prefix, name = formatted[:i+1], formatted[i+1:]
+	}
+	name = limitNameBytes(name, ext, idStr(trackMeta["id"]))
+
+	finalFile, err := safeJoin(dir, filepath.FromSlash(prefix+name))
 	if err != nil {
 		return "", fmt.Errorf("resolve track path: %w", err)
 	}
-	// Trim to 250 runes to stay within filesystem limits without splitting
-	// multi-byte UTF-8 characters (e.g. CJK, Arabic, emoji in track titles).
-	if runes := []rune(finalFile); len(runes) > 250 {
-		finalFile = string(runes[:250])
-	}
-	return finalFile + ext, nil
+	return finalFile, nil
 }
 
 // alreadyHave reports whether a track may be skipped: it must be recorded in

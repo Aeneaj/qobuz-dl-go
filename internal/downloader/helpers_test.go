@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // ---- sanitize -----------------------------------------------------------
@@ -547,5 +548,84 @@ func TestREADMEPlaceholderParity(t *testing.T) {
 		if !documented[p] {
 			t.Errorf("%s is substituted by the code but absent from README.md", p)
 		}
+	}
+}
+
+// ---- limitNameBytes -----------------------------------------------------
+
+func TestLimitNameBytes(t *testing.T) {
+	long := strings.Repeat("a", 300)
+	cjk := strings.Repeat("音", 120) // 360 bytes, 120 runes
+
+	t.Run("short name untouched", func(t *testing.T) {
+		if got := limitNameBytes("01. Song", ".flac", "123"); got != "01. Song.flac" {
+			t.Errorf("got %q", got)
+		}
+	})
+
+	t.Run("fits the byte limit", func(t *testing.T) {
+		for _, name := range []string{long, cjk} {
+			got := limitNameBytes(name, ".flac", "123")
+			if len(got) > maxNameBytes {
+				t.Errorf("len(%d bytes) exceeds %d", len(got), maxNameBytes)
+			}
+			if !strings.HasSuffix(got, "-123.flac") {
+				t.Errorf("trimmed name %q lost the track id", got)
+			}
+		}
+	})
+
+	// Padded with 0..3 ASCII bytes so the cut lands at every possible offset
+	// inside a 3-byte rune. A single length can be lucky: 120 CJK runes trim
+	// to exactly 246 bytes, a multiple of 3, where even a byte-wise cut would
+	// happen to land on a boundary and pass.
+	t.Run("never splits a rune", func(t *testing.T) {
+		for pad := 0; pad < 4; pad++ {
+			name := strings.Repeat("x", pad) + cjk
+			got := limitNameBytes(name, ".flac", "123")
+			if !utf8.ValidString(got) {
+				t.Errorf("pad %d: %q is not valid UTF-8", pad, got)
+			}
+			if len(got) > maxNameBytes {
+				t.Errorf("pad %d: len(%d bytes) exceeds %d", pad, len(got), maxNameBytes)
+			}
+		}
+	})
+
+	// The reason the track id is appended at all: without it these two
+	// resolve to the same file and the second track is skipped as already
+	// downloaded (issue #23 through a different door).
+	t.Run("same prefix different tracks stay distinct", func(t *testing.T) {
+		a := limitNameBytes(long+"one", ".flac", "111")
+		b := limitNameBytes(long+"two", ".flac", "222")
+		if a == b {
+			t.Errorf("both tracks resolve to %q", a)
+		}
+	})
+
+	t.Run("track id is sanitised", func(t *testing.T) {
+		got := limitNameBytes(long, ".flac", "<nil>")
+		if strings.ContainsAny(got, `<>:"/\|?*`) {
+			t.Errorf("%q carries characters illegal in a file name", got)
+		}
+	})
+}
+
+// A download directory longer than the old 250-rune cap used to truncate every
+// file name, sometimes cutting into the album folder itself. The limit is per
+// component, so a deep directory must leave the name alone.
+func TestFinalTrackPathLongDirKeepsName(t *testing.T) {
+	dir := filepath.Join("/tmp", strings.Repeat("deep-directory-segment/", 12))
+	track := map[string]interface{}{"title": "Pantyhose", "track_number": float64(1), "id": float64(199947881)}
+
+	got, err := finalTrackPath(dir, track, map[string]interface{}{}, "{tracknumber}. {tracktitle}", false)
+	if err != nil {
+		t.Fatalf("finalTrackPath: %v", err)
+	}
+	if base := filepath.Base(got); base != "01. Pantyhose.flac" {
+		t.Errorf("file name = %q, want %q (dir length must not trim it)", base, "01. Pantyhose.flac")
+	}
+	if !strings.HasPrefix(got, dir) {
+		t.Errorf("%q escaped the download directory", got)
 	}
 }

@@ -4,7 +4,9 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"maps"
 	"os"
+	"slices"
 
 	"github.com/Aeneaj/qobuz-dl-go/internal/api"
 	"github.com/Aeneaj/qobuz-dl-go/internal/config"
@@ -110,6 +112,14 @@ func initDownloader(ctx context.Context, f *cliFlags) (*downloader.Downloader, e
 	workers := f.Workers
 	if workers == 0 {
 		workers = cfg.Workers
+	}
+
+	// Checked before any network call: an unknown id used to reach the API as
+	// is, after printing an empty "Set max quality:" line, and came back as an
+	// opaque API error.
+	if _, ok := downloader.Qualities[quality]; !ok {
+		return nil, fmt.Errorf("invalid quality %d — valid values are %v\nset it with -q or 'default_quality' in config.ini",
+			quality, slices.Sorted(maps.Keys(downloader.Qualities)))
 	}
 
 	client := api.New(cfg.AppID, cfg.Secrets)
