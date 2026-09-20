@@ -403,6 +403,12 @@ A `track_format` must contain `{tracknumber}` or `{tracktitle}` — without one
 every track of an album would resolve to the same filename. Anything outside
 these lists is rejected at startup, naming the offending placeholder.
 
+MP3 downloads (`-q 5`) have no bit depth or sampling rate, so a format asking
+for `{bit_depth}` or `{sampling_rate}` is replaced by a default one for that
+run — including any subfolder structure you configured. The run says so when it
+happens. Use `{format}`, which reads `FLAC` or `MP3`, to keep your own template
+at every quality.
+
 ### Where files are saved
 
 In order of priority: the `-d` flag → `download_dir` in the config file →

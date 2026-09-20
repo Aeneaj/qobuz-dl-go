@@ -75,20 +75,36 @@ func getTitle(item map[string]interface{}) string {
 	return title
 }
 
-func cleanFormatStr(format, fileFormat string) string {
+// cleanFormatStr strips a stray file extension from a format string and, when
+// the release has no bit depth / sampling rate to report, swaps a format that
+// asks for them for one that does not — otherwise those placeholders would
+// expand to "n_a" ("[n_aB-n_akHz]").
+//
+// The swap throws away the user's whole template, subfolder structure
+// included, so it is announced on w instead of happening silently: a
+// {artist}/{album} layout turning flat on an MP3 download is exactly the kind
+// of surprise the user cannot otherwise explain. {format} is the placeholder
+// that describes quality in both cases, so the note points at it.
+func cleanFormatStr(w io.Writer, format, fileFormat string) string {
 	format = strings.TrimSuffix(format, ".mp3")
 	format = strings.TrimSuffix(format, ".flac")
 	format = strings.TrimSpace(format)
 
-	if fileFormat == "MP3" || fileFormat == "Unknown" {
-		if strings.Contains(format, "{bit_depth}") || strings.Contains(format, "{sampling_rate}") {
-			if fileFormat == "MP3" {
-				return "{artist} - {album} ({year}) [MP3]"
-			}
-			return "{artist} - {album}"
-		}
+	if fileFormat != "MP3" && fileFormat != "Unknown" {
+		return format
 	}
-	return format
+	if !strings.Contains(format, "{bit_depth}") && !strings.Contains(format, "{sampling_rate}") {
+		return format
+	}
+
+	substitute, reason := "{artist} - {album}", "which could not be resolved for this release"
+	if fileFormat == "MP3" {
+		substitute, reason = "{artist} - {album} ({year}) [MP3]", "which MP3 files do not have"
+	}
+	fmt.Fprintf(w, "\033[33mNote: format %q asks for {bit_depth}/{sampling_rate}, %s — using %q instead.\n"+
+		"      Use {format} rather than {bit_depth}/{sampling_rate} to keep your own template.\033[0m\n",
+		format, reason, substitute)
+	return substitute
 }
 
 // expandPlaceholders substitutes {placeholder} tokens in format with values

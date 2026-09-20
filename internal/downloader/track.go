@@ -53,7 +53,7 @@ func (d *Downloader) downloadTrackByID(ctx context.Context, trackID, baseDir str
 		year = rd[:4]
 	}
 
-	folderFmt := cleanFormatStr(d.Opts.FolderFormat, fileFormat)
+	folderFmt := cleanFormatStr(d.termOut(), d.Opts.FolderFormat, fileFormat)
 	folderName := expandPlaceholders(folderFmt, map[string]string{
 		"{artist}":        albumArtist,
 		"{album}":         albumTitle,
@@ -71,7 +71,7 @@ func (d *Downloader) downloadTrackByID(ctx context.Context, trackID, baseDir str
 	}
 
 	isMP3 := d.Opts.Quality == 5
-	trackFmt := cleanFormatStr(d.Opts.TrackFormat, fileFormat)
+	trackFmt := cleanFormatStr(d.termOut(), d.Opts.TrackFormat, fileFormat)
 
 	// Skip only if recorded in the DB AND the file is still on disk. Done
 	// here (after trackDir + trackFmt are known) so the on-disk probe hits

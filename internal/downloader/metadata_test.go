@@ -471,15 +471,30 @@ func TestGetTitle(t *testing.T) {
 func TestCleanFormatStr(t *testing.T) {
 	tests := []struct {
 		format, fileFormat, want string
+		wantNote                 bool // the swap discards the template, so it must be announced
 	}{
-		{"{artist} - {album}.flac", "FLAC", "{artist} - {album}"},
-		{"{artist} - {album}.mp3", "MP3", "{artist} - {album}"},
-		{"{artist} - {album} [{bit_depth}B]", "MP3", "{artist} - {album} ({year}) [MP3]"},
-		{"{artist} - {album}", "FLAC", "{artist} - {album}"},
+		{"{artist} - {album}.flac", "FLAC", "{artist} - {album}", false},
+		{"{artist} - {album}.mp3", "MP3", "{artist} - {album}", false},
+		{"{artist} - {album} [{bit_depth}B]", "MP3", "{artist} - {album} ({year}) [MP3]", true},
+		{"{artist} - {album}", "FLAC", "{artist} - {album}", false},
+		{"{artist} - {album} [{sampling_rate}kHz]", "MP3", "{artist} - {album} ({year}) [MP3]", true},
+		{"{artist} - {album} [{bit_depth}B]", "Unknown", "{artist} - {album}", true},
+		// {bit_depth} is meaningful for FLAC: keep the template, say nothing.
+		{"{artist}/{album} [{bit_depth}B]", "FLAC", "{artist}/{album} [{bit_depth}B]", false},
+		// {format} works for every release, so it never triggers the swap.
+		{"{artist}/{album} [{format}]", "MP3", "{artist}/{album} [{format}]", false},
 	}
 	for _, tt := range tests {
-		if got := cleanFormatStr(tt.format, tt.fileFormat); got != tt.want {
+		var out bytes.Buffer
+		got := cleanFormatStr(&out, tt.format, tt.fileFormat)
+		if got != tt.want {
 			t.Errorf("cleanFormatStr(%q, %q) = %q, want %q", tt.format, tt.fileFormat, got, tt.want)
+		}
+		if note := out.Len() > 0; note != tt.wantNote {
+			t.Errorf("cleanFormatStr(%q, %q) wrote %q, wantNote = %v", tt.format, tt.fileFormat, out.String(), tt.wantNote)
+		}
+		if tt.wantNote && !strings.Contains(out.String(), "{format}") {
+			t.Errorf("note for (%q, %q) does not point at {format}: %q", tt.format, tt.fileFormat, out.String())
 		}
 	}
 }

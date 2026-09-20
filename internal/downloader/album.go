@@ -44,12 +44,18 @@ func (d *Downloader) downloadAlbum(ctx context.Context, albumID, baseDir string)
 			trackCount = len(raw)
 		}
 	}
-	d.announceAlbum(title, artist, fmt.Sprintf("%s %v/%v", fileFormat, bitDepth, samplingRate), trackCount)
+	// resolveFormat leaves bit depth / sampling rate nil for MP3 and for a
+	// format it could not resolve; %v would print them as "<nil>/<nil>".
+	quality := fileFormat
+	if bitDepth != nil && samplingRate != nil {
+		quality = fmt.Sprintf("%s %v/%v", fileFormat, bitDepth, samplingRate)
+	}
+	d.announceAlbum(title, artist, quality, trackCount)
 
 	// Build folder name. Individual values are sanitised inside
 	// expandPlaceholders, so literal "/" written in FolderFormat survives as a
 	// subfolder separator (translated to the OS separator by filepath.FromSlash).
-	folderFmt := cleanFormatStr(d.Opts.FolderFormat, fileFormat)
+	folderFmt := cleanFormatStr(d.termOut(), d.Opts.FolderFormat, fileFormat)
 	folderName := expandPlaceholders(folderFmt, map[string]string{
 		"{artist}":        artist,
 		"{album}":         title,
@@ -76,7 +82,7 @@ func (d *Downloader) downloadAlbum(ctx context.Context, albumID, baseDir string)
 	rawItems, _ := tracklist["items"].([]interface{})
 
 	isMultiDisc := detectMultiDisc(rawItems)
-	trackFmt := cleanFormatStr(d.Opts.TrackFormat, fileFormat)
+	trackFmt := cleanFormatStr(d.termOut(), d.Opts.TrackFormat, fileFormat)
 	isMP3 := d.Opts.Quality == 5
 
 	p := d.newProgress(ctx)
