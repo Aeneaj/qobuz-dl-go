@@ -60,6 +60,7 @@ func (d *Downloader) downloadTrackByID(ctx context.Context, trackID, baseDir str
 		"{year}":          year,
 		"{bit_depth}":     fmt.Sprintf("%v", int(bitDepth)),
 		"{sampling_rate}": fmt.Sprintf("%v", samplingRate),
+		"{format}":        fileFormat,
 	})
 	trackDir, err := safeJoin(baseDir, filepath.FromSlash(folderName))
 	if err != nil {

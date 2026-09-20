@@ -457,3 +457,47 @@ func TestIsRemaster(t *testing.T) {
 		}
 	}
 }
+
+// ---- validateFormats ----------------------------------------------------
+
+func TestValidateFormats(t *testing.T) {
+	cases := []struct {
+		name      string
+		folder    string
+		track     string
+		wantErrIn string // substring the error must name; "" = must succeed
+	}{
+		{"defaults", "{artist} - {album} ({year}) [{bit_depth}B-{sampling_rate}kHz]", "{tracknumber}. {tracktitle}", ""},
+		{"all folder placeholders", "{artist}/{album}/{year}/{bit_depth}/{sampling_rate}/{format}", "{tracknumber}. {tracktitle}", ""},
+		{"all track placeholders", "{album}", "{tracknumber} {tracktitle} {artist} {albumartist} {bit_depth} {sampling_rate} {version}", ""},
+		{"no placeholders in folder", "Music", "{tracktitle}", ""},
+		{"empty folder format", "", "{tracktitle}", ""},
+
+		// issue #23: these produced one literally-named file per album.
+		{"unknown folder placeholder", "{album_artist} - {album_title}", "{tracknumber}. {tracktitle}", "{album_artist}"},
+		{"unknown track placeholder", "{artist}", "{track_number} - {track_title}", "{track_number}"},
+		{"documented-but-unimplemented", "{genre} - {album}", "{tracktitle}", "{genre}"},
+		{"typo", "{artst} - {album}", "{tracktitle}", "{artst}"},
+
+		// A valid format that still collapses every track onto one name.
+		{"track format without varying part", "{album}", "{artist}", "{tracknumber}"},
+		{"empty track format", "{album}", "", "{tracknumber}"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := validateFormats(c.folder, c.track)
+			if c.wantErrIn == "" {
+				if err != nil {
+					t.Fatalf("validateFormats(%q, %q) = %v, want nil", c.folder, c.track, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("validateFormats(%q, %q) = nil, want error naming %s", c.folder, c.track, c.wantErrIn)
+			}
+			if !strings.Contains(err.Error(), c.wantErrIn) {
+				t.Errorf("error %q does not name %s", err, c.wantErrIn)
+			}
+		})
+	}
+}

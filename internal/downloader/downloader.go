@@ -164,6 +164,9 @@ func New(client *api.Client, opts Options) (*Downloader, error) {
 	if opts.Workers <= 0 {
 		opts.Workers = 3
 	}
+	if err := validateFormats(opts.FolderFormat, opts.TrackFormat); err != nil {
+		return nil, err
+	}
 	if opts.Directory != "" {
 		if err := os.MkdirAll(opts.Directory, 0755); err != nil {
 			return nil, fmt.Errorf("create download directory %q: %w", opts.Directory, err)

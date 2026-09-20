@@ -206,3 +206,54 @@ func isLocalFile(s string) bool {
 	_, err := os.Stat(s)
 	return err == nil
 }
+
+// ---- format string validation ----
+
+// Placeholders expandPlaceholders actually substitutes, per format string.
+// Keep in sync with the attrs maps in album.go / track.go / finalTrackPath.
+var (
+	folderPlaceholders = []string{"{artist}", "{album}", "{year}", "{bit_depth}", "{sampling_rate}", "{format}"}
+	trackPlaceholders  = []string{"{tracknumber}", "{tracktitle}", "{artist}", "{albumartist}", "{bit_depth}", "{sampling_rate}", "{version}"}
+)
+
+var placeholderRe = regexp.MustCompile(`\{[^{}]*\}`)
+
+// validateFormats rejects folder/track format strings that would not expand.
+// An unrecognised token survives expansion literally, and in a track format
+// that means every track of an album resolves to the same filename: the first
+// download wins and the rest are silently skipped as "already downloaded"
+// (issue #23). Checked once in New so every entry point (CLI, TUI, csv, fun)
+// is covered.
+func validateFormats(folderFmt, trackFmt string) error {
+	if bad := unknownPlaceholders(folderFmt, folderPlaceholders); len(bad) > 0 {
+		return fmt.Errorf("folder_format: unknown placeholder(s) %s\nsupported: %s\nfix it in config.ini or pass --folder-format",
+			strings.Join(bad, " "), strings.Join(folderPlaceholders, " "))
+	}
+	if bad := unknownPlaceholders(trackFmt, trackPlaceholders); len(bad) > 0 {
+		return fmt.Errorf("track_format: unknown placeholder(s) %s\nsupported: %s\nfix it in config.ini or pass --track-format",
+			strings.Join(bad, " "), strings.Join(trackPlaceholders, " "))
+	}
+	// Without one of these every track gets the same name and only one survives.
+	if !strings.Contains(trackFmt, "{tracknumber}") && !strings.Contains(trackFmt, "{tracktitle}") {
+		return fmt.Errorf("track_format %q must contain {tracknumber} or {tracktitle}, otherwise every track overwrites the previous one", trackFmt)
+	}
+	return nil
+}
+
+// unknownPlaceholders returns the {tokens} in format that are not in allowed.
+func unknownPlaceholders(format string, allowed []string) []string {
+	var bad []string
+	for _, tok := range placeholderRe.FindAllString(format, -1) {
+		known := false
+		for _, a := range allowed {
+			if tok == a {
+				known = true
+				break
+			}
+		}
+		if !known {
+			bad = append(bad, tok)
+		}
+	}
+	return bad
+}

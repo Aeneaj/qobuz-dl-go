@@ -393,8 +393,15 @@ Which produces `Radiohead - In Rainbows (2007) [24B-96kHz]/01. 15 Step.flac`.
 Change them in the config file, or per run with `--folder-format` /
 `--track-format`. Available pieces:
 
-`{artist}` `{album}` `{year}` `{bit_depth}` `{sampling_rate}` `{tracknumber}`
-`{tracktitle}` `{genre}` `{composer}`
+In `folder_format`: `{artist}` `{album}` `{year}` `{bit_depth}`
+`{sampling_rate}` `{format}`
+
+In `track_format`: `{tracknumber}` `{tracktitle}` `{artist}` `{albumartist}`
+`{bit_depth}` `{sampling_rate}` `{version}`
+
+A `track_format` must contain `{tracknumber}` or `{tracktitle}` — without one
+every track of an album would resolve to the same filename. Anything outside
+these lists is rejected at startup, naming the offending placeholder.
 
 ### Where files are saved
 
