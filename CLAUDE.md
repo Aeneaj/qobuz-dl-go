@@ -24,7 +24,8 @@ internal/downloader/ Descarga, tagging FLAC/MP3, colecciones, OAuth
                      alreadyHave, downloadAndTag, fallbackQuality
   transfer.go        downloadWithProgress: reintentos, resume por Range, downloadExtra
   search.go          Search/SearchURLs para CLI y TUI
-  helpers.go         M3U, cleanTmp, sanitize/safeJoin/nestedStr/idStr, barLabel
+  helpers.go         M3U, cleanTmp, sanitize/safeJoin/nestedStr/idStr, barLabel,
+                     validateFormats/limitNameBytes (frontera de entrada)
 internal/lyrics/     Descarga de .lrc: lector de metadatos FLAC/MP3, cliente LRCLIB
 internal/ui/         TUI bubbletea: shell completo (comando `tui`) + progreso (--tui)
   backend.go         interfaz Backend — el seam que rompe el ciclo de imports
@@ -48,6 +49,50 @@ El tagging y la lectura de metadatos FLAC y MP3 están implementados en **Go pur
 No añadir dependencias de parseo de audio externas. Si necesitas leer o escribir un campo nuevo de metadatos, impleméntalo en pure Go.
 
 **Trampa ya pisada una vez**: en Go, `string(payload)` sobre un `[]byte` lo **reinterpreta como UTF-8**, no lo convierte desde otra codificación. La rama Latin-1 de `decodeID3Text` hacía eso y corrompía todo byte por encima de 0x7F — `Café` en ISO-8859-1 salía como `"Caf\xe9"`, UTF-8 inválido, que iba tal cual a la query de LRCLIB. La conversión correcta es rune a rune: `rune(b)` da U+0000–U+00FF, que *es* ISO-8859-1. Sobrevivió porque los tests solo usaban ASCII, idéntico en ambas codificaciones — **al testear codificaciones, usar siempre al menos un carácter no ASCII**.
+
+### Formatos de nombre: validar en la frontera, nunca degradar en silencio
+
+`folder_format` y `track_format` son entrada del usuario, y el daño de aceptarlas mal
+es **silencioso**: no un error, tracks que no existen. La cadena de #23 completa,
+porque es el molde de toda esta clase de bug:
+
+1. `expandPlaceholders` sustituye por coincidencia literal de `{clave}`, así que un
+   token que no está en el mapa **sobrevive tal cual**.
+2. Con eso, `finalTrackPath` devuelve el mismo nombre para los 12 tracks del álbum.
+3. Los 3 workers pasan el `os.Stat` a la vez (aún no hay fichero), los 3 renombran al
+   mismo destino y gana el último.
+4. Los tracks 4..N ven el fichero presente → `bar.Abort(true)`, salen sin ruido y
+   quedan **registrados en la DB**.
+
+Síntoma: lista 12, muestra 3 (= `workers`), descarga 1. Ningún error en ninguna capa.
+
+`validateFormats` se llama desde `New`, no desde `initDownloader`, porque `New` es el
+único punto por el que pasan CLI, TUI, csv y fun. La validación de calidad sí vive en
+`initDownloader`: `New` la recibe en 0 desde `runOAuth` —0 significa "sin fijar"— y
+ahí se rechaza **antes de tocar la red**, que es donde el error es barato y claro.
+
+Tres reglas, las tres contra el mismo reflejo:
+
+- **Placeholder desconocido = error, no paso libre.** El mensaje nombra el token y el
+  juego válido: el usuario está atascado y el consejo es su única salida, igual que en
+  los errores de auth.
+- **Un `track_format` sin `{tracknumber}` ni `{tracktitle}` también se rechaza.** Es la
+  misma pérdida de datos con placeholders perfectamente válidos.
+- **Sustituir la plantilla del usuario se anuncia.** `cleanFormatStr` cambia el formato
+  entero por uno hardcodeado cuando la calidad es MP3 (sin bit depth, `{bit_depth}`
+  expandiría a `n_a`), y eso se lleva por delante cualquier jerarquía de subcarpetas
+  configurada. El swap sigue; el silencio no. El aviso apunta a `{format}`, que
+  describe la calidad en FLAC y en MP3 y por tanto nunca dispara el swap.
+
+**El límite de longitud de nombre es por componente y en bytes**, 255 en ext4, NTFS y
+APFS. `finalTrackPath` recortaba la **ruta entera** a 250 runas, mal en los dos ejes:
+un título CJK de 100 caracteres son 300 bytes y pasaba el chequeo de runas sin tocarse;
+y recortar la ruta completa mutila los nombres en cuanto crece el directorio de
+descarga, pudiendo cortar **dentro** de la carpeta del álbum — la ruta truncada deja de
+estar bajo el directorio que `safeJoin` había garantizado. `limitNameBytes` limita solo
+el último componente, camina runas enteras hacia atrás, y al recortar añade el id del
+track: dos títulos largos con prefijo común resolvían al mismo nombre, que es el paso 2
+de la cadena de arriba entrando por otra puerta.
 
 ### UI de Terminal: `mpb` por defecto, TUI opt-in
 
@@ -74,7 +119,7 @@ Cualquier nueva feature con feedback visual debe reutilizar este patrón para co
 
 Usa la primera cuando el mensaje deba verse al momento (un track que falla), la segunda cuando sea un resumen.
 
-Con `--tui` la regla es más estricta: bubbletea está en alt-screen y **nada** puede llegar a stdout, así que `termOut()` devuelve `io.Discard`. Por eso todos los mensajes del paquete (incluidos `lastfm.go` y `csvbatch.go`) van por `d.termOut()` y no por `fmt.Printf`. Las funciones libres (`makeM3U`, `printBatchSummary`, `tagFLAC`) reciben el `io.Writer` como parámetro.
+Con `--tui` la regla es más estricta: bubbletea está en alt-screen y **nada** puede llegar a stdout, así que `termOut()` devuelve `io.Discard`. Por eso todos los mensajes del paquete (incluidos `lastfm.go` y `csvbatch.go`) van por `d.termOut()` y no por `fmt.Printf`. Las funciones libres (`makeM3U`, `printBatchSummary`, `tagFLAC`, `cleanFormatStr`) reciben el `io.Writer` como parámetro.
 
 **`os.Stderr` cuenta igual que stdout**: la alt-screen se traga los dos. Un error que el
 usuario tiene que ver se **devuelve**, no se imprime — `DownloadCSV` devuelve el fallo de
@@ -189,19 +234,25 @@ No añadir dependencias nuevas sin discusión. En particular no añadir librerí
 - **Table-driven por defecto.** Slice de `struct{ in, want }` + bucle `for _, c := range cases`. Subtests con `t.Run` cuando hay nombre descriptivo.
 - **Inyección de dependencias por parámetro.** La función pública (`Run`) recibe un cliente real; la interna (`runWithClient`) acepta el cliente como argumento para que los tests pasen uno falso. No usar variables globales para el cliente.
 - **Helpers de test mínimos.** Los constructores de datos falsos (`fakeFLAC`, `fakeMP3`) viven en `*_test.go`, no en producción.
+- **Un solo dato de prueba puede tener suerte aritmética.** El subtest de fronteras de
+  rune de `limitNameBytes` pasaba con un corte byte a byte: 120 runas de 3 bytes
+  recortan a exactamente 246, múltiplo de 3, así que el corte crudo caía en frontera
+  por casualidad. Cuando lo que se prueba es una **alineación**, recorre todos los
+  desplazamientos (ahí, relleno ASCII de 0 a 3) en vez de fiarte de una longitud.
+  Hermana de la lección Latin-1 de arriba: los datos ASCII ocultaban el bug entero.
 
 ### Cobertura por paquete
 
-Medido con `go test -cover ./...` el 2026-08-06:
+Medido con `go test -cover ./...` el 2026-09-20:
 
 | Paquete | Cobertura | Archivos de test |
 |---|---|---|
 | api | 42.9% | client_test.go |
 | bundle | 59.7% | bundle_test.go |
 | config | 45.1% | config_test.go |
-| downloader | 48.7% | integration_test.go, oauth_test.go, tui_test.go, metadata_test.go, db_test.go, lastfm_test.go, helpers_test.go, redownload_test.go, csvbatch_test.go |
+| downloader | 50.1% | integration_test.go, oauth_test.go, tui_test.go, metadata_test.go, db_test.go, lastfm_test.go, helpers_test.go, redownload_test.go, csvbatch_test.go, collection_test.go |
 | lyrics | 75.6% | metadata_test.go, lrclib_test.go, lyrics_test.go |
-| ui | 55.8% | shell_test.go, handle_test.go, lang_test.go |
+| ui | 59.1% | shell_test.go, handle_test.go, lang_test.go |
 | cmd/qobuz-dl | 0% | main_test.go |
 
 `cmd/qobuz-dl` marca 0% porque sus tests son **black-box**: compilan el binario en `TestMain` y lo ejecutan como subproceso, así que la cobertura no se instrumenta. No es falta de tests.
@@ -213,7 +264,20 @@ invariante de la que depende el diseño — un `p.Send()` por `Read` satura el b
 Filtra los mensajes propios de bubbletea (window size) porque si no los conteos no significan nada.
 Validado con 6 mutaciones, todas detectadas.
 
-`helpers_test.go` en downloader cubre: `sanitize`, `expandPlaceholders`, `renderFormat`, `formatDuration`, `idStr`, `nestedStr`, `releaseYear`, `essenceTitle`, `isRemaster`.
+`helpers_test.go` en downloader cubre: `sanitize`, `expandPlaceholders`, `renderFormat`,
+`formatDuration`, `idStr`, `nestedStr`, `releaseYear`, `essenceTitle`, `isRemaster`,
+`validateFormats`, `limitNameBytes`.
+
+**La documentación es una superficie de test.** El README anunció `{genre}` y
+`{composer}` durante toda la vida del proyecto sin que existieran: seguir la
+documentación llevaba directo a la cadena de #23. Nada ataba la lista documentada a la
+que `expandPlaceholders` sustituye de verdad, y `TestAdvertisedFlagsExist` —que ya
+guardaba justo este agujero para los flags— **solo escanea `.go`**, así que no la
+miraba. `TestREADMEPlaceholderParity` la cierra en los dos sentidos: documentado sin
+implementar falla, e implementado sin documentar también. Escanea el README **entero**
+en vez de localizar la sección de formatos, porque hoy los únicos tokens `{...}` del
+fichero son exactamente la unión de los dos juegos: sin parseo de secciones es más
+corto y además caza un token inventado en cualquier otra parte del documento.
 
 ### Tests de integración del downloader (`integration_test.go`)
 
@@ -400,6 +464,19 @@ lyrics_test.go    — buildLabel (formato, ancho fijo, truncado), lrcPathFor, sc
 ```
 
 ## Pendiente / Ideas
+
+- [x] Issue #23 "Albums are not downloaded entirely" — cerrado 2026-09-20, cuatro commits.
+      No era la descarga de álbumes: eran los placeholders desconocidos. Detalle de la
+      cadena en "Formatos de nombre" arriba. `e4891fc` valida los formatos, `e875e07`
+      añade la paridad README↔código, `42ae84d` saca del silencio el override de
+      `cleanFormatStr` (y quita un `MP3 <nil>/<nil>` de la línea de anuncio), `931d5d6`
+      cambia el truncado de ruta-por-runas a nombre-por-bytes y valida `default_quality`
+      antes de la red. Verificado contra Qobuz real en FLAC y MP3, incluida una ruta
+      total de 551 bytes: 12/12 tracks con 12 nombres distintos.
+      Dos cabos sueltos conocidos, ninguno arreglado: los flags **después** del
+      subcomando se ignoran (`dl -d X URL` trata `-d` como URL — limitación del `flag`
+      de stdlib, documentada en el README, se arreglaría con un `FlagSet` por
+      subcomando); y `-q` sigue siendo la única forma de fijar calidad por run.
 
 - [x] Auditoría de sobreingeniería (`/ponytail-audit` sobre v1.5.0) — cerrada 2026-08-06.
       15 hallazgos, −198 líneas, 0 dependencias eliminables. Los 2 primeros en `ec3b40a`
