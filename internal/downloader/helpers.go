@@ -55,18 +55,6 @@ func makeM3U(w io.Writer, dir string) {
 	fmt.Fprintf(w, "\033[32mM3U playlist saved: %s\033[0m\n", plName)
 }
 
-func cleanTmp(dir string) {
-	filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error { //nolint:errcheck
-		if err == nil && !d.IsDir() {
-			name := d.Name()
-			if strings.HasPrefix(name, ".") && strings.HasSuffix(name, ".tmp") {
-				os.Remove(path)
-			}
-		}
-		return nil
-	})
-}
-
 func getTitle(item map[string]interface{}) string {
 	title, _ := item["title"].(string)
 	version, _ := item["version"].(string)

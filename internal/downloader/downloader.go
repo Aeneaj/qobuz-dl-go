@@ -243,8 +243,9 @@ func (d *Downloader) DownloadURLs(ctx context.Context, urls []string) {
 			}
 		}
 	}
-	// Clean leftover .tmp files
-	cleanTmp(d.Opts.Directory)
+	// No sweep for leftover .tmp files: downloadAndTag removes or renames its
+	// own, and Directory may be "." or "~" — a recursive delete there takes
+	// other programs' temp files with it.
 }
 
 func (d *Downloader) downloadFromFile(ctx context.Context, path string) {

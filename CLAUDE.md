@@ -24,7 +24,7 @@ internal/downloader/ Descarga, tagging FLAC/MP3, colecciones, OAuth
                      alreadyHave, downloadAndTag, fallbackQuality
   transfer.go        downloadWithProgress: reintentos, resume por Range, downloadExtra
   search.go          Search/SearchURLs para CLI y TUI
-  helpers.go         M3U, cleanTmp, sanitize/safeJoin/nestedStr/idStr, barLabel,
+  helpers.go         M3U, sanitize/safeJoin/nestedStr/idStr, barLabel,
                      validateFormats/limitNameBytes (frontera de entrada)
 internal/lyrics/     Descarga de .lrc: lector de metadatos FLAC/MP3, cliente LRCLIB
 internal/ui/         TUI bubbletea: shell completo (comando `tui`) + progreso (--tui)
@@ -431,6 +431,15 @@ Implementación:
 - `downloader.New()` ya no tiene fallback hardcodeado — la ruta llega siempre resuelta desde `initDownloader`
 
 **Importante**: el comando `lyrics` (y `tuiBackend.Lyrics`) llama `config.ResolveDir(dir, false)` — no crea el directorio si no existe. El usuario debe apuntar a una biblioteca ya existente.
+
+**El directorio de descarga no es nuestro.** `-d .` y `download_dir = .` son la forma
+documentada de descargar en el CWD, así que puede valer `~` o `/`. Nada puede recorrer
+y borrar a partir de ahí: se borra solo lo que el propio run escribió, por su ruta.
+`cleanTmp` barría recursivamente todo `.*.tmp` bajo el directorio al final de cada
+`DownloadURLs` — los `.syncthing.<nombre>.tmp` incluidos — y además sobraba:
+`downloadAndTag` ya borra o renombra su `.tmp` en todos los caminos con el proceso
+vivo, y tras un kill duro el barrido tampoco llegaba a correr (el resto lo retoma el
+resume por `Range`). Lo guarda `TestIntegration_DownloadURLsLeavesForeignFilesAlone`.
 
 ## Comando `lyrics` — detalles de implementación
 

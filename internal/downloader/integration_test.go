@@ -461,6 +461,36 @@ func TestIntegration_HandleURL(t *testing.T) {
 	}
 }
 
+// TestIntegration_DownloadURLsLeavesForeignFilesAlone: Directory can be "." or
+// "~", so a run must not delete what it did not write. DownloadURLs used to
+// finish with a recursive sweep of every ".*.tmp" under Directory, which
+// matches Syncthing's in-flight ".syncthing.<name>.tmp" files.
+func TestIntegration_DownloadURLsLeavesForeignFilesAlone(t *testing.T) {
+	q := newFakeQobuz(t, threeTracks()[:1])
+	d, dir := newTestDownloader(t, q, func(o *Options) { o.NoCover = true })
+
+	foreign := []string{
+		filepath.Join(dir, ".syncthing.song.flac.tmp"),
+		filepath.Join(dir, "Other", ".01.tmp"),
+	}
+	for _, f := range foreign {
+		if err := os.MkdirAll(filepath.Dir(f), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(f, []byte("not ours"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	d.DownloadURLs(context.Background(), []string{"https://open.qobuz.com/album/alb1"})
+
+	for _, f := range foreign {
+		if _, err := os.Stat(f); err != nil {
+			t.Errorf("%s was removed: %v", f, err)
+		}
+	}
+}
+
 // TestIntegration_FolderFormatSurvivesUnresolvableTrack is the regression test
 // for issue #22: a folder_format made only of valid placeholders was ignored
 // and the album got the default naming instead.
