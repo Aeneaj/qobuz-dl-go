@@ -65,8 +65,9 @@ Copy an album URL from the Qobuz website and paste it after `dl`:
 ./qobuz-dl dl https://www.qobuz.com/us-en/album/.../abc123
 ```
 
-Files land in the folder you chose during setup (by default `qobuz-downloader`
-next to the binary), one folder per album:
+Files land in the folder you chose during setup (by default a
+`qobuz-downloader` folder inside the one you run the command from), one
+folder per album:
 
 ```
 Radiohead - In Rainbows (2007) [24B-96kHz]/
@@ -158,6 +159,9 @@ Don't have a URL? Search from the terminal instead:
 
 # Save somewhere else, just this once
 ./qobuz-dl -d ~/Music dl https://www.qobuz.com/album/...
+
+# Save into the folder you're in, without a qobuz-downloader/ in between
+./qobuz-dl -d . dl https://www.qobuz.com/album/...
 
 # Put the cover art inside the audio files (for players that want it embedded)
 ./qobuz-dl --embed-art dl https://www.qobuz.com/album/...
@@ -417,7 +421,17 @@ at every quality.
 ### Where files are saved
 
 In order of priority: the `-d` flag → `download_dir` in the config file →
-a `qobuz-downloader` folder next to the binary.
+a `qobuz-downloader` folder inside the one you run the command from.
+
+Relative paths count from the folder you run the command from, and are worked
+out again on every run. So `-d .` saves straight into your current folder, and
+
+```
+download_dir = .
+```
+
+in the config file makes that the default. `lyrics` without a path then scans
+the current folder too.
 
 ---
 
