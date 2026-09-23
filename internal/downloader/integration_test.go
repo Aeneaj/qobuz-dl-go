@@ -82,6 +82,11 @@ func newFakeQobuz(t testing.TB, tracks []fakeTrack) *fakeQobuz {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api.json/0.2/album/get", q.handleAlbumGet)
 	mux.HandleFunc("/api.json/0.2/track/getFileUrl", q.handleFileURL)
+	mux.HandleFunc("/api.json/0.2/album/search", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]interface{}{"albums": map[string]interface{}{"items": []interface{}{
+			map[string]interface{}{"id": "alb1", "title": "Test Album", "duration": float64(60), "artist": map[string]interface{}{"name": "Test Artist"}},
+		}}})
+	})
 	mux.HandleFunc("/audio/", q.handleAudio)
 	mux.HandleFunc("/img/cover.jpg", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/jpeg")

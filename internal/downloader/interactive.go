@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -27,7 +28,15 @@ Commands:
 // Interactive runs a REPL that lets the user search, build a queue, and
 // download — all without leaving the session. No external dependencies.
 func (d *Downloader) Interactive(ctx context.Context) {
-	reader := bufio.NewReader(os.Stdin)
+	d.interactive(ctx, os.Stdin)
+}
+
+// interactive is the REPL over in. There is exactly one reader for the whole
+// session: a bufio.Reader takes up to 4 KB per read, so with piped input the
+// first read already holds the lines after it, and a second reader on the
+// same stream finds them gone.
+func (d *Downloader) interactive(ctx context.Context, in io.Reader) {
+	reader := bufio.NewReader(in)
 	var queue []SearchResult
 
 	fmt.Println("\033[33mqobuz-dl interactive mode — type 'help' for commands\033[0m")
@@ -50,13 +59,13 @@ func (d *Downloader) Interactive(ctx context.Context) {
 		switch strings.ToLower(cmd) {
 
 		case "sa":
-			queue = interactiveSearch(ctx, d, "album", arg, queue)
+			queue = interactiveSearch(ctx, d, reader, "album", arg, queue)
 		case "st":
-			queue = interactiveSearch(ctx, d, "track", arg, queue)
+			queue = interactiveSearch(ctx, d, reader, "track", arg, queue)
 		case "sr":
-			queue = interactiveSearch(ctx, d, "artist", arg, queue)
+			queue = interactiveSearch(ctx, d, reader, "artist", arg, queue)
 		case "sp":
-			queue = interactiveSearch(ctx, d, "playlist", arg, queue)
+			queue = interactiveSearch(ctx, d, reader, "playlist", arg, queue)
 
 		case "dl":
 			if arg == "" {
@@ -102,8 +111,9 @@ func (d *Downloader) Interactive(ctx context.Context) {
 }
 
 // interactiveSearch runs a search, prints numbered results, and lets the user
-// pick items to add to the queue. Returns the updated queue.
-func interactiveSearch(ctx context.Context, d *Downloader, itemType, query string, queue []SearchResult) []SearchResult {
+// pick items to add to the queue from reader — the REPL's own. Returns the
+// updated queue.
+func interactiveSearch(ctx context.Context, d *Downloader, reader *bufio.Reader, itemType, query string, queue []SearchResult) []SearchResult {
 	if query == "" {
 		fmt.Printf("\033[31m  Usage: s%s <query>\033[0m\n", string(itemType[0]))
 		return queue
@@ -125,7 +135,6 @@ func interactiveSearch(ctx context.Context, d *Downloader, itemType, query strin
 	}
 	fmt.Print("\nPick numbers to queue (e.g. 1 3 5), or Enter to skip: ")
 
-	reader := bufio.NewReader(os.Stdin)
 	line, _ := reader.ReadString('\n')
 	line = strings.TrimSpace(line)
 	if line == "" {
