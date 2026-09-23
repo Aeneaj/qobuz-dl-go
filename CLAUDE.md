@@ -180,11 +180,14 @@ Cualquier nueva feature con feedback visual debe reutilizar este patrón para co
 **Nunca imprimir a stdout con barras vivas.** Mientras un `mpb.Progress` renderiza es dueño del cursor: reposiciona y repinta cada 150ms, así que un `fmt.Printf` crudo corrompe el dibujo, y peor si sale de varias goroutines worker a la vez. Dos formas correctas:
 
 - `downloader` usa `d.termOut()`, que devuelve el `*mpb.Progress` activo (mpb serializa las escrituras contra su bucle de render) o `os.Stdout` si no hay ninguno. Marca el contenedor con `d.withBars(p)` al crearlo.
-- `lyrics` acumula los avisos en un slice y los vuelca **después** de `p.Wait()`.
+- `lyrics` acumula los avisos en un slice y los vuelca **después** de `p.Wait()`. El
+  escaneo también: `scanAudioFiles` hacía `fmt.Printf` por fichero ilegible y corre bajo la
+  TUI vía `FetchAll` (`TestNoDirectStdoutWrites` solo mira `downloader`); ahora los
+  devuelve y los guarda `TestFetchAllPrintsNothing`.
 
 Usa la primera cuando el mensaje deba verse al momento (un track que falla), la segunda cuando sea un resumen.
 
-Con `--tui` la regla es más estricta: bubbletea está en alt-screen y **nada** puede llegar a stdout, así que `termOut()` devuelve `io.Discard`. Por eso todos los mensajes del paquete (incluidos `lastfm.go` y `csvbatch.go`) van por `d.termOut()` y no por `fmt.Printf`. Las funciones libres (`makeM3U`, `printBatchSummary`, `tagFLAC`, `cleanFormatStr`) reciben el `io.Writer` como parámetro.
+Con `--tui` la regla es más estricta: bubbletea está en alt-screen y **nada** puede llegar a stdout, así que `termOut()` devuelve `io.Discard`. Por eso todos los mensajes del paquete (incluido `csvbatch.go`) van por `d.termOut()` y no por `fmt.Printf`. Las funciones libres (`makeM3U`, `printBatchSummary`, `tagFLAC`, `cleanFormatStr`) reciben el `io.Writer` como parámetro.
 
 **`os.Stderr` cuenta igual que stdout**: la alt-screen se traga los dos. Un error que el
 usuario tiene que ver se **devuelve**, no se imprime — `DownloadCSV` devuelve el fallo de
@@ -331,7 +334,7 @@ Medido con `go test -cover ./...` el 2026-09-23:
 | api | 42.9% | client_test.go |
 | bundle | 59.7% | bundle_test.go |
 | config | 45.1% | config_test.go |
-| downloader | 56.4% | integration_test.go, mem_test.go, oauth_test.go, tui_test.go, metadata_test.go, db_test.go, lastfm_test.go, helpers_test.go, redownload_test.go, csvbatch_test.go, collection_test.go |
+| downloader | 56.4% | integration_test.go, mem_test.go, oauth_test.go, tui_test.go, metadata_test.go, db_test.go, helpers_test.go, transfer_test.go, redownload_test.go, csvbatch_test.go, collection_test.go |
 | lyrics | 74.8% | metadata_test.go, lrclib_test.go, lyrics_test.go, mem_test.go |
 | ui | 75.9% | shell_test.go, handle_test.go, lang_test.go, model_test.go |
 | cmd/qobuz-dl | 0% | main_test.go |
@@ -619,9 +622,19 @@ lyrics_test.go    — buildLabel (formato, ancho fijo, truncado), lrcPathFor, sc
 - [x] Downloads DB (archivo plano, un track ID por línea) — `internal/downloader/db.go`
       `--no-db` bypass; `--purge` borra el archivo; se carga al arrancar en un map[string]struct{}
 - [x] Descargas concurrentes por track — semáforo + WaitGroup, flag `--workers N` (default 3)
-- [x] Soporte last.fm playlists — `internal/downloader/lastfm.go`
-      XSPF API 1.0 (sin API key); soporta `/user/{user}/loved` y `/user/{user}/library`;
-      busca cada track en Qobuz y descarga el primer resultado
+- [x] ~~Soporte last.fm playlists~~ — **retirado 2026-09-23**. Usaba la API XSPF 1.0
+      (`ws.audioscrobbler.com/1.0`), que devuelve 404 para cualquier usuario, y el 404 se
+      traducía como "user not found": fallaba siempre con un error falso. La web está tras
+      un muro anti-bots con JavaScript y la API 2.0 exige `api_key`. Si vuelve, que sea
+      sobre la 2.0 con clave en `config.ini`. `searchFirstTrackID` pasó a `search.go`
+      (lo sigue usando `csvbatch.go`).
+- [x] Tanda de bugs de la revisión de memoria (2026-09-23), cada uno reproducido antes
+      de tocarlo: `bundle.Secrets` devolvía un mapa y el orden de los secrets cambiaba en
+      cada llamada (ahora `[]string` en el orden del original: bundle, segundo al frente);
+      pista sin `media_number` en álbum multidisco → panic (ahora Disc 1);
+      `expandPlaceholders` re-escaneaba valores ya sustituidos en orden de mapa, así que un
+      título con `{artist}` literal daba dos nombres distintos para la misma pista (ahora
+      `strings.NewReplacer`, una pasada).
 - [x] Modo interactivo mejorado — `internal/downloader/interactive.go`
       REPL con comandos: sa/st/sr/sp (búsqueda por tipo), dl (URL directa),
       q (ver queue), rm N (quitar item), clear, go (descargar), exit
