@@ -84,9 +84,12 @@ func allocatedBy(fn func()) uint64 {
 
 // Tagging a 16 MB track must allocate far less than the track: the audio goes
 // file to file, only the metadata passes through memory. Reading the file
-// into a []byte — the old design — allocates at least its full size.
+// into a []byte — the old design — allocates at least its full size. The
+// embedded cover is read once and never copied: building the PICTURE block or
+// APIC frame around it used to take three to five copies per track.
 func TestTaggingMemoryIndependentOfTrackSize(t *testing.T) {
-	const size, limit = 16 << 20, 1 << 20
+	const size, coverSize = 16 << 20, 4 << 20
+	const limit = coverSize + 1<<20
 	tags := map[string]interface{}{"title": "Song", "track_number": float64(1)}
 	cases := []struct {
 		name string
@@ -94,10 +97,10 @@ func TestTaggingMemoryIndependentOfTrackSize(t *testing.T) {
 		tag  func(tmp, dir, final string) error
 	}{
 		{"flac", makeFakeFLAC(), func(tmp, dir, final string) error {
-			return tagFLAC(io.Discard, tmp, dir, final, tags, tags, false, false)
+			return tagFLAC(io.Discard, tmp, dir, final, tags, tags, false, true)
 		}},
 		{"mp3", makeFakeMP3(), func(tmp, dir, final string) error {
-			return tagMP3(tmp, dir, final, tags, tags, false, false)
+			return tagMP3(tmp, dir, final, tags, tags, false, true)
 		}},
 	}
 	for _, c := range cases {
@@ -105,6 +108,9 @@ func TestTaggingMemoryIndependentOfTrackSize(t *testing.T) {
 			dir := t.TempDir()
 			tmp, final := filepath.Join(dir, ".01.tmp"), filepath.Join(dir, "01."+c.name)
 			writeBigAudio(t, tmp, c.head, size)
+			if err := os.WriteFile(filepath.Join(dir, "cover.jpg"), make([]byte, coverSize), 0644); err != nil {
+				t.Fatal(err)
+			}
 			var err error
 			got := allocatedBy(func() { err = c.tag(tmp, dir, final) })
 			if err != nil {
@@ -114,7 +120,7 @@ func TestTaggingMemoryIndependentOfTrackSize(t *testing.T) {
 				t.Errorf("tagging a %d MB track allocated %d KB, want under %d KB", size>>20, got>>10, limit>>10)
 			}
 			fi, err := os.Stat(final)
-			if err != nil || fi.Size() < size {
+			if err != nil || fi.Size() < size+coverSize {
 				t.Errorf("tagged file lost audio: stat %v, err %v", fi, err)
 			}
 		})
@@ -123,7 +129,7 @@ func TestTaggingMemoryIndependentOfTrackSize(t *testing.T) {
 
 func BenchmarkMemTagFLAC(b *testing.B) {
 	dir := b.TempDir()
-	os.WriteFile(filepath.Join(dir, "cover.jpg"), make([]byte, 300<<10), 0644)
+	os.WriteFile(filepath.Join(dir, "cover.jpg"), make([]byte, 1364034), 0644)
 	tags := map[string]interface{}{"title": "Song", "track_number": float64(1)}
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
@@ -140,7 +146,7 @@ func BenchmarkMemTagFLAC(b *testing.B) {
 
 func BenchmarkMemTagMP3(b *testing.B) {
 	dir := b.TempDir()
-	os.WriteFile(filepath.Join(dir, "cover.jpg"), make([]byte, 300<<10), 0644)
+	os.WriteFile(filepath.Join(dir, "cover.jpg"), make([]byte, 1364034), 0644)
 	tags := map[string]interface{}{"title": "Song", "track_number": float64(1)}
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {

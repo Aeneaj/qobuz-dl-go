@@ -38,7 +38,14 @@ func tagFLAC(w io.Writer, tmpFile, coverDir, finalFile string, track, album map[
 	var cover []byte
 	if embedArt {
 		var err error
-		if cover, err = readCover(coverDir); err != nil {
+		cover, err = readCover(coverDir)
+		if err == nil && len(cover) > maxFLACPicture {
+			// The block length is 24 bits: a bigger cover would be written
+			// with a wrapped length and corrupt the file.
+			err = fmt.Errorf("%d bytes is over the %d a FLAC block holds", len(cover), maxFLACPicture)
+			cover = nil
+		}
+		if err != nil {
 			fmt.Fprintf(w, "\033[33mWarning: could not embed cover: %v\033[0m\n", err)
 		}
 	}
@@ -102,6 +109,7 @@ func buildFLACTags(track, album map[string]interface{}, isTrack bool) map[string
 type flacBlock struct {
 	blockType byte
 	data      []byte
+	tail      []byte // written after data but never copied into it: the cover image
 }
 
 // writeFLACMeta rewrites the metadata of a FLAC file in one pass: the
@@ -119,7 +127,7 @@ func writeFLACMeta(path string, tags map[string]string, cover []byte) error {
 	}
 
 	// Vorbis Comment belongs right after STREAMINFO; without one, it goes last.
-	vc := flacBlock{typeVorbisComment, buildVorbisComment(tags)}
+	vc := flacBlock{blockType: typeVorbisComment, data: buildVorbisComment(tags)}
 	if i := slices.IndexFunc(blocks, func(b flacBlock) bool { return b.blockType == typeStreamInfo }); i >= 0 {
 		blocks = slices.Insert(blocks, i+1, vc)
 	} else {
@@ -127,9 +135,9 @@ func writeFLACMeta(path string, tags map[string]string, cover []byte) error {
 	}
 
 	if cover != nil {
-		blocks = append(blocks, flacBlock{typePicture, buildFLACPictureBlock(cover)})
+		blocks = append(blocks, flacBlock{typePicture, flacPictureHeader(len(cover)), cover})
 	}
-	return replaceHead(path, encodeFLACHead(blocks), audioAt)
+	return replaceHead(path, audioAt, encodeFLACHead(blocks)...)
 }
 
 // readFLACBlocks reads the metadata blocks at the head of a FLAC file,
@@ -169,7 +177,7 @@ func readFLACBlocks(path string, drop ...byte) ([]flacBlock, int64, error) {
 			if _, err := io.ReadFull(r, data); err != nil {
 				return nil, 0, fmt.Errorf("read FLAC block: %w", err)
 			}
-			blocks = append(blocks, flacBlock{bType, data})
+			blocks = append(blocks, flacBlock{blockType: bType, data: data})
 		}
 		offset += int64(len(hdr) + length)
 		if hdr[0]&0x80 != 0 {
@@ -180,33 +188,40 @@ func readFLACBlocks(path string, drop ...byte) ([]flacBlock, int64, error) {
 }
 
 // encodeFLACHead encodes the magic and blocks, flagging the last metadata
-// block as required by the format.
-func encodeFLACHead(blocks []flacBlock) []byte {
+// block as required by the format. A block's tail comes back as its own part,
+// so the cover image reaches the file without being copied.
+func encodeFLACHead(blocks []flacBlock) [][]byte {
 	size := 4
 	for _, b := range blocks {
 		size += 4 + len(b.data)
 	}
 	out := make([]byte, 0, size)
 	out = append(out, "fLaC"...)
+	var parts [][]byte
 	for i, b := range blocks {
 		header := b.blockType
 		if i == len(blocks)-1 {
 			header |= 0x80
 		}
-		length := len(b.data)
+		length := len(b.data) + len(b.tail)
 		out = append(out, header,
 			byte(length>>16), byte(length>>8), byte(length))
 		out = append(out, b.data...)
+		if len(b.tail) > 0 {
+			parts = append(parts, out, b.tail)
+			out = out[len(out):]
+		}
 	}
-	return out
+	return append(parts, out)
 }
 
-// replaceHead replaces everything before audioAt in path with head. The audio
+// replaceHead replaces everything before audioAt in path with the head parts,
+// written in order. The audio
 // goes file to file through io.Copy — on Linux copy_file_range, so it never
 // enters user space — and memory stays at the size of the metadata however
 // big the track is. The result is built next to path and renamed over it
 // only once complete: a failed rewrite leaves the original untouched.
-func replaceHead(path string, head []byte, audioAt int64) error {
+func replaceHead(path string, audioAt int64, head ...[]byte) error {
 	src, err := os.Open(path)
 	if err != nil {
 		return err
@@ -221,7 +236,11 @@ func replaceHead(path string, head []byte, audioAt int64) error {
 	if err != nil {
 		return err
 	}
-	_, err = dst.Write(head)
+	for _, part := range head {
+		if err == nil {
+			_, err = dst.Write(part)
+		}
+	}
 	if err == nil {
 		_, err = io.Copy(dst, src)
 	}
@@ -266,25 +285,30 @@ func buildVorbisComment(tags map[string]string) []byte {
 	return buf
 }
 
-func buildFLACPictureBlock(imgData []byte) []byte {
+// maxFLACPicture is the largest cover that fits a PICTURE block: its length
+// field is 24 bits and the header fields before the image take 42 bytes.
+const maxFLACPicture = 1<<24 - 1 - 42
+
+// flacPictureHeader returns the PICTURE block fields that precede n bytes of
+// image data; the image itself is written after it, uncopied.
+func flacPictureHeader(n int) []byte {
 	mimeType := "image/jpeg"
 	desc := ""
 	// FLAC picture block layout (all big-endian uint32):
 	// picture_type, mime_length, mime, desc_length, desc,
 	// width, height, color_depth, color_count, data_length, data
 	be := binary.BigEndian
-	buf := make([]byte, 0, 32+len(mimeType)+len(imgData))
+	buf := make([]byte, 0, 32+len(mimeType))
 	buf = be.AppendUint32(buf, 3) // Front cover
 	buf = be.AppendUint32(buf, uint32(len(mimeType)))
-	buf = append(buf, []byte(mimeType)...)
+	buf = append(buf, mimeType...)
 	buf = be.AppendUint32(buf, uint32(len(desc)))
-	buf = append(buf, []byte(desc)...)
+	buf = append(buf, desc...)
 	buf = be.AppendUint32(buf, 0) // width (unknown)
 	buf = be.AppendUint32(buf, 0) // height
 	buf = be.AppendUint32(buf, 0) // color depth
 	buf = be.AppendUint32(buf, 0) // color count
-	buf = be.AppendUint32(buf, uint32(len(imgData)))
-	buf = append(buf, imgData...)
+	buf = be.AppendUint32(buf, uint32(n))
 	return buf
 }
 
@@ -384,14 +408,18 @@ func writeID3v23(path string, tags map[string]string, embedArt bool, coverDir st
 		frames = append(frames, frame...)
 	}
 
+	// The APIC frame goes last so the image can follow the header parts
+	// uncopied.
+	var img []byte
 	if embedArt {
-		if imgData, err := readCover(coverDir); err == nil {
-			frames = append(frames, buildAPICFrame(imgData)...)
+		if data, err := readCover(coverDir); err == nil {
+			img = data
+			frames = append(frames, apicFrameHeader(len(img))...)
 		}
 	}
 
 	// ID3v2.3 header: "ID3", version 2.3.0, flags=0, syncsafe size
-	size := len(frames)
+	size := len(frames) + len(img)
 	syncsafe := toSyncsafe(size)
 	header := []byte{
 		'I', 'D', '3',
@@ -404,7 +432,7 @@ func writeID3v23(path string, tags map[string]string, embedArt bool, coverDir st
 	if err != nil {
 		return err
 	}
-	return replaceHead(path, append(header, frames...), audioAt)
+	return replaceHead(path, audioAt, append(header, frames...), img)
 }
 
 func buildTextFrame(id, text string) []byte {
@@ -420,20 +448,18 @@ func buildTextFrame(id, text string) []byte {
 	return append(frame, frameData...)
 }
 
-func buildAPICFrame(imgData []byte) []byte {
-	// APIC: encoding(1) + mime(ascii+0x00) + pic_type(1) + desc(0x00 0x00) + data
-	mime := "image/jpeg\x00"
-	content := append([]byte{0x00}, []byte(mime)...)
-	content = append(content, 0x03) // front cover
-	content = append(content, 0x00) // empty description (Latin-1)
-	content = append(content, imgData...)
-	size := len(content)
+// apicFrameHeader returns an APIC frame up to where its n bytes of image
+// data begin; the image itself is written after it, uncopied.
+func apicFrameHeader(n int) []byte {
+	// APIC: encoding(1) + mime(ascii+0x00) + pic_type(1) + desc(0x00) + data
+	const prefix = "\x00image/jpeg\x00\x03\x00" // Latin-1, front cover, empty description
+	size := len(prefix) + n
 	frame := []byte{
 		'A', 'P', 'I', 'C',
 		byte(size >> 24), byte(size >> 16), byte(size >> 8), byte(size),
 		0x00, 0x00,
 	}
-	return append(frame, content...)
+	return append(frame, prefix...)
 }
 
 func encodeUTF16LE(s string) []byte {

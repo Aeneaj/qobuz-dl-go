@@ -79,7 +79,7 @@ func walkFLAC(t *testing.T, data []byte) ([]flacBlock, []byte) {
 		if pos+n > len(data) {
 			t.Fatalf("block %d overruns end of file", len(blocks))
 		}
-		blocks = append(blocks, flacBlock{bType, data[pos : pos+n]})
+		blocks = append(blocks, flacBlock{blockType: bType, data: data[pos : pos+n]})
 		pos += n
 		if isLast {
 			return blocks, data[pos:]
@@ -215,6 +215,33 @@ func TestWriteID3v23_SkipsExistingID3(t *testing.T) {
 }
 
 // ---- Format helpers tests ----
+
+// The tag size in the ID3 header must cover the embedded image, which is
+// written after the frames rather than copied into them: a player seeks
+// 10+size bytes to find the audio.
+func TestWriteID3v23_SizeCoversEmbeddedCover(t *testing.T) {
+	dir := t.TempDir()
+	tmp := filepath.Join(dir, ".01.tmp")
+	audio := []byte("\xff\xfbtest audio")
+	os.WriteFile(tmp, audio, 0644)
+	cover := []byte("JPEGDATA")
+	os.WriteFile(filepath.Join(dir, "cover.jpg"), cover, 0644)
+
+	if err := writeID3v23(tmp, map[string]string{"TIT2": "New"}, true, dir); err != nil {
+		t.Fatalf("writeID3v23: %v", err)
+	}
+	data, _ := os.ReadFile(tmp)
+	size := int(data[6])<<21 | int(data[7])<<14 | int(data[8])<<7 | int(data[9])
+	if 10+size > len(data) {
+		t.Fatalf("tag size %d overruns the %d-byte file", size, len(data))
+	}
+	if tag := data[:10+size]; !bytes.HasSuffix(tag, cover) {
+		t.Error("tag does not end with the cover image")
+	}
+	if got := data[10+size:]; !bytes.Equal(got, audio) {
+		t.Errorf("audio after the tag = %q, want %q", got, audio)
+	}
+}
 
 func TestFormatGenres(t *testing.T) {
 	genres := []string{
@@ -563,7 +590,7 @@ var _ = filepath.Join
 // Vorbis Comment block right next to it in the same file.
 func TestBuildFLACPictureBlock(t *testing.T) {
 	img := bytes.Repeat([]byte{0xAB}, 300) // >255 so the length bytes disagree LE vs BE
-	b := buildFLACPictureBlock(img)
+	b := append(flacPictureHeader(len(img)), img...)
 
 	be := binary.BigEndian
 	if got := be.Uint32(b[0:4]); got != 3 {
@@ -596,4 +623,39 @@ func TestBuildFLACPictureBlock(t *testing.T) {
 func makeFakeMP3() []byte {
 	out := []byte{'I', 'D', '3', 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
 	return append(out, 0xFF, 0xFB, 0x90, 0x00, 0x00, 0x00, 0x00, 0x00)
+}
+
+// A PICTURE block's length is 24 bits. A cover past that used to be written
+// with a wrapped length, leaving a FLAC no decoder could parse; now it is left
+// out with a warning and the rest of the tags still go in.
+func TestTagFLACSkipsOversizedCover(t *testing.T) {
+	dir := t.TempDir()
+	tmp, final := filepath.Join(dir, ".01.tmp"), filepath.Join(dir, "01.flac")
+	if err := os.WriteFile(tmp, makeFakeFLAC(), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "cover.jpg"), make([]byte, maxFLACPicture+1), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var warn bytes.Buffer
+	tags := map[string]interface{}{"title": "Big Cover"}
+	if err := tagFLAC(&warn, tmp, dir, final, tags, tags, false, true); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(warn.String(), "could not embed cover") {
+		t.Errorf("no warning for an oversized cover, got %q", warn.String())
+	}
+	out, err := os.ReadFile(final)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocks, _ := walkFLAC(t, out)
+	for _, b := range blocks {
+		if b.blockType == typePicture {
+			t.Error("oversized cover was embedded")
+		}
+	}
+	if !strings.Contains(string(blocks[1].data), "TITLE=Big Cover") {
+		t.Error("tags missing after skipping the cover")
+	}
 }
