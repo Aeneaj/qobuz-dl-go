@@ -113,28 +113,30 @@ func capitalizeFirst(s string) string {
 	return strings.ToUpper(s[:1]) + s[1:]
 }
 
-// Secrets extracts the signing secrets from bundle.js.
-func (b *Bundle) Secrets() (map[string]string, error) {
+// Secrets extracts the signing secrets from bundle.js, in the order the
+// Python original tries them: timezones as they first appear in the bundle,
+// with the second moved to the front (OrderedDict.move_to_end(last=False)).
+// The order used to come from ranging over a map — different on every call,
+// so each --reset or oauth wrote config.ini in a new order and CfgSetup spent
+// a varying number of requests on invalid secrets before the valid one.
+func (b *Bundle) Secrets() ([]string, error) {
 	seeds := map[string][]string{}
+	var tzList []string // first-seen order
 
 	// Collect seed + timezone pairs
 	for _, m := range reSeedTimezone.FindAllStringSubmatch(b.content, -1) {
 		seed := m[reSeedTimezone.SubexpIndex("seed")]
 		tz := m[reSeedTimezone.SubexpIndex("timezone")]
+		if _, ok := seeds[tz]; !ok {
+			tzList = append(tzList, tz)
+		}
 		seeds[tz] = append(seeds[tz], seed)
 	}
 	if len(seeds) == 0 {
 		return nil, fmt.Errorf("no seeds found in bundle")
 	}
-
-	// Build ordered timezone list (replicate Python OrderedDict + move_to_end logic)
-	tzList := make([]string, 0, len(seeds))
-	for tz := range seeds {
-		tzList = append(tzList, tz)
-	}
 	if len(tzList) >= 2 {
-		// move second element to front
-		tzList[0], tzList[1] = tzList[1], tzList[0]
+		tzList[0], tzList[1] = tzList[1], tzList[0] // second to the front
 	}
 
 	// Build regex for info/extras
@@ -153,9 +155,9 @@ func (b *Bundle) Secrets() (map[string]string, error) {
 		seeds[tz] = append(seeds[tz], info, extras)
 	}
 
-	secrets := map[string]string{}
-	for tz, parts := range seeds {
-		joined := strings.Join(parts, "")
+	var secrets []string
+	for _, tz := range tzList {
+		joined := strings.Join(seeds[tz], "")
 		if len(joined) <= 44 {
 			continue
 		}
@@ -163,10 +165,10 @@ func (b *Bundle) Secrets() (map[string]string, error) {
 		// Pad to multiple of 4 to satisfy StdEncoding (Python's b64decode does this automatically)
 		padded := trimmed + strings.Repeat("=", (4-len(trimmed)%4)%4)
 		decoded, err := base64.StdEncoding.DecodeString(padded)
-		if err != nil {
+		if err != nil || len(decoded) == 0 {
 			continue
 		}
-		secrets[tz] = string(decoded)
+		secrets = append(secrets, string(decoded))
 	}
 	return secrets, nil
 }

@@ -49,16 +49,8 @@ func oauthLogin(ctx context.Context, codeOrURL string) error {
 		if pk := b.PrivateKey(); pk != "" {
 			privateKey = pk
 		}
-		if sec, err := b.Secrets(); err == nil {
-			var fresh []string
-			for _, v := range sec {
-				if v != "" {
-					fresh = append(fresh, v)
-				}
-			}
-			if len(fresh) > 0 {
-				secrets = fresh
-			}
+		if sec, err := b.Secrets(); err == nil && len(sec) > 0 {
+			secrets = sec
 		}
 
 		// Persist refreshed bundle values so future runs don't need to re-fetch

@@ -190,14 +190,8 @@ func setupPreferences(ctx context.Context, kv map[string]string) error {
 	if err != nil {
 		return err
 	}
-	var secList []string
-	for _, v := range secrets {
-		if v != "" {
-			secList = append(secList, v)
-		}
-	}
 	kv["app_id"] = appID
-	kv["secrets"] = strings.Join(secList, ",")
+	kv["secrets"] = strings.Join(secrets, ",")
 	kv["private_key"] = b.PrivateKey()
 	return nil
 }

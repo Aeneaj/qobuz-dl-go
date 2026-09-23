@@ -11,8 +11,10 @@ const fakeBundleJS = `
 var production:{api:{appId:"123456789",appSecret:"abcdef1234567890abcdef1234567890"}}
 a.initialSeed("QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB",window.utimezone.london)
 a.initialSeed("RERERERERERERERERERERERERERERERE",window.utimezone.berlin)
+a.initialSeed("R0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dH",window.utimezone.abidjan)
 name:"timezones/London",info:"QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJC",extras:"Q0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0ND"
 name:"timezones/Berlin",info:"RUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVF",extras:"RkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZG"
+name:"timezones/Abidjan",info:"SEhISEhISEhISEhISEhISEhISEhISEhI",extras:"SUlJSUlJSUlJSUlJSUlJSUlJSUlJSUlJ"
 privateKey: "mySecretKey123"
 `
 
@@ -51,19 +53,23 @@ func TestBundlePrivateKey_Missing(t *testing.T) {
 	}
 }
 
-func TestBundleSecrets_ReturnsMap(t *testing.T) {
+// Secrets come back in the Python original's order — bundle order with the
+// second timezone moved to the front — and the same on every call. The
+// fixture lists london, berlin, abidjan; each secret decodes to its seed's
+// letter repeated (AAA…, DDD…, GGG…), which names the timezone it came from.
+func TestBundleSecrets_Order(t *testing.T) {
 	b := &Bundle{content: fakeBundleJS}
-	secrets, err := b.Secrets()
-	if err != nil {
-		t.Fatalf("Secrets: %v", err)
-	}
-	if len(secrets) == 0 {
-		t.Error("expected at least one secret")
-	}
-	// All secrets must be non-empty strings
-	for tz, sec := range secrets {
-		if sec == "" {
-			t.Errorf("timezone %q has empty secret", tz)
+	for i := 0; i < 20; i++ {
+		secrets, err := b.Secrets()
+		if err != nil {
+			t.Fatalf("Secrets: %v", err)
+		}
+		var got string
+		for _, s := range secrets {
+			got += s[:1]
+		}
+		if got != "DAG" { // berlin, london, abidjan
+			t.Fatalf("call %d: secrets from %q, want berlin, london, abidjan (DAG)", i, got)
 		}
 	}
 }
@@ -125,28 +131,5 @@ func TestBundleRegexes(t *testing.T) {
 				t.Errorf("regex match = %v, want %v for content: %q", found, tt.found, tt.content)
 			}
 		})
-	}
-}
-
-func TestBundleSecrets_Decodes(t *testing.T) {
-	// Seeds that produce a known decoded output
-	// seed "dGVzdA==" decodes to "test" but we need to trim last 44 chars
-	// So use longer seeds: base64("hello world this is a test secret") = ...
-	// Let's just test that the real fakeBundleJS produces non-empty secrets
-	b := &Bundle{content: fakeBundleJS}
-	secrets, err := b.Secrets()
-	if err != nil {
-		// No seeds found -> error is acceptable if the fake JS doesn't have the right format
-		t.Logf("Secrets returned error (may be due to short test seeds): %v", err)
-		return
-	}
-	if len(secrets) == 0 {
-		t.Error("expected at least one secret from valid fake bundle")
-	}
-	for tz, sec := range secrets {
-		t.Logf("timezone %s -> secret len=%d", tz, len(sec))
-		if sec == "" {
-			t.Errorf("empty secret for timezone %s", tz)
-		}
 	}
 }
