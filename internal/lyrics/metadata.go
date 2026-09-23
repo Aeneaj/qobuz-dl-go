@@ -158,7 +158,11 @@ func readMP3(path string, info AudioInfo) (AudioInfo, error) {
 			id3End += 10 // ID3v2.4 footer
 		}
 
-		tlenMs := readID3Frames(io.NewSectionReader(f, 10, int64(size)), &info, id3Version)
+		frames := int64(10)
+		if hdr[5]&0x40 != 0 {
+			frames += extendedHeaderSize(f, id3Version)
+		}
+		tlenMs := readID3Frames(io.NewSectionReader(f, frames, max(0, 10+int64(size)-frames)), &info, id3Version)
 		if tlenMs > 0 {
 			info.Duration = tlenMs / 1000
 		}
@@ -172,6 +176,22 @@ func readMP3(path string, info AudioInfo) (AudioInfo, error) {
 		info.Duration = readXingDuration(f, id3End)
 	}
 	return info, nil
+}
+
+// extendedHeaderSize returns the length of the ID3 extended header that
+// starts at f's current offset, right after the 10-byte tag header. The frames
+// follow it; reading it as a frame made the walk stop before the first real
+// one and the file came back with no tags. v2.3 stores the size without its own
+// 4 bytes, v2.4 as a syncsafe integer that includes them.
+func extendedHeaderSize(f io.Reader, version byte) int64 {
+	var b [4]byte
+	if _, err := io.ReadFull(f, b[:]); err != nil {
+		return 0
+	}
+	if version >= 4 {
+		return int64(b[0]&0x7F)<<21 | int64(b[1]&0x7F)<<14 | int64(b[2]&0x7F)<<7 | int64(b[3]&0x7F)
+	}
+	return 4 + int64(binary.BigEndian.Uint32(b[:]))
 }
 
 // maxTextFrame caps the text frames readID3Frames will load. Real ones are

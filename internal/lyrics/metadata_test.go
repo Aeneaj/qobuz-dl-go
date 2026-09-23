@@ -278,6 +278,30 @@ func TestReadMP3_TPE2Fallback(t *testing.T) {
 	}
 }
 
+// An extended header sits between the tag header and the first frame. Read as
+// a frame, it ended the walk: the title came back empty and LRCLIB was asked
+// for the file name instead. v2.3 and v2.4 measure it differently.
+func TestReadMP3_ExtendedHeader(t *testing.T) {
+	cases := []struct {
+		name    string
+		version byte
+		ext     []byte
+	}{
+		{"v2.3, size excludes itself", 3, []byte{0, 0, 0, 6, 0, 0, 0, 0, 0, 0}},
+		{"v2.4, syncsafe size includes itself", 4, []byte{0, 0, 0, 6, 1, 0}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			data := fakeMP3(append(c.ext, id3FrameLatin1("TIT2", "Caf\xe9")...)) // é in Latin-1
+			data[3], data[5] = c.version, 0x40
+			info, err := ReadAudio(writeTmp(t, ".mp3", data))
+			if err != nil || info.Title != "Café" {
+				t.Errorf("ReadAudio = %+v, %v; want title Café", info, err)
+			}
+		})
+	}
+}
+
 func TestReadMP3_NoID3Tag(t *testing.T) {
 	// Bare MPEG bytes — must not error or crash.
 	data := []byte{0xFF, 0xFB, 0x90, 0x00, 0x00, 0x00, 0x00, 0x00}
