@@ -40,8 +40,8 @@ func (d *Downloader) downloadWithProgress(ctx context.Context, rawURL, dest stri
 
 		resp, err := d.httpClient.Do(req)
 		if err != nil {
-			if isContextError(err) {
-				return err
+			if ctx.Err() != nil {
+				return ctx.Err()
 			}
 			continue // network error before response — retry
 		}
@@ -101,8 +101,11 @@ func (d *Downloader) downloadWithProgress(ctx context.Context, rawURL, dest stri
 			return nil
 		}
 
-		if isContextError(copyErr) {
-			return copyErr
+		// Only the caller's context means "stop": a network timeout wraps
+		// context.DeadlineExceeded too, and reading it as a cancel dropped the
+		// retry and deleted the partial file.
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
 		if !isRecoverableErr(copyErr) {
 			return copyErr
@@ -214,8 +217,41 @@ func finalizeBar(bar ProgressBar, totalSize, written int64) {
 	bar.SetTotal(completedAt, true)
 }
 
-func isContextError(err error) bool {
-	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+// stallTimeout is how long a download connection may go without receiving a
+// byte before it is dropped and the transfer resumed by Range. It bounds a dead
+// connection, not the transfer: a slow download that keeps moving never hits
+// it. The old whole-request limit (http.Client.Timeout, 10 minutes) failed
+// every track that took longer than that, whatever its speed.
+var stallTimeout = 60 * time.Second
+
+// newDownloadClient returns the HTTP client for audio and extras. Every read
+// on its connections carries a stallTimeout deadline, which also covers
+// waiting for the response headers.
+// ponytail: the deadline is per connection; over HTTP/2 a single stalled
+// stream sharing a live connection is not caught. Per-stream idle timers
+// if that ever shows up.
+func newDownloadClient() *http.Client {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	t.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		c, err := dialer.DialContext(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		return stallConn{c}, nil
+	}
+	return &http.Client{Transport: t}
+}
+
+// stallConn pushes the read deadline forward before every read, so it only
+// fires after stallTimeout without data.
+type stallConn struct{ net.Conn }
+
+func (c stallConn) Read(b []byte) (int, error) {
+	if err := c.SetReadDeadline(time.Now().Add(stallTimeout)); err != nil {
+		return 0, err
+	}
+	return c.Conn.Read(b)
 }
 
 func isRecoverableErr(err error) bool {

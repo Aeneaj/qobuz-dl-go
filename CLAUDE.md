@@ -631,7 +631,16 @@ lyrics_test.go    — buildLabel (formato, ancho fijo, truncado), lrcPathFor, sc
       resume desde offset en disco via `Range: bytes=N-`, append al archivo parcial en vez de sobrescribir,
       bar fast-forward a bytes ya descargados via `barCredited`, maneja servidores que ignoran Range
       (responden 200 en vez de 206): trunca y reinicia limpio, cierra `resp.Body` explícitamente
-      cada intento para no filtrar conexiones. Helpers: `isContextError`, `isRecoverableErr`.
+      cada intento para no filtrar conexiones. Helper: `isRecoverableErr`.
+      **Sin tope total por petición** (arreglado 2026-09-23): el cliente llevaba
+      `http.Client{Timeout: 10 * time.Minute}`, que limita la petición entera cuerpo incluido,
+      y su error envuelve `context.DeadlineExceeded`; `isContextError` lo tomaba por Ctrl+C,
+      no reintentaba y borraba el `.tmp`. Toda pista que tardara más de 10 minutos fallaba
+      siempre (200 MB a menos de 333 KB/s). Ahora `newDownloadClient` pone un deadline de
+      lectura que avanza con cada `Read` (`stallTimeout`, 60 s): corta una conexión muerta,
+      nunca una lenta, y el intento siguiente reanuda por `Range`. "¿Paró el usuario?" se
+      decide con `ctx.Err()`, no por el tipo del error. `TestDownloadWithProgress` cubre
+      descarga lenta, cuelgue a mitad, cabeceras lentas, timeout del cliente y cancelación.
 - [x] Descarga de letras sincronizadas — `internal/lyrics/`
       LRCLIB API pública (sin auth); prioriza syncedLyrics sobre plainLyrics; rate limiting 500ms/req;
       retry único en 429; skip si ya existe .lrc; barra mpb con etiqueta dinámica; zero-deps para parseo FLAC/MP3.

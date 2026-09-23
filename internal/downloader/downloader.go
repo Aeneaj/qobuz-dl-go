@@ -176,7 +176,7 @@ func New(client *api.Client, opts Options) (*Downloader, error) {
 	dl := &Downloader{
 		Client:     client,
 		Opts:       opts,
-		httpClient: &http.Client{Timeout: 10 * time.Minute},
+		httpClient: newDownloadClient(),
 	}
 	if !opts.NoDB && opts.DBPath != "" {
 		db, err := openDB(opts.DBPath)
