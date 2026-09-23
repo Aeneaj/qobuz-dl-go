@@ -86,6 +86,7 @@ type Model struct {
 	done        int
 	failed      int
 	width       int
+	height      int  // rows available to View; 0 = unknown, render everything
 	shimmer     int  // 0–19, cycles every tick to animate active bars
 	ticking     bool // true while at least one track is active
 }
@@ -109,7 +110,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
+		m.width, m.height = msg.Width, msg.Height
 
 	case MsgAlbum:
 		// The header follows whatever is being fetched right now, but the
@@ -163,9 +164,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.done++
 			}
 		}
-		if !m.hasActive() {
-			m.ticking = false
-		}
+		// ticking stays set: the pending tick clears it when it finds nothing
+		// active. Clearing it here let the next MsgSetTotal start a second
+		// tick chain alongside the first, doubling the render rate.
 
 	case MsgFailed:
 		if i, ok := m.index[msg.ID]; ok {
@@ -176,9 +177,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.failed++
 			}
-		}
-		if !m.hasActive() {
-			m.ticking = false
 		}
 
 	case msgTick:
@@ -244,7 +242,8 @@ func (m Model) View() string {
 	b.WriteString(sDim.Render(strings.Repeat("─", w)))
 	b.WriteString("\n\n")
 
-	for _, e := range m.tracks {
+	lo, hi := m.visibleTracks()
+	for _, e := range m.tracks[lo:hi] {
 		b.WriteString(m.viewTrack(e, w))
 		b.WriteString("\n")
 	}
@@ -255,6 +254,58 @@ func (m Model) View() string {
 	b.WriteString(m.viewFooter())
 
 	return b.String()
+}
+
+// viewChrome is how many rows View spends outside the track list: the
+// three-line header box, the batch bar, two rules, the footer and blank lines.
+const viewChrome = 11
+
+// visibleTracks picks the tracks that fit on screen. A long run — a whole
+// discography — registers thousands of tracks, and rendering all of them
+// every frame costs time and garbage in proportion to the session, not the
+// screen: the terminal only keeps the last rows, which also pushed the header
+// out of view. The window starts at the first unfinished track and fills
+// forward, then backfills with the most recently finished ones.
+func (m Model) visibleTracks() (lo, hi int) {
+	if m.height <= 0 {
+		return 0, len(m.tracks)
+	}
+	budget := max(1, m.height-viewChrome)
+	first := len(m.tracks)
+	for i, e := range m.tracks {
+		if e.state == statePending || e.state == stateActive {
+			first = i
+			break
+		}
+	}
+	lo, hi = first, first
+	for hi < len(m.tracks) && m.tracks[hi].rows() <= budget {
+		budget -= m.tracks[hi].rows()
+		hi++
+	}
+	for lo > 0 && m.tracks[lo-1].rows() <= budget {
+		budget -= m.tracks[lo-1].rows()
+		lo--
+	}
+	return lo, hi
+}
+
+// rows is how many lines viewTrack renders for e.
+func (e trackEntry) rows() int {
+	switch e.state {
+	case stateActive:
+		if e.total > 0 || e.speed > 0 {
+			return 3
+		}
+		return 2
+	case stateDone:
+		return 2
+	case stateFailed:
+		if e.errMsg != "" {
+			return 2
+		}
+	}
+	return 1
 }
 
 func (m Model) viewHeader(w int) string {
@@ -429,24 +480,24 @@ func drawBar(current, total int64, width int, state trackState, shimmer int) str
 		}
 	}
 	filled := int(pct * float64(width))
-
-	var sb strings.Builder
-	for i := 0; i < width; i++ {
-		switch {
-		case i < filled-1:
-			sb.WriteString(sBlue.Render("█"))
-		case i == filled-1:
-			// Shimmer: tip alternates between white "▌" and blue "█"
-			if shimmer%4 < 2 {
-				sb.WriteString(lipgloss.NewStyle().Foreground(cWhite).Bold(true).Render("▌"))
-			} else {
-				sb.WriteString(sBlue.Render("█"))
-			}
-		default:
-			sb.WriteString(sDim.Render("░"))
-		}
+	if filled == 0 {
+		return sDim.Render(strings.Repeat("░", width))
 	}
-	return sb.String()
+
+	// One Render per run of cells, not per cell: styling each cell alone cost
+	// ~75 Render calls and an escape sequence per character on every frame.
+	tip := sBlue.Render("█")
+	if shimmer%4 < 2 { // shimmer: the tip alternates between white "▌" and blue "█"
+		tip = sTip.Render("▌")
+	}
+	out := tip
+	if filled > 1 {
+		out = sBlue.Render(strings.Repeat("█", filled-1)) + tip
+	}
+	if filled < width {
+		out += sDim.Render(strings.Repeat("░", width-filled))
+	}
+	return out
 }
 
 // ── format helpers ────────────────────────────────────────────────────────────

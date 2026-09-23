@@ -24,6 +24,7 @@ var (
 	sFaint  = lipgloss.NewStyle().Foreground(cFaint)
 	sBlue   = lipgloss.NewStyle().Bold(true).Foreground(cBlue)
 	sGreen  = lipgloss.NewStyle().Bold(true).Foreground(cGreen)
+	sTip    = lipgloss.NewStyle().Bold(true).Foreground(cWhite) // shimmering tip of an active bar
 	sRed    = lipgloss.NewStyle().Bold(true).Foreground(cRed)
 	sYellow = lipgloss.NewStyle().Foreground(cYellow)
 	sPurple = lipgloss.NewStyle().Foreground(cPurple)

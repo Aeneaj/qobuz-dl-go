@@ -153,6 +153,7 @@ func (s *Shell) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		s.width, s.height = msg.Width, msg.Height
 		s.results.height = max(5, msg.Height-14)
+		msg.Height -= shellChrome
 		m, _ := s.dl.Update(msg)
 		s.dl = m.(Model)
 		return s, nil
@@ -399,7 +400,7 @@ func (s *Shell) start(k runKind, fn func(context.Context) (string, error)) (tea.
 	s.screen = scRunning
 	s.status = T("working…")
 	s.dl = NewModel()
-	s.dl.width = s.width
+	s.dl.width, s.dl.height = s.width, s.height-shellChrome
 
 	return s, func() tea.Msg {
 		summary, err := fn(ctx)
@@ -430,6 +431,11 @@ func searchKind(a action) string {
 }
 
 // ---- view -------------------------------------------------------------------
+
+// shellChrome is how many rows View spends around the body: the three-line
+// header box, a blank line, the rule and the footer. The progress Model is
+// sized to what is left.
+const shellChrome = 6
 
 func (s *Shell) View() string {
 	w := max(40, s.width)
