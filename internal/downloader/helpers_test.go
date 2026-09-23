@@ -109,11 +109,25 @@ func TestExpandPlaceholders(t *testing.T) {
 			attrs:  map[string]string{"{title}": `a:b"c|d?e*f`},
 			want:   "a_b_c_d_e_f",
 		},
+		{
+			// A value is text, not template: a title containing "{artist}"
+			// stays literal. Replacing key by key rescanned earlier values,
+			// in map order — the same track got a different name from run
+			// to run, and the already-downloaded check missed it.
+			name:   "placeholder inside a value stays literal",
+			format: "{tracknumber}. {tracktitle}",
+			attrs:  map[string]string{"{tracknumber}": "01", "{tracktitle}": "Song for {artist}", "{artist}": "Björk", "{album}": "Post"},
+			want:   "01. Song for {artist}",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := expandPlaceholders(c.format, c.attrs); got != c.want {
-				t.Errorf("got %q, want %q", got, c.want)
+			// Repeated: map order is random, so an order-dependent
+			// expansion only shows up on some runs.
+			for i := 0; i < 50; i++ {
+				if got := expandPlaceholders(c.format, c.attrs); got != c.want {
+					t.Fatalf("run %d: got %q, want %q", i, got, c.want)
+				}
 			}
 		})
 	}

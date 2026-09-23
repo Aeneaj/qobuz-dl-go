@@ -102,14 +102,19 @@ func cleanFormatStr(w io.Writer, format, fileFormat string) string {
 // format string like "{artist}/{album}" contain real subfolder separators
 // while metadata values (e.g. an artist named "AC/DC") cannot inject them.
 func expandPlaceholders(format string, attrs map[string]string) string {
-	result := format
+	pairs := make([]string, 0, 2*len(attrs))
 	for k, v := range attrs {
 		if v == "" || v == "<nil>" || v == "%!v(MISSING)" {
 			v = "n_a"
 		}
-		result = strings.ReplaceAll(result, k, sanitize(v))
+		pairs = append(pairs, k, sanitize(v))
 	}
-	return result
+	// One pass over the template: a substituted value is never scanned again,
+	// so a title containing "{artist}" stays literal. Replacing key by key in
+	// map order did rescan them, and the result changed from run to run. No
+	// key is a prefix of another ("{x}" never starts "{y}"), so the order of
+	// pairs does not matter.
+	return strings.NewReplacer(pairs...).Replace(format)
 }
 
 // deliveredIsMP3 reports whether the file the API actually handed us is an MP3.
