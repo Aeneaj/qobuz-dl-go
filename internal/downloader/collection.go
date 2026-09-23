@@ -28,6 +28,23 @@ func collectPageItems(pages []map[string]interface{}, key string) []map[string]i
 	return items
 }
 
+// collectionIDs returns the ids of the items listed under key in pages,
+// passed through filter when it is not nil. Decoded items are 6–10 KB each —
+// a 10,000-album discography is 61 MB, measured against the real API — and
+// the download loop over them can run for hours; returning only the ids lets
+// the maps go as soon as this call returns.
+func collectionIDs(pages []map[string]interface{}, key string, filter func([]map[string]interface{}) []map[string]interface{}) []string {
+	items := collectPageItems(pages, key)
+	if filter != nil {
+		items = filter(items)
+	}
+	ids := make([]string, len(items))
+	for i, item := range items {
+		ids[i] = idStr(item["id"])
+	}
+	return ids
+}
+
 // downloadAlbumCollection downloads every album listed under itemKey in pages
 // into a directory named after the collection. kind names the collection in
 // the console output. smartDiscog applies the discography filter, which only
@@ -39,19 +56,21 @@ func (d *Downloader) downloadAlbumCollection(ctx context.Context, pages []map[st
 		return nil
 	}
 	name, _ := pages[0]["name"].(string)
-	items := collectPageItems(pages, itemKey)
+	var filter func([]map[string]interface{}) []map[string]interface{}
 	if smartDiscog {
-		items = smartDiscogFilter(name, items)
+		filter = func(items []map[string]interface{}) []map[string]interface{} {
+			return smartDiscogFilter(name, items)
+		}
 	}
+	ids := collectionIDs(pages, itemKey, filter)
 
 	dir := filepath.Join(d.Opts.Directory, sanitize(name))
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("create %s directory %q: %w", kind, dir, err)
 	}
-	fmt.Fprintf(d.termOut(), "\033[33mDownloading %s: %s (%d albums)\033[0m\n", kind, name, len(items))
+	fmt.Fprintf(d.termOut(), "\033[33mDownloading %s: %s (%d albums)\033[0m\n", kind, name, len(ids))
 
-	for _, item := range items {
-		id := idStr(item["id"])
+	for _, id := range ids {
 		if err := d.downloadAlbum(ctx, id, dir); err != nil {
 			fmt.Fprintf(d.termOut(), "\033[31mError on album %s: %v. Skipping...\033[0m\n", id, err)
 		}
@@ -69,10 +88,9 @@ func (d *Downloader) downloadPlaylist(ctx context.Context, pages []map[string]in
 		return fmt.Errorf("create playlist directory %q: %w", dir, err)
 	}
 
-	items := collectPageItems(pages, "tracks")
-	fmt.Fprintf(d.termOut(), "\033[33mDownloading playlist: %s (%d tracks)\033[0m\n", name, len(items))
-	for _, item := range items {
-		id := idStr(item["id"])
+	ids := collectionIDs(pages, "tracks", nil)
+	fmt.Fprintf(d.termOut(), "\033[33mDownloading playlist: %s (%d tracks)\033[0m\n", name, len(ids))
+	for _, id := range ids {
 		if err := d.downloadTrackByID(ctx, id, dir); err != nil {
 			fmt.Fprintf(d.termOut(), "\033[31mError on track %s: %v. Skipping...\033[0m\n", id, err)
 		}
