@@ -201,19 +201,19 @@ func (d *Downloader) HandleURL(ctx context.Context, rawURL string) error {
 	case "track":
 		return d.downloadTrackByID(ctx, itemID, d.Opts.Directory)
 	case "artist":
-		pages, err := d.Client.GetArtistMeta(ctx, itemID)
+		pages, err := fetchPages(ctx, d.Client.GetArtistMeta, itemID, "albums")
 		if err != nil {
 			return err
 		}
 		return d.downloadAlbumCollection(ctx, pages, "albums", "discography", d.Opts.SmartDiscog)
 	case "playlist":
-		pages, err := d.Client.GetPlaylistMeta(ctx, itemID)
+		pages, err := fetchPages(ctx, d.Client.GetPlaylistMeta, itemID, "tracks")
 		if err != nil {
 			return err
 		}
 		return d.downloadPlaylist(ctx, pages)
 	case "label":
-		pages, err := d.Client.GetLabelMeta(ctx, itemID)
+		pages, err := fetchPages(ctx, d.Client.GetLabelMeta, itemID, "albums")
 		if err != nil {
 			return err
 		}

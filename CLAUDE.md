@@ -99,8 +99,13 @@ código; cada hallazgo medido antes de tocarlo:
   `MsgSetTotal` abría una **segunda cadena de ticks** (`TestOneTickChain`); y `drawBar`
   hacía un `Render` por celda (~75 por barra), ahora uno por tramo.
 - **Colecciones**: `collectionIDs` devuelve solo los ids; los mapas decodificados (6–10 KB
-  por item) mueren al volver. El pico mientras se piden las páginas sigue ahí (todas las
-  páginas a la vez en `multiMeta`); bajarlo exige procesar página a página.
+  por item) mueren al volver. Y mientras se piden las páginas: `multiMeta` entrega cada
+  página por callback y `fetchPages`/`slimPage` guardan de cada item solo
+  `collectionFields` más el nombre del artista — lo que leen el bucle y
+  `smartDiscogFilter`. Bach, API real: pico 77,6 MB → 18,6 MB, mismos 10.000/644/181 ids
+  en el mismo orden. Si `smartDiscogFilter` empieza a leer un campo nuevo, **añádelo a
+  `collectionFields`**: `TestSlimPageKeepsWhatSmartDiscogReads` falla por cada campo que
+  falte, pero solo para los que ya cubre.
 - **Portada**: `replaceHead` recibe la cabecera en trozos y la imagen va como trozo propio,
   sin copiarse dentro del bloque PICTURE ni del frame APIC. Una portada de más de 16 MB
   ya no se incrusta: la longitud del bloque FLAC es de 24 bits y antes se envolvía,

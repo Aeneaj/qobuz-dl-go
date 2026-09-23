@@ -346,32 +346,36 @@ func (c *Client) SearchPlaylists(ctx context.Context, query string, limit int) (
 	return c.doGet(ctx, "playlist/search", url.Values{"query": {query}, "limit": {strconv.Itoa(limit)}})
 }
 
-// GetArtistMeta returns paginated artist metadata.
-func (c *Client) GetArtistMeta(ctx context.Context, id string) ([]map[string]interface{}, error) {
+// GetArtistMeta hands each page of the artist's metadata to each, in order.
+func (c *Client) GetArtistMeta(ctx context.Context, id string, each func(map[string]interface{})) error {
 	return c.multiMeta(ctx, "artist/get", "albums_count", url.Values{
 		"app_id":    {c.AppID},
 		"artist_id": {id},
 		"extra":     {"albums"},
-	})
+	}, each)
 }
 
-// GetPlaylistMeta returns paginated playlist metadata.
-func (c *Client) GetPlaylistMeta(ctx context.Context, id string) ([]map[string]interface{}, error) {
+// GetPlaylistMeta hands each page of the playlist's metadata to each, in order.
+func (c *Client) GetPlaylistMeta(ctx context.Context, id string, each func(map[string]interface{})) error {
 	return c.multiMeta(ctx, "playlist/get", "tracks_count", url.Values{
 		"extra":       {"tracks"},
 		"playlist_id": {id},
-	})
+	}, each)
 }
 
-// GetLabelMeta returns paginated label metadata.
-func (c *Client) GetLabelMeta(ctx context.Context, id string) ([]map[string]interface{}, error) {
+// GetLabelMeta hands each page of the label's metadata to each, in order.
+func (c *Client) GetLabelMeta(ctx context.Context, id string, each func(map[string]interface{})) error {
 	return c.multiMeta(ctx, "label/get", "albums_count", url.Values{
 		"label_id": {id},
 		"extra":    {"albums"},
-	})
+	}, each)
 }
 
-func (c *Client) multiMeta(ctx context.Context, endpoint, countKey string, baseParams url.Values) ([]map[string]interface{}, error) {
+// multiMeta fetches every page of a paginated endpoint and hands each one to
+// each as it arrives, instead of returning them all: the caller keeps what it
+// needs and the page goes. A 10,000-album discography is 20 pages and peaked
+// at 78 MB live when they were collected first.
+func (c *Client) multiMeta(ctx context.Context, endpoint, countKey string, baseParams url.Values, each func(map[string]interface{})) error {
 	const pageSize = 500
 
 	fetchPage := func(offset int) (map[string]interface{}, error) {
@@ -387,21 +391,20 @@ func (c *Client) multiMeta(ctx context.Context, endpoint, countKey string, baseP
 	// First page also gives us the total item count.
 	first, err := fetchPage(0)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	results := []map[string]interface{}{first}
-
 	total := 0
 	if v, ok := first[countKey].(float64); ok {
 		total = int(v)
 	}
+	each(first)
 
 	for offset := pageSize; offset < total; offset += pageSize {
 		page, err := fetchPage(offset)
 		if err != nil {
-			return results, err
+			return err
 		}
-		results = append(results, page)
+		each(page)
 	}
-	return results, nil
+	return nil
 }

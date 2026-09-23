@@ -28,6 +28,44 @@ func collectPageItems(pages []map[string]interface{}, key string) []map[string]i
 	return items
 }
 
+// collectionFields are the item fields the collection code reads: the id for
+// the download loop, and what smartDiscogFilter judges an album by (plus the
+// artist's name, kept by slimPage).
+var collectionFields = []string{"id", "title", "version", "maximum_bit_depth", "maximum_sampling_rate"}
+
+// fetchPages runs a paged metadata call and keeps, of each page as it
+// arrives, only its name and the items under key reduced to what the
+// collection code reads. A decoded page is ~3 MB of which the collection uses
+// a few fields; holding every full page peaked at 78 MB on a 10,000-album
+// discography.
+func fetchPages(ctx context.Context, get func(context.Context, string, func(map[string]interface{})) error, id, key string) ([]map[string]interface{}, error) {
+	var pages []map[string]interface{}
+	err := get(ctx, id, func(page map[string]interface{}) {
+		pages = append(pages, slimPage(page, key))
+	})
+	return pages, err
+}
+
+// slimPage returns page reduced to its name and, under key, the items with
+// only collectionFields and the artist's name.
+func slimPage(page map[string]interface{}, key string) map[string]interface{} {
+	full := collectPageItems([]map[string]interface{}{page}, key)
+	items := make([]interface{}, 0, len(full))
+	for _, item := range full {
+		slim := make(map[string]interface{}, len(collectionFields)+1)
+		for _, f := range collectionFields {
+			if v, ok := item[f]; ok {
+				slim[f] = v
+			}
+		}
+		if name := nestedStr(item, "artist", "name"); name != "" {
+			slim["artist"] = map[string]interface{}{"name": name}
+		}
+		items = append(items, slim)
+	}
+	return map[string]interface{}{"name": page["name"], key: map[string]interface{}{"items": items}}
+}
+
 // collectionIDs returns the ids of the items listed under key in pages,
 // passed through filter when it is not nil. Decoded items are 6–10 KB each —
 // a 10,000-album discography is 61 MB, measured against the real API — and
