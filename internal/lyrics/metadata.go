@@ -158,12 +158,9 @@ func readMP3(path string, info AudioInfo) (AudioInfo, error) {
 			id3End += 10 // ID3v2.4 footer
 		}
 
-		tagData := make([]byte, size)
-		if _, err := io.ReadFull(f, tagData); err == nil {
-			tlenMs := parseID3Frames(tagData, &info, id3Version)
-			if tlenMs > 0 {
-				info.Duration = tlenMs / 1000
-			}
+		tlenMs := readID3Frames(io.NewSectionReader(f, 10, int64(size)), &info, id3Version)
+		if tlenMs > 0 {
+			info.Duration = tlenMs / 1000
 		}
 	} else {
 		if _, err := f.Seek(0, io.SeekStart); err != nil {
@@ -177,42 +174,62 @@ func readMP3(path string, info AudioInfo) (AudioInfo, error) {
 	return info, nil
 }
 
-func parseID3Frames(data []byte, info *AudioInfo, version byte) int {
+// maxTextFrame caps the text frames readID3Frames will load. Real ones are
+// bytes long; the cap keeps a corrupt size field from allocating up to the
+// 256 MB an ID3 size can claim.
+const maxTextFrame = 1 << 20
+
+// readID3Frames walks the frames of an ID3v2 tag, reading only the text
+// frames it uses and seeking past the rest. The rest is mostly the embedded
+// cover — often megabytes, met once per file on a library scan — which used
+// to be read into memory along with the whole tag just to get the title.
+func readID3Frames(r *io.SectionReader, info *AudioInfo, version byte) int {
 	var title, artist, albumArtist, album, tlenStr string
 
-	pos := 0
-	for pos+10 <= len(data) {
-		frameID := string(data[pos : pos+4])
-		if frameID == "\x00\x00\x00\x00" {
+	var hdr [10]byte
+	for {
+		if _, err := io.ReadFull(r, hdr[:]); err != nil {
+			break
+		}
+		if string(hdr[:4]) == "\x00\x00\x00\x00" {
 			break // padding reached
 		}
 		var frameSize int
 		if version >= 4 {
-			frameSize = int(data[pos+4]&0x7F)<<21 | int(data[pos+5]&0x7F)<<14 |
-				int(data[pos+6]&0x7F)<<7 | int(data[pos+7]&0x7F)
+			frameSize = int(hdr[4]&0x7F)<<21 | int(hdr[5]&0x7F)<<14 |
+				int(hdr[6]&0x7F)<<7 | int(hdr[7]&0x7F)
 		} else {
-			frameSize = int(data[pos+4])<<24 | int(data[pos+5])<<16 |
-				int(data[pos+6])<<8 | int(data[pos+7])
+			frameSize = int(binary.BigEndian.Uint32(hdr[4:8]))
 		}
-		pos += 10
-		if frameSize <= 0 || pos+frameSize > len(data) {
+		pos, _ := r.Seek(0, io.SeekCurrent)
+		if frameSize <= 0 || pos+int64(frameSize) > r.Size() {
 			break
 		}
-		fd := data[pos : pos+frameSize]
-		pos += frameSize
 
-		switch frameID {
+		var dst *string
+		switch string(hdr[:4]) {
 		case "TIT2":
-			title = decodeID3Text(fd)
+			dst = &title
 		case "TPE1":
-			artist = decodeID3Text(fd)
+			dst = &artist
 		case "TPE2":
-			albumArtist = decodeID3Text(fd)
+			dst = &albumArtist
 		case "TALB":
-			album = decodeID3Text(fd)
+			dst = &album
 		case "TLEN":
-			tlenStr = decodeID3Text(fd)
+			dst = &tlenStr
 		}
+		if dst == nil || frameSize > maxTextFrame {
+			if _, err := r.Seek(int64(frameSize), io.SeekCurrent); err != nil {
+				break
+			}
+			continue
+		}
+		fd := make([]byte, frameSize)
+		if _, err := io.ReadFull(r, fd); err != nil {
+			break
+		}
+		*dst = decodeID3Text(fd)
 	}
 
 	info.Title = title
