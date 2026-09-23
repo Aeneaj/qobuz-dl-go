@@ -81,6 +81,40 @@ Lo que queda en el perfil (`-memprofile`, `alloc_space`) es runtime, `mpb` y `ne
 **Antes de optimizar memoria, medir**: ajustes de escape analysis o tipos más estrechos
 sobre metadatos de KB no se ven al lado de un `ReadFile` de 50 MB.
 
+**Segunda ronda (2026-09-23), misma regla en cuatro sitios más.** Revisión completa del
+código; cada hallazgo medido antes de tocarlo:
+
+| Sitio | Antes | Después | Guarda |
+|---|---|---|---|
+| `View()` de la TUI, 3.600 pistas terminadas | 81 ms · 21,7 MB por frame | 0,41 ms · 135 KB | `TestViewFitsTheScreen` |
+| Discografía de Bach (10.000 álbumes, API real) retenida durante la descarga | 61 MB | 0,04 MB | tipo: el bucle recibe `[]string` |
+| Portada original (1,36 MB real) al etiquetar, por pista | FLAC 4,4 MB · MP3 7,1 MB | 1,65 MB | `TestTaggingMemoryIndependentOfTrackSize` |
+| `lyrics` sobre un MP3 con portada incrustada, por fichero | 1,37 MB · 0,54 ms | 423 B · 0,011 ms | `TestReadMP3MemoryIndependentOfCover` |
+
+- **La TUI dibujaba la sesión entera** en cada frame (cada tick de 100 ms), y la terminal
+  solo guarda las últimas filas: además la cabecera se salía de pantalla. `visibleTracks`
+  pinta lo que cabe, empezando por la primera pista sin terminar. `viewChrome`/`shellChrome`
+  son las filas fijas de cada pantalla; si cambias la cabecera o el pie, cámbialos.
+  De paso: `MsgDone`/`MsgFailed` limpiaban `ticking` con un tick pendiente y el siguiente
+  `MsgSetTotal` abría una **segunda cadena de ticks** (`TestOneTickChain`); y `drawBar`
+  hacía un `Render` por celda (~75 por barra), ahora uno por tramo.
+- **Colecciones**: `collectionIDs` devuelve solo los ids; los mapas decodificados (6–10 KB
+  por item) mueren al volver. El pico mientras se piden las páginas sigue ahí (todas las
+  páginas a la vez en `multiMeta`); bajarlo exige procesar página a página.
+- **Portada**: `replaceHead` recibe la cabecera en trozos y la imagen va como trozo propio,
+  sin copiarse dentro del bloque PICTURE ni del frame APIC. Una portada de más de 16 MB
+  ya no se incrusta: la longitud del bloque FLAC es de 24 bits y antes se envolvía,
+  corrompiendo el fichero (`TestTagFLACSkipsOversizedCover`).
+- **`lyrics` MP3**: `readID3Frames` lee solo TIT2/TPE1/TPE2/TALB/TLEN y salta el resto con
+  `Seek` sobre un `io.SectionReader`. Verificado con un diferencial de 200.000 tags
+  aleatorios contra el parser viejo.
+
+**Medido y descartado**: el buffer de 32 KB de `io.Copy` por intento y el cierre que
+`mpb` crea por `Read` son basura (~1 MB por álbum), no RSS. El suelo de `--version` es
+8,4 MB, de los que 6,8 MB son páginas del binario (compartidas, recuperables por el
+kernel) y 1,6 MB memoria propia: `/proc/<pid>/status` (`RssFile` vs `RssAnon`) lo separa,
+`/usr/bin/time` no.
+
 ### Formatos de nombre: validar en la frontera, nunca degradar en silencio
 
 `folder_format` y `track_format` son entrada del usuario, y el daño de aceptarlas mal
@@ -297,9 +331,9 @@ Medido con `go test -cover ./...` el 2026-09-23:
 | api | 42.9% | client_test.go |
 | bundle | 59.7% | bundle_test.go |
 | config | 45.1% | config_test.go |
-| downloader | 55.0% | integration_test.go, mem_test.go, oauth_test.go, tui_test.go, metadata_test.go, db_test.go, lastfm_test.go, helpers_test.go, redownload_test.go, csvbatch_test.go, collection_test.go |
-| lyrics | 74.9% | metadata_test.go, lrclib_test.go, lyrics_test.go, mem_test.go |
-| ui | 59.1% | shell_test.go, handle_test.go, lang_test.go |
+| downloader | 56.4% | integration_test.go, mem_test.go, oauth_test.go, tui_test.go, metadata_test.go, db_test.go, lastfm_test.go, helpers_test.go, redownload_test.go, csvbatch_test.go, collection_test.go |
+| lyrics | 74.8% | metadata_test.go, lrclib_test.go, lyrics_test.go, mem_test.go |
+| ui | 75.9% | shell_test.go, handle_test.go, lang_test.go, model_test.go |
 | cmd/qobuz-dl | 0% | main_test.go |
 
 `cmd/qobuz-dl` marca 0% porque sus tests son **black-box**: compilan el binario en `TestMain` y lo ejecutan como subproceso, así que la cobertura no se instrumenta. No es falta de tests.
