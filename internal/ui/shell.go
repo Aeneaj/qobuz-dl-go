@@ -62,7 +62,7 @@ var menu = []menuEntry{
 	{actSearchArtist, "◈", "Search artists", "full discography", "", sBlue},
 	{actSearchPlaylist, "≡", "Search playlists", "Qobuz playlists", "", sBlue},
 
-	{actURL, "+", "Add URL", "album, track, artist, label or Last.fm", "QUEUE", sCyan},
+	{actURL, "+", "Add URL", "album, track, artist, label or playlist", "QUEUE", sCyan},
 	{actQueue, "▤", "View the queue", "review and remove items", "", sCyan},
 	{actGo, "⬇", "Download the queue", "start downloading", "", sCyan},
 
@@ -293,7 +293,7 @@ func (s *Shell) run(a action) (tea.Model, tea.Cmd) {
 
 	case actURL:
 		s.pending = a
-		s.field.reset(T("Qobuz or Last.fm URL:"), "")
+		s.field.reset(T("Qobuz URL:"), "")
 		s.screen = scInput
 
 	case actLyrics:

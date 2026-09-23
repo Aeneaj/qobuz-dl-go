@@ -128,8 +128,6 @@ Paste any of these URLs after `dl` — one at a time or several at once:
 | An artist URL | That artist's full discography |
 | A label URL | Everything from that label |
 | A Qobuz playlist URL | Every track in the playlist |
-| `last.fm/user/NAME/loved` | Your Last.fm loved tracks, searched on Qobuz |
-| `last.fm/user/NAME/library` | Your recent Last.fm tracks, searched on Qobuz |
 
 ```bash
 # Several at once

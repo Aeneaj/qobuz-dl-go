@@ -25,7 +25,7 @@ const usage = `Usage: qobuz-dl [options] <command> [args] [options]
 Options may be written before the command, after it, or after its arguments.
 
 Commands:
-  dl  <URL...>       Download by URL (album/track/artist/label/playlist/last.fm)
+  dl  <URL...>       Download by URL (album/track/artist/label/playlist)
   lucky <query>      Download first N search results
   csv <file.csv>     Batch download from a TuneMyMusic CSV export
   oauth [code|url]   Login via OAuth (recommended)

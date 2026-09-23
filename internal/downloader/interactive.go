@@ -15,7 +15,7 @@ Commands:
   st <query>   Search tracks
   sr <query>   Search artists
   sp <query>   Search playlists
-  dl <url>     Add a Qobuz or Last.fm URL directly to the queue
+  dl <url>     Add a Qobuz URL directly to the queue
   q            Show the current queue
   rm <n>       Remove item n from the queue
   clear        Clear the entire queue

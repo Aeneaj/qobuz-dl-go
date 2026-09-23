@@ -188,18 +188,8 @@ func New(client *api.Client, opts Options) (*Downloader, error) {
 	return dl, nil
 }
 
-// HandleURL dispatches a URL to the appropriate download flow.
-// Supports Qobuz URLs and Last.fm user playlist URLs.
+// HandleURL dispatches a Qobuz URL to the appropriate download flow.
 func (d *Downloader) HandleURL(ctx context.Context, rawURL string) error {
-	// Last.fm user playlists (loved tracks, recent tracks)
-	if strings.Contains(rawURL, "last.fm") {
-		username, listType, err := parseLastFMURL(rawURL)
-		if err != nil {
-			return err
-		}
-		return d.downloadLastFMPlaylist(ctx, username, listType)
-	}
-
 	urlType, itemID, err := parseQobuzURL(rawURL)
 	if err != nil {
 		return fmt.Errorf("invalid URL %q: %w", rawURL, err)

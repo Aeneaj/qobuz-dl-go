@@ -124,3 +124,19 @@ func SearchURLs(ctx context.Context, client *api.Client, itemType, query string,
 	}
 	return urls, nil
 }
+
+// searchFirstTrackID searches Qobuz for the given query (typically "artist title")
+// and returns the track ID of the top result, or "" if nothing was found.
+func (d *Downloader) searchFirstTrackID(ctx context.Context, query string) (string, error) {
+	raw, err := d.Client.SearchTracks(ctx, query, 1)
+	if err != nil {
+		return "", err
+	}
+	section, _ := raw["tracks"].(map[string]interface{})
+	items, _ := section["items"].([]interface{})
+	if len(items) == 0 {
+		return "", nil
+	}
+	first, _ := items[0].(map[string]interface{})
+	return idStr(first["id"]), nil
+}
