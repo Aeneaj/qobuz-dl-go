@@ -48,7 +48,8 @@ func FetchAll(ctx context.Context, dir string, step Step) (Result, error) {
 func fetchAll(ctx context.Context, dir string, client *Client, step Step) (Result, error) {
 	var res Result
 
-	files, err := scanAudioFiles(ctx, dir)
+	files, unreadable, err := scanAudioFiles(ctx, dir)
+	res.Warnings = unreadable
 	if err != nil {
 		if ctx.Err() != nil {
 			res.Interrupted = true
@@ -160,16 +161,18 @@ func runWithClient(ctx context.Context, dir string, client *Client) error {
 	}
 	p.Wait()
 
-	if res.Total == 0 && !res.Interrupted {
-		fmt.Println("\033[33mNo audio files found.\033[0m")
-		return nil
-	}
-
+	// Before the early return: unreadable files are warnings too, and a
+	// folder of nothing but those is exactly when the user needs to see them.
 	if len(res.Warnings) > 0 {
 		fmt.Println()
 		for _, w := range res.Warnings {
 			fmt.Println(w)
 		}
+	}
+
+	if res.Total == 0 && !res.Interrupted {
+		fmt.Println("\033[33mNo audio files found.\033[0m")
+		return nil
 	}
 
 	if res.Interrupted {
@@ -183,9 +186,12 @@ func runWithClient(ctx context.Context, dir string, client *Client) error {
 }
 
 // scanAudioFiles walks dir recursively and returns AudioInfo for every
-// .flac and .mp3 file. Read errors are reported as warnings and skipped.
-func scanAudioFiles(ctx context.Context, dir string) ([]AudioInfo, error) {
+// .flac and .mp3 file. Files it cannot read are skipped and come back as
+// warnings, never printed: FetchAll runs under the TUI, where anything on
+// stdout lands on top of the alt screen.
+func scanAudioFiles(ctx context.Context, dir string) ([]AudioInfo, []string, error) {
 	var files []AudioInfo
+	var warnings []string
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -202,8 +208,8 @@ func scanAudioFiles(ctx context.Context, dir string) ([]AudioInfo, error) {
 		}
 		info, readErr := ReadAudio(path)
 		if readErr != nil {
-			fmt.Printf("\033[33mWarning: cannot read %s: %v\033[0m\n",
-				filepath.Base(path), readErr)
+			warnings = append(warnings, fmt.Sprintf("\033[33mWARN   cannot read %s: %v\033[0m",
+				filepath.Base(path), readErr))
 			return nil
 		}
 		if info.Title == "" {
@@ -212,7 +218,7 @@ func scanAudioFiles(ctx context.Context, dir string) ([]AudioInfo, error) {
 		files = append(files, info)
 		return nil
 	})
-	return files, err
+	return files, warnings, err
 }
 
 func lrcPathFor(audioPath string) string {

@@ -3,6 +3,7 @@ package lyrics
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -91,7 +92,7 @@ func TestScanAudioFiles_FindsFlacAndMP3(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "cover.jpg"), []byte("jpg"), 0644)
 	os.WriteFile(filepath.Join(sub, "notes.txt"), []byte("txt"), 0644)
 
-	files, err := scanAudioFiles(context.Background(), dir)
+	files, _, err := scanAudioFiles(context.Background(), dir)
 	if err != nil {
 		t.Fatalf("scanAudioFiles: %v", err)
 	}
@@ -106,7 +107,7 @@ func TestScanAudioFiles_SkipsUnparseable(t *testing.T) {
 	// just skip the file.
 	os.WriteFile(filepath.Join(dir, "bad.flac"), []byte("garbage"), 0644)
 
-	files, err := scanAudioFiles(context.Background(), dir)
+	files, _, err := scanAudioFiles(context.Background(), dir)
 	if err != nil {
 		t.Fatalf("scanAudioFiles: %v", err)
 	}
@@ -115,13 +116,67 @@ func TestScanAudioFiles_SkipsUnparseable(t *testing.T) {
 	}
 }
 
+// FetchAll is the TUI's entry point, and under the TUI nothing may reach
+// stdout: the alt screen shows it on top of the shell. An unreadable file used
+// to be reported with fmt.Printf from inside the scan.
+func TestFetchAllPrintsNothing(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "bad.flac"), []byte("garbage"), 0644)
+
+	var res Result
+	var err error
+	printed := captureStdout(t, func() {
+		res, err = fetchAll(context.Background(), dir, NewClient(), nil)
+	})
+	if err != nil {
+		t.Fatalf("fetchAll: %v", err)
+	}
+	if len(printed) > 0 {
+		t.Errorf("fetchAll wrote to stdout: %q", printed)
+	}
+	if len(res.Warnings) != 1 || !strings.Contains(res.Warnings[0], "bad.flac") {
+		t.Errorf("Warnings = %q, want one naming bad.flac", res.Warnings)
+	}
+}
+
+// The CLI still shows unreadable files, now in the closing summary — even
+// when they are all the folder holds and the run ends early.
+func TestRunWithClient_ReportsUnreadableFiles(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "bad.flac"), []byte("garbage"), 0644)
+	printed := captureStdout(t, func() {
+		if err := runWithClient(context.Background(), dir, NewClient()); err != nil {
+			t.Errorf("runWithClient: %v", err)
+		}
+	})
+	if !strings.Contains(printed, "bad.flac") {
+		t.Errorf("unreadable file not reported; output:\n%s", printed)
+	}
+}
+
+// captureStdout returns what fn writes to os.Stdout.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout := os.Stdout
+	os.Stdout = w
+	fn()
+	os.Stdout = stdout
+	w.Close()
+	out, _ := io.ReadAll(r)
+	return string(out)
+}
+
 func TestScanAudioFiles_FallbackTitle(t *testing.T) {
 	dir := t.TempDir()
 	// FLAC with no title tag — Title should fall back to the filename (without ext).
 	flacData := fakeFLAC(44100, 44100, nil)
 	os.WriteFile(filepath.Join(dir, "my track.flac"), flacData, 0644)
 
-	files, err := scanAudioFiles(context.Background(), dir)
+	files, _, err := scanAudioFiles(context.Background(), dir)
 	if err != nil {
 		t.Fatalf("scanAudioFiles: %v", err)
 	}
@@ -144,7 +199,7 @@ func TestScanAudioFiles_CancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	_, err := scanAudioFiles(ctx, dir)
+	_, _, err := scanAudioFiles(ctx, dir)
 	if err == nil {
 		t.Fatal("expected error from cancelled context, got nil")
 	}
