@@ -635,6 +635,13 @@ lyrics_test.go    — buildLabel (formato, ancho fijo, truncado), lrcPathFor, sc
       `expandPlaceholders` re-escaneaba valores ya sustituidos en orden de mapa, así que un
       título con `{artist}` literal daba dos nombres distintos para la misma pista (ahora
       `strings.NewReplacer`, una pasada).
+      Segunda tanda: `fun` con entrada por tubería perdía la elección de resultados
+      (`interactiveSearch` abría un segundo `bufio.Reader` sobre stdin y el primero ya se
+      había tragado esas líneas; ahora hay un solo lector por sesión); el lector ID3 de
+      `lyrics` leía la cabecera extendida como si fuera un frame y devolvía el fichero sin
+      tags (`extendedHeaderSize`, v2.3 y v2.4 la miden distinto). **Descartado tras medir**:
+      "LRCLIB no reutiliza la conexión tras un 404" — habla HTTP/2 y `httptrace` muestra la
+      conexión reutilizada tras 404 y 200.
 - [x] Modo interactivo mejorado — `internal/downloader/interactive.go`
       REPL con comandos: sa/st/sr/sp (búsqueda por tipo), dl (URL directa),
       q (ver queue), rm N (quitar item), clear, go (descargar), exit
