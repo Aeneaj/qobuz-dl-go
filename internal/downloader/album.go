@@ -177,8 +177,10 @@ func (d *Downloader) collectTrackJobs(ctx context.Context, p *mpb.Progress, rawI
 		// MkdirAll for multi-disc dirs is deferred until we know we need it.
 		trackDir := albumDir
 		if isMultiDisc {
-			mn := int(track["media_number"].(float64))
-			trackDir = filepath.Join(albumDir, fmt.Sprintf("Disc %d", mn))
+			// Checked like detectMultiDisc does: an unchecked assertion
+			// crashed the program on a track missing media_number.
+			mn, _ := track["media_number"].(float64)
+			trackDir = filepath.Join(albumDir, fmt.Sprintf("Disc %d", max(1, int(mn))))
 		}
 
 		if finalPath, err := finalTrackPath(trackDir, track, albumMeta, trackFmt, isMP3); err == nil {

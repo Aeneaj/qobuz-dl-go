@@ -50,7 +50,7 @@ type fakeTrack struct {
 	ID          int
 	Title       string
 	Number      int
-	MediaNumber int
+	MediaNumber int // 0 leaves media_number out of the track object
 	Performer   string
 }
 
@@ -119,12 +119,14 @@ func (q *fakeQobuz) handleAlbumGet(w http.ResponseWriter, r *http.Request) {
 			"id":                    float64(tr.ID),
 			"title":                 tr.Title,
 			"track_number":          float64(tr.Number),
-			"media_number":          float64(tr.MediaNumber),
 			"maximum_bit_depth":     float64(24),
 			"maximum_sampling_rate": float64(96),
 			"streamable":            true,
 			"performer":             map[string]interface{}{"name": tr.Performer},
 		})
+		if tr.MediaNumber != 0 {
+			items[len(items)-1].(map[string]interface{})["media_number"] = float64(tr.MediaNumber)
+		}
 	}
 	writeJSON(w, map[string]interface{}{
 		"id":                    "alb1",
@@ -345,6 +347,30 @@ func TestIntegration_SkipsUnavailableTracks(t *testing.T) {
 
 // TestIntegration_MultiDisc pins the "Disc N" layout, which only triggers when
 // media_number varies across the tracklist.
+// A track without media_number on a multi-disc album used to crash the whole
+// program: detectMultiDisc tolerates the missing field, but the per-track
+// disc lookup asserted its type unchecked. The track goes to Disc 1.
+func TestIntegration_MultiDiscTrackWithoutMediaNumber(t *testing.T) {
+	q := newFakeQobuz(t, []fakeTrack{
+		{ID: 201, Title: "Opener", Number: 1, MediaNumber: 1, Performer: "Test Artist"},
+		{ID: 202, Title: "Closer", Number: 1, MediaNumber: 2, Performer: "Test Artist"},
+		{ID: 203, Title: "Stray", Number: 2, Performer: "Test Artist"},
+	})
+	d, dir := newTestDownloader(t, q, func(o *Options) { o.NoCover = true })
+
+	if err := d.downloadAlbum(context.Background(), "alb1", dir); err != nil {
+		t.Fatalf("downloadAlbum: %v", err)
+	}
+	want := []string{
+		"Test Artist - Test Album/Disc 1/01. Opener.flac",
+		"Test Artist - Test Album/Disc 1/02. Stray.flac",
+		"Test Artist - Test Album/Disc 2/01. Closer.flac",
+	}
+	if got := relFiles(t, dir); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("files = %v, want %v", got, want)
+	}
+}
+
 func TestIntegration_MultiDisc(t *testing.T) {
 	q := newFakeQobuz(t, []fakeTrack{
 		{ID: 201, Title: "Opener", Number: 1, MediaNumber: 1, Performer: "Test Artist"},
