@@ -7,6 +7,7 @@ package downloader
 // Both are pure-Go implementations with no external dependencies.
 
 import (
+	"bufio"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -97,7 +98,7 @@ func buildFLACTags(track, album map[string]interface{}, isTrack bool) map[string
 }
 
 // flacBlock is a single FLAC metadata block. The last-block flag is not stored
-// — writeFLAC recomputes it from the position in the slice.
+// — encodeFLACHead recomputes it from the position in the slice.
 type flacBlock struct {
 	blockType byte
 	data      []byte
@@ -112,7 +113,7 @@ func writeFLACMeta(path string, tags map[string]string, cover []byte) error {
 	if cover != nil {
 		drop = append(drop, typePicture)
 	}
-	blocks, audio, err := splitFLAC(path, drop...)
+	blocks, audioAt, err := readFLACBlocks(path, drop...)
 	if err != nil {
 		return err
 	}
@@ -128,48 +129,65 @@ func writeFLACMeta(path string, tags map[string]string, cover []byte) error {
 	if cover != nil {
 		blocks = append(blocks, flacBlock{typePicture, buildFLACPictureBlock(cover)})
 	}
-	return writeFLAC(path, blocks, audio)
+	return replaceHead(path, encodeFLACHead(blocks), audioAt)
 }
 
-// splitFLAC parses a FLAC file into its metadata blocks and the audio data
-// that follows, discarding every block whose type appears in drop.
+// readFLACBlocks reads the metadata blocks at the head of a FLAC file,
+// discarding every block whose type appears in drop, and returns the offset
+// where the audio frames begin. Only the metadata is read, never the audio.
 // FLAC format: 4-byte magic, then a sequence of metadata blocks.
 // Each block: 1-byte type+last_flag, 3-byte length, then data.
-func splitFLAC(path string, drop ...byte) ([]flacBlock, []byte, error) {
-	data, err := os.ReadFile(path)
+func readFLACBlocks(path string, drop ...byte) ([]flacBlock, int64, error) {
+	f, err := os.Open(path)
 	if err != nil {
-		return nil, nil, err
+		return nil, 0, err
 	}
-	if len(data) < 4 || string(data[:4]) != "fLaC" {
-		return nil, nil, fmt.Errorf("not a FLAC file: %s", path)
-	}
+	defer f.Close()
+	r := bufio.NewReader(f)
 
+	var magic [4]byte
+	if _, err := io.ReadFull(r, magic[:]); err != nil || string(magic[:]) != "fLaC" {
+		return nil, 0, fmt.Errorf("not a FLAC file: %s", path)
+	}
 	var blocks []flacBlock
-	pos := 4
-	for pos+4 <= len(data) {
-		header := data[pos]
-		isLast := (header & 0x80) != 0
-		bType := header & 0x7F
-		length := int(data[pos+1])<<16 | int(data[pos+2])<<8 | int(data[pos+3])
-		pos += 4
-		if pos+length > len(data) {
-			break
+	offset := int64(len(magic))
+	for {
+		var hdr [4]byte
+		if _, err := io.ReadFull(r, hdr[:]); err == io.EOF {
+			break // metadata with no audio after it
+		} else if err != nil {
+			return nil, 0, fmt.Errorf("read FLAC block header: %w", err)
 		}
-		if !slices.Contains(drop, bType) {
-			blocks = append(blocks, flacBlock{bType, data[pos : pos+length]})
+		bType := hdr[0] & 0x7F
+		length := int(hdr[1])<<16 | int(hdr[2])<<8 | int(hdr[3])
+		if slices.Contains(drop, bType) {
+			if _, err := r.Discard(length); err != nil {
+				return nil, 0, fmt.Errorf("skip FLAC block: %w", err)
+			}
+		} else {
+			data := make([]byte, length)
+			if _, err := io.ReadFull(r, data); err != nil {
+				return nil, 0, fmt.Errorf("read FLAC block: %w", err)
+			}
+			blocks = append(blocks, flacBlock{bType, data})
 		}
-		pos += length
-		if isLast {
+		offset += int64(len(hdr) + length)
+		if hdr[0]&0x80 != 0 {
 			break
 		}
 	}
-	return blocks, data[pos:], nil
+	return blocks, offset, nil
 }
 
-// writeFLAC encodes blocks followed by audio back to path, flagging the last
-// metadata block as required by the format.
-func writeFLAC(path string, blocks []flacBlock, audio []byte) error {
-	out := []byte("fLaC")
+// encodeFLACHead encodes the magic and blocks, flagging the last metadata
+// block as required by the format.
+func encodeFLACHead(blocks []flacBlock) []byte {
+	size := 4
+	for _, b := range blocks {
+		size += 4 + len(b.data)
+	}
+	out := make([]byte, 0, size)
+	out = append(out, "fLaC"...)
 	for i, b := range blocks {
 		header := b.blockType
 		if i == len(blocks)-1 {
@@ -180,8 +198,42 @@ func writeFLAC(path string, blocks []flacBlock, audio []byte) error {
 			byte(length>>16), byte(length>>8), byte(length))
 		out = append(out, b.data...)
 	}
-	out = append(out, audio...)
-	return os.WriteFile(path, out, 0644)
+	return out
+}
+
+// replaceHead replaces everything before audioAt in path with head. The audio
+// goes file to file through io.Copy — on Linux copy_file_range, so it never
+// enters user space — and memory stays at the size of the metadata however
+// big the track is. The result is built next to path and renamed over it
+// only once complete: a failed rewrite leaves the original untouched.
+func replaceHead(path string, head []byte, audioAt int64) error {
+	src, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	if _, err := src.Seek(audioAt, io.SeekStart); err != nil {
+		return fmt.Errorf("seek to audio: %w", err)
+	}
+
+	tmp := path + ".tag"
+	dst, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	_, err = dst.Write(head)
+	if err == nil {
+		_, err = io.Copy(dst, src)
+	}
+	if cerr := dst.Close(); err == nil {
+		err = cerr
+	}
+	src.Close() // Windows refuses to rename over an open file
+	if err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("rewrite %s: %w", filepath.Base(path), err)
+	}
+	return os.Rename(tmp, path)
 }
 
 func buildVorbisComment(tags map[string]string) []byte {
@@ -348,28 +400,11 @@ func writeID3v23(path string, tags map[string]string, embedArt bool, coverDir st
 		syncsafe[0], syncsafe[1], syncsafe[2], syncsafe[3],
 	}
 
-	// Read existing MP3 audio (skip any existing ID3 header)
-	audioData, err := readMP3Audio(path)
+	audioAt, err := mp3AudioOffset(path)
 	if err != nil {
 		return err
 	}
-
-	// Write: header + frames + audio
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	if _, err := f.Write(header); err != nil {
-		return fmt.Errorf("write ID3 header: %w", err)
-	}
-	if _, err := f.Write(frames); err != nil {
-		return fmt.Errorf("write ID3 frames: %w", err)
-	}
-	if _, err := f.Write(audioData); err != nil {
-		return fmt.Errorf("write MP3 audio: %w", err)
-	}
-	return nil
+	return replaceHead(path, append(header, frames...), audioAt)
 }
 
 func buildTextFrame(id, text string) []byte {
@@ -423,35 +458,25 @@ func toSyncsafe(n int) [4]byte {
 	return b
 }
 
-func readMP3Audio(path string) ([]byte, error) {
+// mp3AudioOffset returns where the audio starts: past an existing ID3v2 tag,
+// or 0 when there is none.
+func mp3AudioOffset(path string) (int64, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 	defer f.Close()
 
-	// Check for existing ID3 header
 	hdr := make([]byte, 10)
 	if _, err := io.ReadFull(f, hdr); err != nil {
-		// File shorter than 10 bytes — treat the whole thing as audio.
-		if _, err := f.Seek(0, io.SeekStart); err != nil {
-			return nil, fmt.Errorf("seek to start: %w", err)
-		}
-		return io.ReadAll(f)
+		return 0, nil // shorter than an ID3 header — it is all audio
 	}
-	if hdr[0] == 'I' && hdr[1] == 'D' && hdr[2] == '3' {
-		// Parse syncsafe size to skip the tag
-		size := int(hdr[6]&0x7F)<<21 | int(hdr[7]&0x7F)<<14 |
-			int(hdr[8]&0x7F)<<7 | int(hdr[9]&0x7F)
-		if _, err := f.Seek(int64(10+size), io.SeekStart); err != nil {
-			return nil, fmt.Errorf("seek past ID3 tag: %w", err)
-		}
-	} else {
-		if _, err := f.Seek(0, io.SeekStart); err != nil {
-			return nil, fmt.Errorf("seek to start: %w", err)
-		}
+	if hdr[0] != 'I' || hdr[1] != 'D' || hdr[2] != '3' {
+		return 0, nil
 	}
-	return io.ReadAll(f)
+	size := int64(hdr[6]&0x7F)<<21 | int64(hdr[7]&0x7F)<<14 |
+		int64(hdr[8]&0x7F)<<7 | int64(hdr[9]&0x7F)
+	return 10 + size, nil
 }
 
 // ---- shared tag helpers ----

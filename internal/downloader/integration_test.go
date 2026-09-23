@@ -64,13 +64,14 @@ type fakeQobuz struct {
 	sampleOnly   map[int]bool // track IDs returned as unstreamable samples
 	onlyQuality  int          // when set, every other format_id fails (quality fallback path)
 	zeroRateFor  map[int]bool // track IDs served with sampling_rate 0 (nothing usable)
+	audioPad     int64        // extra audio bytes per file, for the memory benchmarks
 
 	fileHits atomic.Int64 // audio bytes actually served
 	mu       sync.Mutex
 	seenURLs []string
 }
 
-func newFakeQobuz(t *testing.T, tracks []fakeTrack) *fakeQobuz {
+func newFakeQobuz(t testing.TB, tracks []fakeTrack) *fakeQobuz {
 	t.Helper()
 	q := &fakeQobuz{
 		tracks:       tracks,
@@ -186,8 +187,14 @@ func (q *fakeQobuz) handleAudio(w http.ResponseWriter, r *http.Request) {
 		body, ctype = makeFakeMP3(), "audio/mpeg"
 	}
 	w.Header().Set("Content-Type", ctype)
-	w.Header().Set("Content-Length", fmt.Sprint(len(body)))
+	w.Header().Set("Content-Length", fmt.Sprint(int64(len(body))+q.audioPad))
 	w.Write(body)
+	// Streamed from one small buffer so the server's own allocations stay
+	// out of the client's memory numbers.
+	pad := make([]byte, 32<<10)
+	for n := q.audioPad; n > 0; n -= int64(len(pad)) {
+		w.Write(pad[:min(n, int64(len(pad)))])
+	}
 }
 
 func writeJSON(w http.ResponseWriter, v interface{}) {
@@ -197,7 +204,7 @@ func writeJSON(w http.ResponseWriter, v interface{}) {
 
 // newTestDownloader wires a Downloader to the fake server. opts is applied on
 // top of sensible defaults so each test only states what it cares about.
-func newTestDownloader(t *testing.T, q *fakeQobuz, tweak func(*Options)) (*Downloader, string) {
+func newTestDownloader(t testing.TB, q *fakeQobuz, tweak func(*Options)) (*Downloader, string) {
 	t.Helper()
 	dir := t.TempDir()
 

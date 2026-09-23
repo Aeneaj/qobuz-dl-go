@@ -3,6 +3,7 @@
 package lyrics
 
 import (
+	"bufio"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -37,42 +38,48 @@ func ReadAudio(path string) (AudioInfo, error) {
 
 // ---- FLAC ---------------------------------------------------------------
 
+// readFLAC reads only the metadata blocks at the head of the file and stops
+// at the last one: the audio after it is never read.
 func readFLAC(path string, info AudioInfo) (AudioInfo, error) {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return info, err
 	}
-	if len(data) < 4 || string(data[:4]) != "fLaC" {
+	defer f.Close()
+	r := bufio.NewReader(f)
+
+	var magic [4]byte
+	if _, err := io.ReadFull(r, magic[:]); err != nil || string(magic[:]) != "fLaC" {
 		return info, fmt.Errorf("%s: not a FLAC file", filepath.Base(path))
 	}
 
-	pos := 4
-	for pos+4 <= len(data) {
-		hdr := data[pos]
-		isLast := hdr&0x80 != 0
-		bType := hdr & 0x7F
-		bLen := int(data[pos+1])<<16 | int(data[pos+2])<<8 | int(data[pos+3])
-		pos += 4
-		if pos+bLen > len(data) {
+	for {
+		var hdr [4]byte
+		if _, err := io.ReadFull(r, hdr[:]); err != nil {
 			break
 		}
-		block := data[pos : pos+bLen]
-		pos += bLen
-
-		switch bType {
-		case 0: // STREAMINFO — parse sample_rate and total_samples for duration
-			if bLen >= 18 {
+		bLen := int(hdr[1])<<16 | int(hdr[2])<<8 | int(hdr[3])
+		switch bType := hdr[0] & 0x7F; bType {
+		case 0, 4: // STREAMINFO, VORBIS_COMMENT
+			block := make([]byte, bLen)
+			if _, err := io.ReadFull(r, block); err != nil {
+				return info, nil
+			}
+			if bType == 4 {
+				parseFLACVorbisComment(block, &info)
+			} else if bLen >= 18 { // sample_rate and total_samples give the duration
 				sr := int(block[10])<<12 | int(block[11])<<4 | int(block[12])>>4
 				total := int64(block[13]&0x0F)<<32 | int64(binary.BigEndian.Uint32(block[14:18]))
 				if sr > 0 {
 					info.Duration = int(total / int64(sr))
 				}
 			}
-		case 4: // VORBIS_COMMENT
-			parseFLACVorbisComment(block, &info)
+		default: // PICTURE and the rest: skip without reading
+			if _, err := r.Discard(bLen); err != nil {
+				return info, nil
+			}
 		}
-
-		if isLast {
+		if hdr[0]&0x80 != 0 {
 			break
 		}
 	}

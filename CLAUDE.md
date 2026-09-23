@@ -50,6 +50,37 @@ No añadir dependencias de parseo de audio externas. Si necesitas leer o escribi
 
 **Trampa ya pisada una vez**: en Go, `string(payload)` sobre un `[]byte` lo **reinterpreta como UTF-8**, no lo convierte desde otra codificación. La rama Latin-1 de `decodeID3Text` hacía eso y corrompía todo byte por encima de 0x7F — `Café` en ISO-8859-1 salía como `"Caf\xe9"`, UTF-8 inválido, que iba tal cual a la query de LRCLIB. La conversión correcta es rune a rune: `rune(b)` da U+0000–U+00FF, que *es* ISO-8859-1. Sobrevivió porque los tests solo usaban ASCII, idéntico en ambas codificaciones — **al testear codificaciones, usar siempre al menos un carácter no ASCII**.
 
+### Memoria: el audio nunca pasa por la RAM
+
+Etiquetar y leer tags cuesta lo que ocupan **los metadatos**, no la pista. `writeFLACMeta`
+y `writeID3v23` leen solo la cabecera, la reescriben en memoria y copian el audio de
+fichero a fichero con `replaceHead` (`io.Copy` entre `*os.File` → `copy_file_range` en
+Linux, el audio ni entra en espacio de usuario). `lyrics.readFLAC` para en el último
+bloque de metadatos. Antes los tres hacían `os.ReadFile` del fichero entero.
+
+Medido (2026-09-23) con un álbum de 12×50 MB y 3 workers contra el servidor falso:
+
+| | Antes | Después |
+|---|---|---|
+| Pico de heap vivo (`runtime/metrics`) | 300 MB | 1,3 MB |
+| RSS máximo (`/usr/bin/time -v`) | 321 MB | 14,6 MB |
+| Bytes reservados por álbum | 1,26 GB | 2,4 MB |
+| Tag de un MP3 de 50 MB | 316 MB/op | 1,7 MB/op |
+
+El pico escalaba con el tamaño de pista × workers: un 24/192 de 200 MB por pista
+rondaba los 1,2 GB. `replaceHead` además escribe a `<ruta>.tag` y renombra al final:
+el `writeID3v23` viejo hacía `os.Create` sobre el original **antes** de escribir, así
+que un fallo a mitad dejaba la pista truncada y `downloadAndTag` la renombraba igual.
+
+Lo guardan `TestTaggingMemoryIndependentOfTrackSize` y
+`TestReadFLACMemoryIndependentOfFileSize`: fallan si una pista de 16 MB reserva más de
+1 MB. Validados restaurando el código viejo (32 MB, 100 MB y 16 MB reservados → fallan).
+Los benchmarks `BenchmarkMem*` en los dos `mem_test.go` dan las cifras de la tabla.
+
+Lo que queda en el perfil (`-memprofile`, `alloc_space`) es runtime, `mpb` y `net/http`.
+**Antes de optimizar memoria, medir**: ajustes de escape analysis o tipos más estrechos
+sobre metadatos de KB no se ven al lado de un `ReadFile` de 50 MB.
+
 ### Formatos de nombre: validar en la frontera, nunca degradar en silencio
 
 `folder_format` y `track_format` son entrada del usuario, y el daño de aceptarlas mal
@@ -259,15 +290,15 @@ No añadir dependencias nuevas sin discusión. En particular no añadir librerí
 
 ### Cobertura por paquete
 
-Medido con `go test -cover ./...` el 2026-09-20:
+Medido con `go test -cover ./...` el 2026-09-23:
 
 | Paquete | Cobertura | Archivos de test |
 |---|---|---|
 | api | 42.9% | client_test.go |
 | bundle | 59.7% | bundle_test.go |
 | config | 45.1% | config_test.go |
-| downloader | 50.1% | integration_test.go, oauth_test.go, tui_test.go, metadata_test.go, db_test.go, lastfm_test.go, helpers_test.go, redownload_test.go, csvbatch_test.go, collection_test.go |
-| lyrics | 75.6% | metadata_test.go, lrclib_test.go, lyrics_test.go |
+| downloader | 55.0% | integration_test.go, mem_test.go, oauth_test.go, tui_test.go, metadata_test.go, db_test.go, lastfm_test.go, helpers_test.go, redownload_test.go, csvbatch_test.go, collection_test.go |
+| lyrics | 74.9% | metadata_test.go, lrclib_test.go, lyrics_test.go, mem_test.go |
 | ui | 59.1% | shell_test.go, handle_test.go, lang_test.go |
 | cmd/qobuz-dl | 0% | main_test.go |
 
