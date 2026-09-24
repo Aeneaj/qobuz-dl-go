@@ -1,6 +1,8 @@
 module github.com/Aeneaj/qobuz-dl-go
 
-go 1.24.0
+go 1.26
+
+toolchain go1.26.8
 
 require (
 	github.com/charmbracelet/bubbletea v1.3.10

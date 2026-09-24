@@ -288,6 +288,11 @@ credenciales son correctas. La ruta de token propaga el error tal cual, sin cons
 
 `gofmt -l .` vacío → `go vet ./...` → `go test -race -cover ./...`.
 
+**`go 1.26` va sin parche a propósito.** `setup-go` (CI y release) lee esa línea: con un
+parche fijo instala exactamente ese (así se estuvo compilando con 1.24.0, con 32
+vulnerabilidades de stdlib); sin parche instala la última 1.26.x. La línea `toolchain`
+es para local: sin ella `GOTOOLCHAIN=auto` busca un `go1.26` que no existe.
+
 ## Medido y descartado
 
 Para no volver a investigarlo:

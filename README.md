@@ -16,7 +16,7 @@ browse and search, but Qobuz will not let them download tracks.
 
 ### 1. Build it
 
-You need [Go 1.24+](https://go.dev/dl/) installed. Then:
+You need [Go 1.26+](https://go.dev/dl/) installed. Then:
 
 ```bash
 git clone https://github.com/Aeneaj/qobuz-dl-go.git
