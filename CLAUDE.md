@@ -1,672 +1,305 @@
 # qobuz-dl-go
 
-Traducción completa a Go del PR #331 de vitiko98/qobuz-dl (autenticación OAuth).
-Original Python: https://github.com/vitiko98/qobuz-dl/pull/331
-
-## Estructura
-
-```
-cmd/qobuz-dl/        CLI entry point (flag stdlib, sin dependencias externas)
-  main.go            const usage, main() como dispatcher, handlers cortos, helpers
-  flags.go           wiring CLI→downloader: cliFlags, registerDownloadFlags,
-                     loadOrInitConfig, initDownloader
-  oauth_cmd.go       runOAuth
-  lyrics_cmd.go      runLyrics
-internal/api/        Cliente HTTP Qobuz API (qopy.py)
-internal/bundle/     Scraper de app_id/secrets/private_key de bundle.js
-internal/config/     Lector/escritor de config.ini (INI casero, sin deps)
-internal/downloader/ Descarga, tagging FLAC/MP3, colecciones, OAuth
-  downloader.go      tipo Downloader, New, plumbing de progreso (termOut/newBar/
-                     newProgress), HandleURL, DownloadURLs, parseQobuzURL
-  collection.go      artista/playlist/label + smartDiscogFilter
-  album.go           downloadAlbum → collectTrackJobs → runTrackJobs, resolveFormat
-  track.go           un track de punta a punta: downloadTrackByID, finalTrackPath,
-                     alreadyHave, downloadAndTag, fallbackQuality
-  transfer.go        downloadWithProgress: reintentos, resume por Range, downloadExtra
-  search.go          Search/SearchURLs para CLI y TUI
-  helpers.go         M3U, sanitize/safeJoin/nestedStr/idStr, barLabel,
-                     validateFormats/limitNameBytes (frontera de entrada)
-internal/lyrics/     Descarga de .lrc: lector de metadatos FLAC/MP3, cliente LRCLIB
-internal/ui/         TUI bubbletea: shell completo (comando `tui`) + progreso (--tui)
-  backend.go         interfaz Backend — el seam que rompe el ciclo de imports
-  lang.go            i18n: T() + mapa es; el inglés vive en el código
-  shell.go           máquina de estados: menú, búsqueda, cola, running, config
-  widgets.go         textField y picker (hechos a mano, sin bubbles)
-  model.go           pantalla de progreso de descarga
-  handle.go          TrackHandle: implementa downloader.ProgressBar
-  styles.go          paleta lipgloss
-```
-
-## Filosofía de Arquitectura
-
-### Zero Dependencies para parseo de audio
-
-El tagging y la lectura de metadatos FLAC y MP3 están implementados en **Go puro**, sin librerías externas de audio:
-
-- `internal/downloader/metadata.go` — escritura de tags (Vorbis Comment + ID3v2.3)
-- `internal/lyrics/metadata.go` — lectura de tags y duración (STREAMINFO, Vorbis Comment, ID3v2.3/v2.4, cabecera Xing, estimación CBR)
-
-No añadir dependencias de parseo de audio externas. Si necesitas leer o escribir un campo nuevo de metadatos, impleméntalo en pure Go.
-
-**Trampa ya pisada una vez**: en Go, `string(payload)` sobre un `[]byte` lo **reinterpreta como UTF-8**, no lo convierte desde otra codificación. La rama Latin-1 de `decodeID3Text` hacía eso y corrompía todo byte por encima de 0x7F — `Café` en ISO-8859-1 salía como `"Caf\xe9"`, UTF-8 inválido, que iba tal cual a la query de LRCLIB. La conversión correcta es rune a rune: `rune(b)` da U+0000–U+00FF, que *es* ISO-8859-1. Sobrevivió porque los tests solo usaban ASCII, idéntico en ambas codificaciones — **al testear codificaciones, usar siempre al menos un carácter no ASCII**.
-
-### Memoria: el audio nunca pasa por la RAM
-
-Etiquetar y leer tags cuesta lo que ocupan **los metadatos**, no la pista. `writeFLACMeta`
-y `writeID3v23` leen solo la cabecera, la reescriben en memoria y copian el audio de
-fichero a fichero con `replaceHead` (`io.Copy` entre `*os.File` → `copy_file_range` en
-Linux, el audio ni entra en espacio de usuario). `lyrics.readFLAC` para en el último
-bloque de metadatos. Antes los tres hacían `os.ReadFile` del fichero entero.
-
-Medido (2026-09-23) con un álbum de 12×50 MB y 3 workers contra el servidor falso:
-
-| | Antes | Después |
-|---|---|---|
-| Pico de heap vivo (`runtime/metrics`) | 300 MB | 1,3 MB |
-| RSS máximo (`/usr/bin/time -v`) | 321 MB | 14,6 MB |
-| Bytes reservados por álbum | 1,26 GB | 2,4 MB |
-| Tag de un MP3 de 50 MB | 316 MB/op | 1,7 MB/op |
-
-El pico escalaba con el tamaño de pista × workers: un 24/192 de 200 MB por pista
-rondaba los 1,2 GB. `replaceHead` además escribe a `<ruta>.tag` y renombra al final:
-el `writeID3v23` viejo hacía `os.Create` sobre el original **antes** de escribir, así
-que un fallo a mitad dejaba la pista truncada y `downloadAndTag` la renombraba igual.
-
-Lo guardan `TestTaggingMemoryIndependentOfTrackSize` y
-`TestReadFLACMemoryIndependentOfFileSize`: fallan si una pista de 16 MB reserva más de
-1 MB. Validados restaurando el código viejo (32 MB, 100 MB y 16 MB reservados → fallan).
-Los benchmarks `BenchmarkMem*` en los dos `mem_test.go` dan las cifras de la tabla.
-
-Lo que queda en el perfil (`-memprofile`, `alloc_space`) es runtime, `mpb` y `net/http`.
-**Antes de optimizar memoria, medir**: ajustes de escape analysis o tipos más estrechos
-sobre metadatos de KB no se ven al lado de un `ReadFile` de 50 MB.
-
-**Segunda ronda (2026-09-23), misma regla en cuatro sitios más.** Revisión completa del
-código; cada hallazgo medido antes de tocarlo:
-
-| Sitio | Antes | Después | Guarda |
-|---|---|---|---|
-| `View()` de la TUI, 3.600 pistas terminadas | 81 ms · 21,7 MB por frame | 0,41 ms · 135 KB | `TestViewFitsTheScreen` |
-| Discografía de Bach (10.000 álbumes, API real) retenida durante la descarga | 61 MB | 0,04 MB | tipo: el bucle recibe `[]string` |
-| Portada original (1,36 MB real) al etiquetar, por pista | FLAC 4,4 MB · MP3 7,1 MB | 1,65 MB | `TestTaggingMemoryIndependentOfTrackSize` |
-| `lyrics` sobre un MP3 con portada incrustada, por fichero | 1,37 MB · 0,54 ms | 423 B · 0,011 ms | `TestReadMP3MemoryIndependentOfCover` |
-
-- **La TUI dibujaba la sesión entera** en cada frame (cada tick de 100 ms), y la terminal
-  solo guarda las últimas filas: además la cabecera se salía de pantalla. `visibleTracks`
-  pinta lo que cabe, empezando por la primera pista sin terminar. `viewChrome`/`shellChrome`
-  son las filas fijas de cada pantalla; si cambias la cabecera o el pie, cámbialos.
-  De paso: `MsgDone`/`MsgFailed` limpiaban `ticking` con un tick pendiente y el siguiente
-  `MsgSetTotal` abría una **segunda cadena de ticks** (`TestOneTickChain`); y `drawBar`
-  hacía un `Render` por celda (~75 por barra), ahora uno por tramo.
-- **Colecciones**: `collectionIDs` devuelve solo los ids; los mapas decodificados (6–10 KB
-  por item) mueren al volver. Y mientras se piden las páginas: `multiMeta` entrega cada
-  página por callback y `fetchPages`/`slimPage` guardan de cada item solo
-  `collectionFields` más el nombre del artista — lo que leen el bucle y
-  `smartDiscogFilter`. Bach, API real: pico 77,6 MB → 18,6 MB, mismos 10.000/644/181 ids
-  en el mismo orden. Si `smartDiscogFilter` empieza a leer un campo nuevo, **añádelo a
-  `collectionFields`**: `TestSlimPageKeepsWhatSmartDiscogReads` falla por cada campo que
-  falte, pero solo para los que ya cubre.
-- **Portada**: `replaceHead` recibe la cabecera en trozos y la imagen va como trozo propio,
-  sin copiarse dentro del bloque PICTURE ni del frame APIC. Una portada de más de 16 MB
-  ya no se incrusta: la longitud del bloque FLAC es de 24 bits y antes se envolvía,
-  corrompiendo el fichero (`TestTagFLACSkipsOversizedCover`).
-- **`lyrics` MP3**: `readID3Frames` lee solo TIT2/TPE1/TPE2/TALB/TLEN y salta el resto con
-  `Seek` sobre un `io.SectionReader`. Verificado con un diferencial de 200.000 tags
-  aleatorios contra el parser viejo.
-
-**Medido y descartado**: el buffer de 32 KB de `io.Copy` por intento y el cierre que
-`mpb` crea por `Read` son basura (~1 MB por álbum), no RSS. El suelo de `--version` es
-8,4 MB, de los que 6,8 MB son páginas del binario (compartidas, recuperables por el
-kernel) y 1,6 MB memoria propia: `/proc/<pid>/status` (`RssFile` vs `RssAnon`) lo separa,
-`/usr/bin/time` no.
-
-### Formatos de nombre: validar en la frontera, nunca degradar en silencio
-
-`folder_format` y `track_format` son entrada del usuario, y el daño de aceptarlas mal
-es **silencioso**: no un error, tracks que no existen. La cadena de #23 completa,
-porque es el molde de toda esta clase de bug:
-
-1. `expandPlaceholders` sustituye por coincidencia literal de `{clave}`, así que un
-   token que no está en el mapa **sobrevive tal cual**.
-2. Con eso, `finalTrackPath` devuelve el mismo nombre para los 12 tracks del álbum.
-3. Los 3 workers pasan el `os.Stat` a la vez (aún no hay fichero), los 3 renombran al
-   mismo destino y gana el último.
-4. Los tracks 4..N ven el fichero presente → `bar.Abort(true)`, salen sin ruido y
-   quedan **registrados en la DB**.
-
-Síntoma: lista 12, muestra 3 (= `workers`), descarga 1. Ningún error en ninguna capa.
-
-`validateFormats` se llama desde `New`, no desde `initDownloader`, porque `New` es el
-único punto por el que pasan CLI, TUI, csv y fun. La validación de calidad sí vive en
-`initDownloader`: `New` la recibe en 0 desde `runOAuth` —0 significa "sin fijar"— y
-ahí se rechaza **antes de tocar la red**, que es donde el error es barato y claro.
-
-Tres reglas, las tres contra el mismo reflejo:
-
-- **Placeholder desconocido = error, no paso libre.** El mensaje nombra el token y el
-  juego válido: el usuario está atascado y el consejo es su única salida, igual que en
-  los errores de auth.
-- **Un `track_format` sin `{tracknumber}` ni `{tracktitle}` también se rechaza.** Es la
-  misma pérdida de datos con placeholders perfectamente válidos.
-- **Sustituir la plantilla del usuario se anuncia.** `cleanFormatStr` cambia el formato
-  entero por uno hardcodeado cuando la calidad es MP3 (sin bit depth, `{bit_depth}`
-  expandiría a `n_a`), y eso se lleva por delante cualquier jerarquía de subcarpetas
-  configurada. El swap sigue; el silencio no. El aviso apunta a `{format}`, que
-  describe la calidad en FLAC y en MP3 y por tanto nunca dispara el swap.
-
-**El límite de longitud de nombre es por componente y en bytes**, 255 en ext4, NTFS y
-APFS. `finalTrackPath` recortaba la **ruta entera** a 250 runas, mal en los dos ejes:
-un título CJK de 100 caracteres son 300 bytes y pasaba el chequeo de runas sin tocarse;
-y recortar la ruta completa mutila los nombres en cuanto crece el directorio de
-descarga, pudiendo cortar **dentro** de la carpeta del álbum — la ruta truncada deja de
-estar bajo el directorio que `safeJoin` había garantizado. `limitNameBytes` limita solo
-el último componente, camina runas enteras hacia atrás, y al recortar añade el id del
-track: dos títulos largos con prefijo común resolvían al mismo nombre, que es el paso 2
-de la cadena de arriba entrando por otra puerta.
-
-### UI de Terminal: `mpb` por defecto, TUI opt-in
-
-El display por defecto son barras `mpb`. `--tui` cambia a una pantalla completa bubbletea (`internal/ui/`). **Nunca conviven**: los dos escriben en el cursor, así que `newProgress` devuelve `nil` cuando la TUI está activa y `mpb` ni se crea.
-
-El seam es la interfaz `ProgressBar` (`downloader.go`): `*mpb.Bar` la cumple de forma nativa, `ui.TrackHandle` la implementa explícitamente. El código de descarga no sabe cuál tiene delante. Para añadir un display nuevo basta implementar esos cuatro métodos y una rama en `newBar`/`newProgress`.
-
-`ui.TrackHandle` no manda un mensaje por cada `Read`: acumula bytes en un `atomic.Int64` que el modelo consulta en cada tick de 100ms. Los mensajes quedan para eventos de control (SetTotal, Done, Failed). Mantenlo así — un `p.Send()` por lectura satura el bucle de bubbletea con 6 workers.
-
-Las barras `mpb` siguen los patrones establecidos:
-
-- Estilo de barra: `╢█████░░░╟` (`Lbound("╢").Filler("█").Tip("█").Padding("░").Rbound("╟")`)
-- Etiqueta izquierda (PrependDecorators): ancho fijo con `truncateStr` o `buildLabel`
-- Etiqueta dinámica: `decor.Any(func(_ decor.Statistics) string {...})` + `atomic.Value` para thread safety
-- Completado: `decor.OnComplete(decor.Name(""), " \033[32m✓\033[0m")`
-- Refresh: `mpb.WithRefreshRate(150 * time.Millisecond)`
-
-Cualquier nueva feature con feedback visual debe reutilizar este patrón para consistencia.
-
-**Nunca imprimir a stdout con barras vivas.** Mientras un `mpb.Progress` renderiza es dueño del cursor: reposiciona y repinta cada 150ms, así que un `fmt.Printf` crudo corrompe el dibujo, y peor si sale de varias goroutines worker a la vez. Dos formas correctas:
-
-- `downloader` usa `d.termOut()`, que devuelve el `*mpb.Progress` activo (mpb serializa las escrituras contra su bucle de render) o `os.Stdout` si no hay ninguno. Marca el contenedor con `d.withBars(p)` al crearlo.
-- `lyrics` acumula los avisos en un slice y los vuelca **después** de `p.Wait()`. El
-  escaneo también: `scanAudioFiles` hacía `fmt.Printf` por fichero ilegible y corre bajo la
-  TUI vía `FetchAll` (`TestNoDirectStdoutWrites` solo mira `downloader`); ahora los
-  devuelve y los guarda `TestFetchAllPrintsNothing`.
-
-Usa la primera cuando el mensaje deba verse al momento (un track que falla), la segunda cuando sea un resumen.
-
-Con `--tui` la regla es más estricta: bubbletea está en alt-screen y **nada** puede llegar a stdout, así que `termOut()` devuelve `io.Discard`. Por eso todos los mensajes del paquete (incluido `csvbatch.go`) van por `d.termOut()` y no por `fmt.Printf`. Las funciones libres (`makeM3U`, `printBatchSummary`, `tagFLAC`, `cleanFormatStr`) reciben el `io.Writer` como parámetro.
-
-**`os.Stderr` cuenta igual que stdout**: la alt-screen se traga los dos. Un error que el
-usuario tiene que ver se **devuelve**, no se imprime — `DownloadCSV` devuelve el fallo de
-parseo y `runDisplay` propaga el de `fn`, que se reporta con la pantalla ya cerrada. Bajo
-la TUI el shell lo pinta en su línea de estado; en CLI acaba en `fatalf`, o sea stderr y
-exit 1.
-
-Las dos excepciones son `interactive.go` y `oauth.go`: el REPL de `fun` es dueño de su
-terminal y nunca corre con barras, y OAuth solo imprime con la terminal liberada por
-`ReleaseTerminal`. Están en la allowlist de `TestNoDirectStdoutWrites`.
-
-**Esa regla se rompió ocho veces sin que nada lo notara** (arreglado 2026-08-06):
-`tagFLAC`, `csvbatch.go` y `lastfm.go` tenían un `fmt.Print*` a un par de líneas de
-código que sí usaba `termOut()`, y `csvbatch.go` otros cinco `os.Stderr` —tres de ellos
-dentro de `ParseCSV`, que corre bajo la TUI vía `DownloadCSV`.
-`TestTermOutDiscardsUnderTUI` no lo veía porque prueba que `termOut()` **devuelve**
-`io.Discard`, no que alguien lo **use**. `TestNoDirectStdoutWrites` escanea el paquete y
-cierra esa diferencia.
-
-### Idioma de la TUI
-
-El inglés es el default y **vive en el código**: cada cadena se escribe en inglés
-en su sitio de uso y `T()` la traduce al renderizar. `lang.go` solo tiene el mapa
-`es`. Una entrada que falte devuelve la clave, así que una traducción olvidada sale
-en inglés en vez de dejar un hueco en blanco — y añadir un idioma no puede vaciar
-la pantalla. No hay tabla de inglés que mantener sincronizada.
-
-`SetLang` se llama **una vez desde `main()`**, antes de cualquier `tea.Program`: no
-lleva lock y no es seguro con el bucle de render corriendo. Va en `main()` y no en
-`runTUI` porque las dos pantallas lo necesitan (`tui` y `--tui`), y así `internal/ui`
-no depende de `internal/config`. Idioma ausente o desconocido → inglés.
-
-Los **errores** son la excepción y se quedan en inglés sin `T()`, igual que los de
-`api`, `config` y `downloader`: traducir solo los del backend TUI sería incoherente y
-los `%w` no son claves de tabla. Los mensajes de estado sí van por `T()` — el patrón
-lo marca `shell.go` (`s.status = T("working…")`, `fmt.Sprintf(T("%d in the queue"), n)`).
-`cmd/qobuz-dl/tui_cmd.go` está en `package main` y llama `ui.T()`.
-
-**Lección de los tests, en dos rondas.** Primera: los tres tests de datos (tabla
-completa, sin claves huérfanas, sin español en el código) pasaban mientras la fila
-**seleccionada** del menú se renderizaba en inglés — se construía con `m.label` crudo
-mientras todas las demás pasaban por `T()`. Una tabla de traducción completa no puede
-detectar un sitio de render que no la consulta. `TestMenuRendersFullySpanish` mueve el
-cursor por todas las entradas y compara la salida real.
-
-Segunda (2026-08-06): esos cuatro tests seguían verdes con 16 cadenas en español
-hardcodeadas. Tres agujeros distintos, los tres ahora cerrados:
-
-- `readUISources` leía una **lista fija de seis ficheros** de `internal/ui`, así que
-  `cmd/qobuz-dl/tui_cmd.go` no se miraba nunca. Ahora lee por directorio — una lista de
-  ficheros deja de cubrir todo lo que se añada después de escribirla.
-- La regex de `TestNoSpanishLeftInSources` solo miraba `ñÑ¿¡`; `"(vacío)"` pasaba.
-  Ampliada a vocales acentuadas.
-- **Español sin carácter distintivo** (`"%d completadas"`, `"Ctrl+C cancelar"`) es
-  invisible para cualquier escaneo de fuentes. Lo caza `TestEnglishRenderStaysEnglish`:
-  renderiza en inglés y falla si aparece cualquier **valor** del mapa `es`. Una cadena
-  hardcodeada sale idéntica en los dos idiomas, y eso no necesita lista de palabras.
-
-### La TUI completa (`tui`)
-
-`qobuz-dl tui` mete todo el programa en una pantalla: menú, búsqueda por los 4 tipos, cola, descarga, letras, CSV, config y purga. `--tui` es otra cosa: solo cambia el display de progreso de `dl`/`lucky`/`csv`. Comparten `Model`.
-
-**El ciclo de imports es la restricción que manda.** `internal/downloader` importa `internal/ui` (para `MsgAlbum` y `TrackHandle`), así que el shell **no puede** importar el downloader. Por eso existe `ui.Backend`: una interfaz con una sola implementación real (`tuiBackend` en `cmd/qobuz-dl/tui_cmd.go`). No es abstracción especulativa — es la única forma de que el shell llame al downloader. Si añades una función al menú, añade su método al `Backend` y al adaptador.
-
-**OAuth entra suspendiendo la TUI**, no reimplementándolo. `tuiBackend.Login` llama a `p.ReleaseTerminal()`, corre `oauthLogin` (el flujo CLI de siempre) y hace `RestoreTerminal()`, que re-entra en alt-screen y repinta solo. Esto no es comodidad: `captureOAuthRedirect` lee el Enter con `fmt.Scanln`, y bubbletea tiene stdin en modo raw con su propio lector — dos lectores se roban bytes. `ReleaseTerminal` **cancela el lector de entrada**, que es lo que hace que reutilizar el flujo tal cual sea correcto. Si algún día se integra nativo, lo primero que hay que borrar es ese `Scanln`.
-
-`runTUI` **no exige credenciales**: si `initDownloader` falla, guarda el error en `bootErr` y abre el shell igual — el menú es donde vive el login, negarse a arrancar escondería la única salida. `session()` distingue "no hay token" de "el directorio no existe", para no mandar al usuario a hacer login cuando el problema es otro.
-
-Reglas del shell:
-- Toda llamada bloqueante va en un `tea.Cmd`, nunca dentro de `Update`. El bucle de render no puede pararse.
-- El progreso llega por `p.Send()` desde el backend, no como retorno del `tea.Cmd`. Por eso `tuiBackend` guarda el `*tea.Program`.
-- `Update` reenvía al `Model` embebido cualquier mensaje que no reconozca — así el downloader no sabe si habla con el shell o con la pantalla de progreso suelta.
-- Cada operación larga corre en su propio contexto cancelable: Ctrl+C cancela **el trabajo**, y solo sale del programa si no hay nada corriendo.
-
-`lyrics.FetchAll(ctx, dir, step)` existe para esto: `lyrics.Run` dibuja su propia barra mpb y escribe a stdout, lo que bajo la TUI rompería la pantalla. `FetchAll` hace el trabajo sin dibujar nada y reporta por callback; `Run` es ahora un wrapper que le pone las barras.
-
-### CLI: `main()` solo despacha
-
-`main()` hace exactamente cuatro cosas: registrar flags, atajos de config (`--version`/`--reset`/`--show-config`/`--purge`), montar el contexto cancelable por señal, y despachar. **Cero lógica de comando inline.**
-
-Un subcomando nuevo es una función `run<Name>(ctx, args, ...)` más una línea en el switch. Usa los helpers compartidos en vez de repetirlos:
-
-- `requireArgs(args, cmd, hint)` — sale con `"<cmd>: <hint>"` si faltan argumentos
-- `mustDownloader(ctx, flags)` — construye el downloader o sale
-
-Un comando se lleva su propio `<name>_cmd.go` **cuando tiene sustancia** (~80 líneas, como `runOAuth` y `runLyrics`). Los de 4 líneas viven en `main.go`: en Go, partir archivos dentro del mismo paquete no añade encapsulación, solo orden.
-
-No meter cobra ni urfave/cli — el proyecto usa `flag` de stdlib a propósito.
-
-**Un solo `FlagSet` y `parseArgs`, no un `FlagSet` por subcomando.** `flag` de
-stdlib para de parsear en el primer argumento que no es flag, así que todo lo
-escrito después del subcomando acababa en `fs.Args()` y se leía como URL —
-`dl <URL> -q 27` se ignoraba **en silencio**, y el README lo documentaba como
-"esto le pasa a todo el mundo una vez" en vez de arreglarlo. `parseArgs` pela un
-posicional a la vez y vuelve a parsear el resto, así que las tres posiciones
-funcionan; llamar a `fs.Parse` varias veces sobre el mismo `FlagSet` es seguro y
-los valores ya fijados se conservan. El `--` literal se separa **antes** del
-bucle: sin eso, un flag que no sea el primer elemento tras el terminador se
-volvería a parsear.
-
-`runLyrics` tenía su propio `FlagSet` solo para `-d`, y con el parseo global ese
-`-d` se consume arriba; el bloque de ayuda local dejó de ser alcanzable por `-h`,
-así que se borró y sus dos datos útiles pasaron al `usage` global. Es el motivo
-de que `runLyrics` reciba el directorio por parámetro.
-
-## Dependencias externas
-
-Las dependencias de módulo son:
-- `github.com/vbauerster/mpb/v8` — barras de progreso
-- `github.com/charmbracelet/bubbletea` — TUI opt-in (`--tui`)
-- `github.com/charmbracelet/lipgloss` — estilos de la TUI
-- `github.com/acarl005/stripansi` — limpieza de secuencias ANSI
-- `github.com/VividCortex/ewma` — media móvil (usada por mpb)
-- `github.com/mattn/go-runewidth` — ancho de caracteres Unicode
-- `github.com/clipperhouse/uax29/v2` — segmentación de texto Unicode
-- `golang.org/x/sys` — syscalls de bajo nivel
-
-No añadir dependencias nuevas sin discusión. En particular no añadir librerías de parseo de audio (dhowden/tag, mewkiz/flac, bogem/id3v2, etc.) — ya tenemos implementaciones propias.
-
-`bubbletea` + `lipgloss` (y sus 13 transitivas) entraron con la TUI en la rama `feat/tui`, discutidas y aprobadas ahí. La regla sigue en pie para lo que venga después.
-
-## Filosofía de Tests
-
-### Reglas invariantes
-
-- **Sin testify ni mocks externos.** Solo stdlib: `testing`, `net/http/httptest`, `os`, `io`, etc.
-- **Tests rápidos y offline.** Ningún test hace peticiones reales a internet. Servidores mock con `httptest.NewServer`.
-- **Table-driven por defecto.** Slice de `struct{ in, want }` + bucle `for _, c := range cases`. Subtests con `t.Run` cuando hay nombre descriptivo.
-- **Inyección de dependencias por parámetro.** La función pública (`Run`) recibe un cliente real; la interna (`runWithClient`) acepta el cliente como argumento para que los tests pasen uno falso. No usar variables globales para el cliente.
-- **Helpers de test mínimos.** Los constructores de datos falsos (`fakeFLAC`, `fakeMP3`) viven en `*_test.go`, no en producción.
-- **Un solo dato de prueba puede tener suerte aritmética.** El subtest de fronteras de
-  rune de `limitNameBytes` pasaba con un corte byte a byte: 120 runas de 3 bytes
-  recortan a exactamente 246, múltiplo de 3, así que el corte crudo caía en frontera
-  por casualidad. Cuando lo que se prueba es una **alineación**, recorre todos los
-  desplazamientos (ahí, relleno ASCII de 0 a 3) en vez de fiarte de una longitud.
-  Hermana de la lección Latin-1 de arriba: los datos ASCII ocultaban el bug entero.
-
-### Cobertura por paquete
-
-Medido con `go test -cover ./...` el 2026-09-23:
-
-| Paquete | Cobertura | Archivos de test |
-|---|---|---|
-| api | 42.9% | client_test.go |
-| bundle | 59.7% | bundle_test.go |
-| config | 45.1% | config_test.go |
-| downloader | 56.4% | integration_test.go, mem_test.go, oauth_test.go, tui_test.go, metadata_test.go, db_test.go, helpers_test.go, transfer_test.go, redownload_test.go, csvbatch_test.go, collection_test.go |
-| lyrics | 74.8% | metadata_test.go, lrclib_test.go, lyrics_test.go, mem_test.go |
-| ui | 75.9% | shell_test.go, handle_test.go, lang_test.go, model_test.go |
-| cmd/qobuz-dl | 0% | main_test.go |
-
-`cmd/qobuz-dl` marca 0% porque sus tests son **black-box**: compilan el binario en `TestMain` y lo ejecutan como subproceso, así que la cobertura no se instrumenta. No es falta de tests.
-
-`handle_test.go` en ui cubre `TrackHandle`, el seam que hace intercambiables mpb y la TUI. El test
-que importa es `TestTrackHandleReadSendsNothing`: arranca un `tea.Program` headless con un modelo
-que graba los mensajes y comprueba que copiar 8 KB por el `ProxyReader` no manda **ninguno**. Es la
-invariante de la que depende el diseño — un `p.Send()` por `Read` satura el bucle con 6 workers.
-Filtra los mensajes propios de bubbletea (window size) porque si no los conteos no significan nada.
-Validado con 6 mutaciones, todas detectadas.
-
-`helpers_test.go` en downloader cubre: `sanitize`, `expandPlaceholders`, `renderFormat`,
-`formatDuration`, `idStr`, `nestedStr`, `releaseYear`, `essenceTitle`, `isRemaster`,
-`validateFormats`, `limitNameBytes`.
-
-**La documentación es una superficie de test.** El README anunció `{genre}` y
-`{composer}` durante toda la vida del proyecto sin que existieran: seguir la
-documentación llevaba directo a la cadena de #23. Nada ataba la lista documentada a la
-que `expandPlaceholders` sustituye de verdad, y `TestAdvertisedFlagsExist` —que ya
-guardaba justo este agujero para los flags— **solo escanea `.go`**, así que no la
-miraba. `TestREADMEPlaceholderParity` la cierra en los dos sentidos: documentado sin
-implementar falla, e implementado sin documentar también. Escanea el README **entero**
-en vez de localizar la sección de formatos, porque hoy los únicos tokens `{...}` del
-fichero son exactamente la unión de los dos juegos: sin parseo de secciones es más
-corto y además caza un token inventado en cualquier otra parte del documento.
-
-### Tests de integración del downloader (`integration_test.go`)
-
-Servidor Qobuz falso (`album/get`, `track/getFileUrl`, bytes de audio, carátula) más un `rewriteTransport` que redirige el host de Qobuz al `httptest.Server`. Las URLs de fichero ya son absolutas del servidor de test, así que pasan sin tocar.
-
-El seam es `api.NewWithHTTP(appID, secrets, hc)`: `baseURL` es const, así que desde otro paquete la única forma de alcanzar el mock es inyectar un `*http.Client` con Transport propio. Producción sigue usando `api.New`.
-
-Cubren el flujo completo — metadatos, construcción de rutas, pool de workers, tagging y DB — con **aserciones sobre el efecto observable correcto**, que no siempre es el evidente. Ejemplo: para verificar que la DB salta un track ya descargado **no** basta comprobar que no se re-descarga el audio, porque `downloadAndTag` ya corta con un `os.Stat` del fichero final y eso se cumple igual con la DB desactivada. El efecto propio de la DB es que no se llama a `track/getFileUrl`.
-
-**Valida los tests nuevos con mutaciones**: rompe la línea a propósito (numeración `%02d`→`%d`, `Disc %d`→`CD%d`, desactivar un guard) y comprueba que el test falla. Un test que sigue verde con el código roto no prueba nada — así se detectó justo el fallo de aserción de arriba.
-
-### Refactors que deben preservar semántica exacta
-
-Cuando cambies una función cuyo resultado es silenciosamente rompible (qué álbum gana un filtro, qué codificación se elige), escribe un **test diferencial desechable**: copia la implementación vieja como `xxxOld` en un `zz_diff_test.go` temporal, genera entradas aleatorias, compara salidas, y **borra el archivo antes de commitear**. En `smartDiscogFilter` fueron 20.000 discografías aleatorias. Es más barato y más convincente que razonar sobre los casos borde.
-
-### CI (`.github/workflows/ci.yml`)
-
-```yaml
-- name: Format   # falla si algún archivo no está formateado con gofmt
-  run: test -z "$(gofmt -l .)"
-- name: Vet
-  run: go vet ./...
-- name: Test     # -cover imprime cobertura por paquete
-  run: go test -cover ./...
-```
-
-### Checklist antes de añadir tests nuevos
-
-1. Buscar si la función ya tiene tests en `*_test.go` del mismo paquete.
-2. Preferir extender una tabla existente antes de crear nueva función de test.
-3. Asegurarse de que `go fmt ./...` no cambia nada antes de commit.
-
-## Estado actual (v1.5.0)
-
-- `go build ./...` ✅
-- `go vet ./...` ✅
-- `go fmt ./...` ✅ (CI falla si hay archivos sin formatear)
-- `go test -cover ./...` ✅ (todos los paquetes pasan)
-- Cobertura: ver la tabla de la sección anterior
-
-### Complejidad cognitiva (codebase-memory, 2026-07-27)
-
-Los tres focos históricos están cerrados:
-
-| Función | Antes | Ahora |
-|---|---|---|
-| `main()` | 54 | 26 |
-| `decodeID3Text` | 38 | 10 |
-| `smartDiscogFilter` | 25 | 3 |
-
-Lección de `smartDiscogFilter`: un intento previo colapsó sus 4 pasadas en 2 y la métrica no se movió. **Lo que penaliza es la profundidad de anidamiento, no el número de pasadas** — sacar el trabajo interno a su propia función es lo que baja el número.
-
-El mayor valor actual es `pickBest` (14). No es alarmante; vigilar si se añade un criterio de selección nuevo.
-
-## Comandos de construcción
-
-```bash
-go build -o qobuz-dl ./cmd/qobuz-dl/   # compilar binario
-go build ./...                          # verificar que compila todo
-go vet ./...                            # análisis estático
-go test ./...                           # todos los tests
-go test ./internal/lyrics/... -v        # tests de un paquete concreto
-```
-
-## Autenticación Qobuz
-
-Password auth rota (401, abril 2026). Dos vías:
-1. **OAuth** (recomendado): `qobuz-dl oauth` → servidor local captura redirect con `user_auth_token=` o `code_autorisation=`
-2. **Token**: `qobuz-dl --reset` → pegar user_id + user_auth_token desde DevTools
-3. `/oauth/callback` puede devolver 404 — el código intenta `code_autorisation` y `code` como fallback
-
-**OAuth funciona end to end** (verificado 2026-08-04 contra Qobuz real): captura del redirect,
-token, `user/login` y lectura de membresía. Lo que antes parecía "auth rota" en una cuenta gratuita
-era el gate de elegibilidad, no un fallo de autenticación.
-
-**Regla de mensajes de error**: cuando la autenticación falla, el usuario ya está atascado — el
-consejo que se imprima es su única salida, así que tiene que funcionar y tiene que ser el correcto.
-Dos bugs pisados aquí, ambos de consejo equivocado, no de lógica:
-
-- Tres rutas anunciaban `qobuz-dl --reset --token`; el flag `--token` nunca existió, así que el
-  comando moría con `flag provided but not defined`. Lo guarda `TestAdvertisedFlagsExist`
-  (`cmd/qobuz-dl/main_test.go`), que escanea las fuentes buscando `qobuz-dl --xxx` y comprueba
-  cada nombre contra los `fs.Bool/String/Int` registrados. Es **estático a propósito**: ejecutar
-  los comandos anunciados dispararía `--reset` de verdad, que escribe el `config.ini` del usuario
-  y hace fetch de `bundle.js` por red.
-- `IneligibleError` (cuenta gratuita) recibía el consejo genérico "usa token auth: `--reset`", que
-  es un bucle: el login ya funcionó y las credenciales son correctas. `OAuthLogin` lo distingue con
-  `errors.As` y dice lo que pasa de verdad. Tests en `internal/downloader/oauth_test.go`.
-
-La ruta de token (`flags.go:121`) propaga el error tal cual, sin añadir consejo — correcto, no tocar.
-
-### Flujo de inicialización y credenciales
-
-`loadOrInitConfig(skipCredentials bool)` en `main.go` gestiona la primera ejecución:
-- Si ya existe `config.ini` → lo carga directamente.
-- Si NO existe y `skipCredentials=false` → llama `config.Reset()` (pide user_id + token + preferencias).
-- Si NO existe y `skipCredentials=true` → llama `config.InitConfig()` (solo preferencias, deja credenciales vacías).
-
-Callers:
-- `initDownloader(...)` → `loadOrInitConfig(false)` — todos los comandos de descarga (dl, lucky, csv, fun).
-- `runOAuth(...)` → `loadOrInitConfig(true)` — el flujo OAuth obtiene y guarda el token él mismo via `config.SaveToken`.
-- `--reset` flag → llama `config.Reset()` directamente, sin pasar por `loadOrInitConfig`.
-- `runLyrics(...)` → llama `config.Load()` directamente (solo necesita `DownloadDir`, no credenciales).
-
-Funciones en `internal/config/config.go`:
-- `Reset()` — setup completo con credenciales manuales. Solo para `--reset`.
-- `InitConfig()` — setup sin credenciales. Solo para primera ejecución con `oauth`.
-- `setupPreferences(kv)` — helper interno compartido por ambas: bundle fetch + prompts de directorio/calidad/formatos.
-
-**Regla UX**: nunca pedir user_id/user_auth_token al usuario cuando el comando es `oauth` o `lyrics`. El token llega del flujo OAuth; `lyrics` no necesita Qobuz.
+Traducción a Go de [vitiko98/qobuz-dl](https://github.com/vitiko98/qobuz-dl) con la
+autenticación OAuth del PR #331. Descarga de Qobuz en FLAC/MP3 con tagging propio, TUI
+opcional y descarga de letras desde LRCLIB.
 
 ## Comandos
 
 ```bash
-go build -o qobuz-dl ./cmd/qobuz-dl/
-./qobuz-dl --reset           # configurar con token manual (pide user_id + token + preferencias)
-./qobuz-dl oauth             # login OAuth (primera ejecución solo pide preferencias básicas)
-./qobuz-dl dl <URL>          # descargar por URL
-./qobuz-dl lucky -q 6 "Radiohead"  # búsqueda + descarga
-./qobuz-dl fun               # modo interactivo
-./qobuz-dl lyrics            # fetch .lrc para el directorio configurado
-./qobuz-dl lyrics ~/Music    # fetch .lrc para una ruta específica
+go build -o qobuz-dl ./cmd/qobuz-dl/   # binario
+go vet ./...
+go test -race ./...                    # como CI: siempre con -race
+gofmt -l .                             # debe salir vacío
+
+./qobuz-dl oauth                       # login (recomendado)
+./qobuz-dl --reset                     # config con user_id + token pegados a mano
+./qobuz-dl dl <URL>                    # descargar por URL
+./qobuz-dl lucky -q 6 "Radiohead"      # buscar y descargar el primero
+./qobuz-dl fun                         # REPL interactivo
+./qobuz-dl tui                         # todo el programa en pantalla completa
+./qobuz-dl lyrics [ruta]               # .lrc para una biblioteca existente
 ```
 
-## Directorio de descarga (`download_dir`)
-
-Jerarquía de prioridad al resolver la ruta de descarga:
-1. Flag CLI `-d <ruta>` (máxima prioridad)
-2. Clave `download_dir` en `config.ini`
-3. Fallback: `./qobuz-downloader` (relativo al CWD)
-
-Implementación:
-- `config.ResolveDir(dir string, create bool) (string, error)` — expande `~`, llama `filepath.Abs`; con `create` crea el árbol con `os.MkdirAll`, sin él exige que el directorio ya exista. Devuelve error descriptivo si hay problema de permisos (sin panic)
-- `Config.DownloadDir` — no confundir con la **constante** `config.DefaultFolder`, que es el formato de nombre de álbum (el default de `folder_format`), no una ruta. El campo `Config.DefaultFolder` se retiró: nadie lo leía.
-- `downloader.New()` ya no tiene fallback hardcodeado — la ruta llega siempre resuelta desde `initDownloader`
-
-**Importante**: el comando `lyrics` (y `tuiBackend.Lyrics`) llama `config.ResolveDir(dir, false)` — no crea el directorio si no existe. El usuario debe apuntar a una biblioteca ya existente.
-
-**El directorio de descarga no es nuestro.** `-d .` y `download_dir = .` son la forma
-documentada de descargar en el CWD, así que puede valer `~` o `/`. Nada puede recorrer
-y borrar a partir de ahí: se borra solo lo que el propio run escribió, por su ruta.
-`cleanTmp` barría recursivamente todo `.*.tmp` bajo el directorio al final de cada
-`DownloadURLs` — los `.syncthing.<nombre>.tmp` incluidos — y además sobraba:
-`downloadAndTag` ya borra o renombra su `.tmp` en todos los caminos con el proceso
-vivo, y tras un kill duro el barrido tampoco llegaba a correr (el resto lo retoma el
-resume por `Range`). Lo guarda `TestIntegration_DownloadURLsLeavesForeignFilesAlone`.
-
-## Comando `lyrics` — detalles de implementación
-
-### Paquete `internal/lyrics/`
+## Estructura
 
 ```
-metadata.go  — lectura de tags y duración desde FLAC y MP3 (pure Go)
-lrclib.go    — cliente HTTP para LRCLIB API
-lyrics.go    — orquestador: escaneo → barra mpb → fetch secuencial → escritura .lrc
+cmd/qobuz-dl/        CLI (flag de stdlib)
+  main.go            usage, main() como dispatcher, handlers cortos
+  flags.go           cliFlags, registerDownloadFlags, loadOrInitConfig, initDownloader
+  oauth_cmd.go       runOAuth / oauthLogin
+  lyrics_cmd.go      runLyrics
+  tui_cmd.go         tuiBackend: la implementación de ui.Backend
+internal/api/        cliente HTTP de Qobuz
+internal/bundle/     scraper de app_id/secrets de bundle.js
+internal/config/     config.ini (INI propio, sin deps)
+internal/downloader/
+  downloader.go      Downloader, New, progreso (termOut/newBar/newProgress), HandleURL
+  collection.go      artista/playlist/label, smartDiscogFilter
+  album.go           downloadAlbum → collectTrackJobs → runTrackJobs
+  track.go           una pista: finalTrackPath, alreadyHave, downloadAndTag, fallbackQuality
+  transfer.go        downloadWithProgress: reintentos, resume por Range, stall timeout
+  metadata.go        escritura de tags FLAC (Vorbis) y MP3 (ID3v2.3)
+  search.go          Search / SearchURLs
+  csvbatch.go        comando csv
+  interactive.go     REPL de fun
+  oauth.go           flujo OAuth
+  db.go              DB de pistas descargadas (un id por línea)
+  helpers.go         M3U, sanitize, safeJoin, validateFormats, limitNameBytes
+internal/lyrics/     lectura de tags FLAC/MP3 + cliente LRCLIB + orquestador
+internal/ui/         TUI bubbletea
+  backend.go         interfaz Backend (rompe el ciclo de imports)
+  shell.go           menú, búsqueda, cola, config (comando tui)
+  model.go           pantalla de progreso (flag --tui)
+  handle.go          TrackHandle, implementa downloader.ProgressBar
+  lang.go            i18n: T() + mapa es
+  widgets.go         textField y picker hechos a mano
+  styles.go          paleta lipgloss
 ```
 
-### Lectura de metadatos (metadata.go)
+## Reglas rápidas
 
-**FLAC:**
-- Bloque STREAMINFO (tipo 0): `sample_rate` (20 bits) + `total_samples` (36 bits) → `duration = total_samples / sample_rate`
-- Bloque VORBIS_COMMENT (tipo 4): pares `KEY=VALUE` en UTF-8; `ARTIST` tiene prioridad sobre `ALBUMARTIST`
+- **Dependencias directas: `mpb`, `bubbletea`, `lipgloss`.** Nada nuevo sin discutirlo. Nunca
+  librerías de audio (dhowden/tag, mewkiz/flac, bogem/id3v2…): el parseo es propio, en Go puro.
+- **CLI con `flag` de stdlib**, nada de cobra ni urfave/cli.
+- **Tests solo con stdlib**, sin testify ni mocks externos, offline (`httptest`), table-driven.
+- **Nada escribe a stdout ni stderr mientras hay barras o TUI** (ver "Salida a terminal").
+- **Medir antes de optimizar o de afirmar.** Varias veces aquí el instinto obvio falló y
+  solo lo aclaró una medición.
 
-**MP3:**
-- Cabecera ID3v2.3 y v2.4 (tamaño syncsafe para v2.4, BE uint32 para v2.3)
-- Frames `TIT2`, `TPE1`, `TPE2`, `TALB`, `TLEN`; decodifica Latin-1, UTF-16LE/BE, UTF-8
-- Duración: `TLEN` (ms) → cabecera Xing/Info (VBR, total_frames × spf / sr) → estimación CBR (filesize × 8 / bitrate)
+## Arquitectura
 
-### LRCLIB API (lrclib.go)
+### Audio: Go puro, y el audio nunca pasa por la RAM
 
-`GET https://lrclib.net/api/get?track_name=...&artist_name=...&album_name=...&duration=...`
-- 200: prioriza `syncedLyrics` sobre `plainLyrics`
-- 404: `("", nil)` — no es un error
-- 429: `time.Sleep(retryDelay)` + un reintento
-- `duration` se omite del query cuando es 0
+Tagging (`downloader/metadata.go`) y lectura de tags (`lyrics/metadata.go`) son propios.
 
-Campos testables en `Client`: `baseURL`, `retryDelay`, `StepDelay` (todos configurables en tests para velocidad y mock).
+Etiquetar o leer cuesta lo que ocupan los **metadatos**, no la pista:
+- `writeFLACMeta` y `writeID3v23` leen solo la cabecera, la reescriben en memoria y
+  `replaceHead` copia el audio de fichero a fichero (`io.Copy` entre `*os.File`). Escribe a
+  `<ruta>.tag` y renombra al final, así que un fallo a mitad no deja la pista truncada.
+- La portada va como trozo propio, sin copiarse. Una portada de más de 16 MB no se incrusta:
+  la longitud del bloque FLAC es de 24 bits y se desbordaría.
+- `lyrics` para en el último bloque FLAC; en MP3 `readID3Frames` lee solo
+  TIT2/TPE1/TPE2/TALB/TLEN y salta el resto con `Seek`.
 
-### Orquestador (lyrics.go)
+Resultado medido: un álbum de 12×50 MB con 3 workers pasó de 321 MB de RSS a 14,6 MB. Lo
+guardan `TestTaggingMemoryIndependentOfTrackSize`, `TestReadFLACMemoryIndependentOfFileSize`,
+`TestReadMP3MemoryIndependentOfCover` y `TestTagFLACSkipsOversizedCover`; los benchmarks
+`BenchmarkMem*` de los `mem_test.go` dan las cifras.
 
-- `Run(dir string) error` — API pública, llama `runWithClient(dir, NewClient())`
-- `runWithClient(dir string, client *Client) error` — función interna inyectable en tests
-- Barra mpb con `decor.Any` + `atomic.Value` para etiqueta dinámica `[N/M] Título — Artista`
-- `time.Sleep(client.StepDelay)` entre requests (500ms en producción, 0 en tests)
-- Warnings (404, errores) acumulados en slice, impresos todos tras `p.Wait()`
+Misma regla en las colecciones: `collectionIDs` devuelve solo ids, y mientras llegan las
+páginas `slimPage` guarda de cada item solo `collectionFields`. **Si `smartDiscogFilter`
+empieza a leer un campo nuevo, añádelo a `collectionFields`**
+(`TestSlimPageKeepsWhatSmartDiscogReads` solo cubre los campos que ya conoce).
 
-### Tests (42 tests, cobertura completa)
+### Salida a terminal: `mpb` por defecto, TUI opcional
 
-```
-metadata_test.go  — FLAC tags+duración, fallback ALBUMARTIST, MP3 Latin-1/UTF-16LE/TLEN/TPE2, decodeID3Text
-lrclib_test.go    — syncedLyrics preferred, plainFallback, 404→nil, 429→error, queryParams, OmitsDuration, retry429
-lyrics_test.go    — buildLabel (formato, ancho fijo, truncado), lrcPathFor, scanAudioFiles, runWithClient e2e
-```
+Por defecto se muestran barras `mpb`; `--tui` las cambia por la pantalla bubbletea. **Nunca
+conviven**: con TUI, `newProgress` devuelve `nil` y `mpb` no se crea. El código de descarga
+solo ve la interfaz `ProgressBar`: `*mpb.Bar` la cumple y `ui.TrackHandle` también. Un
+display nuevo = implementar esos métodos + una rama en `newBar`/`newProgress`.
 
-## Pendiente / Ideas
+`TrackHandle` **no manda un mensaje por cada `Read`**: acumula bytes en un `atomic.Int64` que
+el modelo lee cada tick de 100 ms. Un `p.Send()` por lectura satura bubbletea con 6 workers.
+Lo guarda `TestTrackHandleReadSendsNothing`.
 
-- [x] Issue #23 "Albums are not downloaded entirely" — cerrado 2026-09-20, cuatro commits.
-      No era la descarga de álbumes: eran los placeholders desconocidos. Detalle de la
-      cadena en "Formatos de nombre" arriba. `e4891fc` valida los formatos, `e875e07`
-      añade la paridad README↔código, `42ae84d` saca del silencio el override de
-      `cleanFormatStr` (y quita un `MP3 <nil>/<nil>` de la línea de anuncio), `931d5d6`
-      cambia el truncado de ruta-por-runas a nombre-por-bytes y valida `default_quality`
-      antes de la red. Verificado contra Qobuz real en FLAC y MP3, incluida una ruta
-      total de 551 bytes: 12/12 tracks con 12 nombres distintos.
-      De la misma tanda salieron tres arreglos más, cada uno encontrado al probar
-      el anterior: `7f1fefb` hace que la extensión y el tagger sigan a los bytes
-      entregados y no a la calidad pedida (un fallback a 5 escribía MP3 en un
-      `.flac` pasado por `tagFLAC`); `14b4a86` es el #22; y los flags después del
-      subcomando ya no se ignoran (ver "CLI: main() solo despacha").
+**Nada a stdout/stderr con barras vivas o TUI activa.** `mpb` repinta el cursor cada 150 ms y
+la alt-screen de bubbletea se traga todo. Cómo escribir:
+- En `downloader`, siempre `fmt.Fprintf(d.termOut(), ...)`. Devuelve el `*mpb.Progress` activo
+  (serializa contra el render), `io.Discard` con TUI, o `os.Stdout` si no hay nada. Las
+  funciones libres (`makeM3U`, `tagFLAC`, `cleanFormatStr`, `printBatchSummary`) reciben el
+  `io.Writer` por parámetro.
+- Un resumen se acumula y se imprime después de `p.Wait()` (así lo hace `lyrics`).
+- Un error que el usuario debe ver **se devuelve**, no se imprime. Bajo TUI sale en la
+  línea de estado; en CLI acaba en `fatalf`.
+- Excepciones: `interactive.go` y `oauth.go` (tienen la terminal para ellos). Están en la
+  allowlist de `TestNoDirectStdoutWrites`, que escanea el paquete. Esta regla se rompió ocho
+  veces antes de que ese test existiera.
 
-- [x] Auditoría de sobreingeniería (`/ponytail-audit` sobre v1.5.0) — cerrada 2026-08-06.
-      15 hallazgos, −198 líneas, 0 dependencias eliminables. Los 2 primeros en `ec3b40a`
-      (dedup de reescritura FLAC y aplanado de páginas); los 13 restantes en cinco commits
-      temáticos: `rightAlign` en ui, `ResolveDir(dir, create)` + alias de flags por `BoolVar`
-      + `downloader.Qualities` en cmd, claves muertas de config, accesores/`encoding/binary`/
-      `isRemaster` en downloader, y código muerto en api.
-      Dos lecciones: (a) un test de datos completo no cubre un sitio de render que no consulta
-      la tabla — la mutación de `rightAlign` sin relleno pasaba `TestMenuRendersFullySpanish`
-      y solo la caza una aserción sobre el ancho real; (b) `buildFLACPictureBlock` aceptaba
-      `BigEndian`→`LittleEndian` sin que fallara nada, así que el swap a stdlib llegó con su
-      propio test de layout.
+Estilo de las barras `mpb` (reutilizarlo en cualquier feedback visual nuevo):
+- barra `╢█████░░░╟`: `Lbound("╢").Filler("█").Tip("█").Padding("░").Rbound("╟")`
+- etiqueta izquierda de ancho fijo (`truncateStr` / `buildLabel`)
+- etiqueta dinámica con `decor.Any` + `atomic.Value`
+- completado: `decor.OnComplete(decor.Name(""), " \033[32m✓\033[0m")`
+- `mpb.WithRefreshRate(150 * time.Millisecond)`
 
-- [x] Tests de integración con servidor mock completo para `downloader` — `integration_test.go`
-      8 tests (11 con subtests): álbum completo, tagging real, tracks no disponibles, multi-disco,
-      salto por DB entre ejecuciones, paridad con 1/2/3/8 workers, contexto cancelado, `HandleURL`.
-      Cobertura del paquete 24.1% → 39.5%. Validados con 6 mutaciones, todas detectadas.
-- [x] TUI completa (`tui`) — menú con todas las funciones del programa
-      Shell en `internal/ui/shell.go` sobre la interfaz `Backend`; adaptador en `cmd/qobuz-dl/tui_cmd.go`.
-      Widgets a mano (~60 líneas) en vez de `bubbles`: solo hacían falta un campo de texto y una
-      lista con cursor. Validado con 4 mutaciones (marcas de selección, vaciado de cola, reenvío
-      de mensajes al Model, guard de cola vacía), las 4 detectadas.
-      OAuth entra por suspensión de terminal (`ReleaseTerminal`/`RestoreTerminal`), reutilizando
-      el flujo CLI sin tocarlo; `runOAuth` se partió en `oauthLogin` que devuelve error.
+### TUI completa (`tui`)
 
-- [x] TUI opt-in con bubbletea (`--tui`) — `internal/ui/` (rescatado de `experiment/fancy-ui`)
-      La rama original tenía 1 commit y 33 por detrás de main; el rebase daba 11 conflictos en
-      `downloader.go` porque main ya había resuelto lo mismo con `termOut()`/`withBars()` mientras
-      la rama usaba un `quiet()` propio. Se reintegró **sin rebase**: `internal/ui/*` entra limpio
-      (archivos nuevos) y el cableado se rehízo sobre las costuras actuales.
-      Validado con 4 mutaciones (`p.Wait()` sin guard, `newProgress`/`newBar`/`termOut` ignorando
-      la TUI), las 4 detectadas por `tui_test.go`.
+`qobuz-dl tui` mete todo el programa en una pantalla. `--tui` es otra cosa: solo cambia el
+display de progreso de `dl`/`lucky`/`csv`. Los dos comparten `Model`.
 
-- [x] Partir `downloader.go` (1605 líneas) — hecho, ver el árbol de arriba.
-      Siete archivos, el mayor 281 líneas. **Movimiento puro**: verificado ordenando las líneas
-      de código del original y de la unión de los nuevos y comprobando que el diff solo contiene
-      los banners `// ---- sección ----` borrados (ahora los lleva el nombre del archivo).
-      Cobertura del paquete sin cambios (40.1%), misma suite de tests.
-      El corte lo eligió el grafo, en dos pasadas: primero seis archivos, y tras reindexar,
-      `album.go` (545) seguía partido en dos clusters (0.57 y 0.40) → `album.go` + `track.go`.
-      `smartDiscogFilter` vive con `downloadArtist`, su único llamador; los helpers de
-      `downloadWithProgress` salen enteros a `transfer.go` (cluster de cohesión 0.93).
-      `getFloat` se quedó en `helpers.go`, no en `search.go`: `metadata.go` también lo llamaba.
-      (Desde 2026-08-06 ya no existe: era `nestedFloat` con la clave anidada vacía.)
-- [x] Deuda de complejidad cognitiva — cerrada 2026-07-27 (ver tabla arriba):
-      `main()` repartido en dispatcher + `flags.go`; `decodeID3Text` partido por codificación
-      (y arreglado el bug de Latin-1); `smartDiscogFilter` partido en
-      `groupByEssence`/`pickBest`/`qualifies`
-- [x] Downloads DB (archivo plano, un track ID por línea) — `internal/downloader/db.go`
-      `--no-db` bypass; `--purge` borra el archivo; se carga al arrancar en un map[string]struct{}
-- [x] Descargas concurrentes por track — semáforo + WaitGroup, flag `--workers N` (default 3)
-- [x] ~~Soporte last.fm playlists~~ — **retirado 2026-09-23**. Usaba la API XSPF 1.0
-      (`ws.audioscrobbler.com/1.0`), que devuelve 404 para cualquier usuario, y el 404 se
-      traducía como "user not found": fallaba siempre con un error falso. La web está tras
-      un muro anti-bots con JavaScript y la API 2.0 exige `api_key`. Si vuelve, que sea
-      sobre la 2.0 con clave en `config.ini`. `searchFirstTrackID` pasó a `search.go`
-      (lo sigue usando `csvbatch.go`).
-- [x] Tanda de bugs de la revisión de memoria (2026-09-23), cada uno reproducido antes
-      de tocarlo: `bundle.Secrets` devolvía un mapa y el orden de los secrets cambiaba en
-      cada llamada (ahora `[]string` en el orden del original: bundle, segundo al frente);
-      pista sin `media_number` en álbum multidisco → panic (ahora Disc 1);
-      `expandPlaceholders` re-escaneaba valores ya sustituidos en orden de mapa, así que un
-      título con `{artist}` literal daba dos nombres distintos para la misma pista (ahora
-      `strings.NewReplacer`, una pasada).
-      Segunda tanda: `fun` con entrada por tubería perdía la elección de resultados
-      (`interactiveSearch` abría un segundo `bufio.Reader` sobre stdin y el primero ya se
-      había tragado esas líneas; ahora hay un solo lector por sesión); el lector ID3 de
-      `lyrics` leía la cabecera extendida como si fuera un frame y devolvía el fichero sin
-      tags (`extendedHeaderSize`, v2.3 y v2.4 la miden distinto). **Descartado tras medir**:
-      "LRCLIB no reutiliza la conexión tras un 404" — habla HTTP/2 y `httptrace` muestra la
-      conexión reutilizada tras 404 y 200.
-- [x] Modo interactivo mejorado — `internal/downloader/interactive.go`
-      REPL con comandos: sa/st/sr/sp (búsqueda por tipo), dl (URL directa),
-      q (ver queue), rm N (quitar item), clear, go (descargar), exit
-- [x] Sistema de descarga robusto con reintentos — `internal/downloader/downloader.go`
-      Motivación: fallos mid-download en FLACs grandes por drops del servidor (io.ErrUnexpectedEOF / net.Error).
-      `downloadWithProgress` reescrito: hasta 5 reintentos con backoff exponencial (1s/2s/4s/8s),
-      resume desde offset en disco via `Range: bytes=N-`, append al archivo parcial en vez de sobrescribir,
-      bar fast-forward a bytes ya descargados via `barCredited`, maneja servidores que ignoran Range
-      (responden 200 en vez de 206): trunca y reinicia limpio, cierra `resp.Body` explícitamente
-      cada intento para no filtrar conexiones. Helper: `isRecoverableErr`.
-      **Sin tope total por petición** (arreglado 2026-09-23): el cliente llevaba
-      `http.Client{Timeout: 10 * time.Minute}`, que limita la petición entera cuerpo incluido,
-      y su error envuelve `context.DeadlineExceeded`; `isContextError` lo tomaba por Ctrl+C,
-      no reintentaba y borraba el `.tmp`. Toda pista que tardara más de 10 minutos fallaba
-      siempre (200 MB a menos de 333 KB/s). Ahora `newDownloadClient` pone un deadline de
-      lectura que avanza con cada `Read` (`stallTimeout`, 60 s): corta una conexión muerta,
-      nunca una lenta, y el intento siguiente reanuda por `Range`. "¿Paró el usuario?" se
-      decide con `ctx.Err()`, no por el tipo del error. `TestDownloadWithProgress` cubre
-      descarga lenta, cuelgue a mitad, cabeceras lentas, timeout del cliente y cancelación.
-- [x] Descarga de letras sincronizadas — `internal/lyrics/`
-      LRCLIB API pública (sin auth); prioriza syncedLyrics sobre plainLyrics; rate limiting 500ms/req;
-      retry único en 429; skip si ya existe .lrc; barra mpb con etiqueta dinámica; zero-deps para parseo FLAC/MP3.
-      Comando: `./qobuz-dl lyrics [ruta]`. Navidrome-compatible (Plug & Play karaoke).
+- **Ciclo de imports**: `downloader` importa `ui`, así que el shell no puede importar
+  `downloader`. Por eso existe `ui.Backend`, implementada por `tuiBackend`. Una función nueva
+  en el menú = método nuevo en `Backend` y en el adaptador.
+- **OAuth suspende la TUI**: `tuiBackend.Login` hace `p.ReleaseTerminal()`, corre el flujo
+  CLI y `RestoreTerminal()`. Hace falta porque `captureOAuthRedirect` lee con `fmt.Scanln` y
+  bubbletea tiene stdin en modo raw: dos lectores se roban bytes.
+- **Arranca sin credenciales**: si `initDownloader` falla, `runTUI` guarda el error en
+  `bootErr` y abre el menú igual, porque el login vive ahí.
+- Toda llamada bloqueante va en un `tea.Cmd`, nunca dentro de `Update`.
+- El progreso llega por `p.Send()` desde el backend; `Update` reenvía al `Model` lo que no
+  reconoce.
+- Cada operación larga tiene su contexto cancelable: Ctrl+C cancela el trabajo y solo sale
+  del programa si no hay nada corriendo.
+- `lyrics.FetchAll` es la versión sin barras de `lyrics.Run`, para usarla bajo la TUI.
+- `View()` pinta solo las filas que caben (`visibleTracks`). `viewChrome`/`shellChrome` son
+  las filas fijas: **si cambias cabecera o pie, cámbialos** (`TestViewFitsTheScreen`).
+
+### Idioma de la TUI
+
+- El inglés vive en el código; `T()` traduce al renderizar y `lang.go` solo tiene el mapa
+  `es`. Una clave que falta sale en inglés, nunca en blanco.
+- `SetLang` se llama una vez desde `main()`, antes de cualquier `tea.Program` (no lleva lock).
+- Los mensajes de estado van por `T()`. Los **errores** se quedan en inglés, sin `T()`, como
+  en el resto de paquetes.
+- Tests: `TestMenuRendersFullySpanish` compara la salida real (una tabla completa no detecta
+  un sitio de render que no la consulta). `TestEnglishRenderStaysEnglish` renderiza en inglés
+  y falla si aparece algún valor del mapa `es`, que es lo único que caza español hardcodeado
+  sin acentos. `readUISources` lee **directorios**, no una lista de ficheros.
+
+### CLI
+
+`main()` solo registra flags, atiende los atajos de config (`--version`, `--reset`,
+`--show-config`, `--purge`), monta el contexto cancelable y despacha. Nada de lógica inline.
+
+- Un subcomando nuevo = `run<Name>(ctx, args, ...)` + una línea en el switch. Usa
+  `requireArgs` y `mustDownloader`. Va en su propio `<name>_cmd.go` solo si tiene sustancia
+  (~80 líneas).
+- **Un solo `FlagSet` y `parseArgs`**. `flag` de stdlib para en el primer posicional, así
+  que `dl <URL> -q 27` ignoraba `-q` en silencio. `parseArgs` quita un posicional cada vez y
+  vuelve a parsear; el `--` literal se separa antes del bucle.
+- `TestAdvertisedFlagsExist` comprueba que cada `qobuz-dl --xxx` citado en las fuentes esté
+  registrado. Es estático a propósito: ejecutar `--reset` escribiría el config del usuario.
+
+### Formatos de nombre: validar en la entrada, nunca degradar en silencio
+
+`folder_format` y `track_format` son entrada del usuario, y aceptarlas mal no da error: da
+pistas que no existen. Pasó en el issue #23:
+
+1. Un placeholder desconocido sobrevivía tal cual en la plantilla.
+2. Los 12 tracks del álbum resolvían al mismo nombre.
+3. Los 3 workers renombraban al mismo destino; ganaba el último.
+4. El resto veía el fichero presente, se saltaba sin aviso y quedaba en la DB.
+
+Síntoma: lista 12, descarga 1, ningún error. Por eso:
+
+- **Placeholder desconocido = error** que nombra el token y la lista válida.
+- **Un `track_format` sin `{tracknumber}` ni `{tracktitle}` también es error.**
+- `validateFormats` se llama desde `New`, el único punto común de CLI, TUI, csv y fun. La
+  calidad se valida en `initDownloader`, antes de tocar la red.
+- **Si `cleanFormatStr` sustituye la plantilla** (MP3 no tiene bit depth), lo avisa.
+- **El límite de nombre es por componente y en bytes** (255). `limitNameBytes` recorta solo
+  el último componente, por runas enteras, y añade el id del track para que dos títulos
+  largos no choquen.
+- `TestREADMEPlaceholderParity`: los placeholders del README y los de `expandPlaceholders`
+  deben coincidir en los dos sentidos. El README llegó a anunciar `{genre}` y `{composer}`
+  sin que existieran.
+
+### Directorio de descarga
+
+Prioridad: flag `-d` > `download_dir` en `config.ini` > `./qobuz-downloader`.
+`config.ResolveDir(dir, create)` expande `~` y resuelve la ruta; `lyrics` lo llama con
+`create=false` (la biblioteca debe existir). No confundir `Config.DownloadDir` (la ruta) con
+la constante `config.DefaultFolder` (el formato de carpeta por defecto).
+
+**El directorio no es nuestro**: `-d .` es la forma documentada de descargar en el CWD, así
+que puede ser `~` o `/`. Nunca recorrer y borrar desde ahí; se borra solo lo que el run
+escribió, por su ruta (`TestIntegration_DownloadURLsLeavesForeignFilesAlone`).
+
+### Descargas: reintentos y stall timeout
+
+`downloadWithProgress` reintenta hasta 5 veces con backoff (1/2/4/8 s) y reanuda con
+`Range: bytes=N-`. Si el servidor ignora el Range (responde 200), trunca y empieza de cero.
+
+**No hay tope total por petición.** Un `http.Client.Timeout` de 10 min hacía fallar toda
+pista que tardara más, fuera cual fuera la velocidad. `newDownloadClient` pone un deadline de
+lectura que avanza con cada `Read` (`stallTimeout`, 60 s): corta una conexión muerta, nunca
+una lenta. Si el usuario paró se decide con `ctx.Err()`, no por el tipo del error.
+
+### Autenticación y config
+
+La autenticación por contraseña está rota (401 desde abril de 2026). Dos vías:
+1. **OAuth** (`qobuz-dl oauth`): un servidor local captura el redirect con
+   `user_auth_token=` o `code_autorisation=` (con `code` como fallback). Funciona end to end.
+2. **Token** (`qobuz-dl --reset`): pegar user_id + user_auth_token desde DevTools.
+
+`loadOrInitConfig(skipCredentials)` en `flags.go`: si hay `config.ini` lo carga; si no, con
+`false` llama a `config.Reset()` (pide credenciales) y con `true` a `config.InitConfig()`
+(solo preferencias). `initDownloader` pasa `false`; `runOAuth` pasa `true` y guarda el token
+con `config.SaveToken`. `runLyrics` usa `config.Load()` directamente.
+
+**Nunca pedir user_id/token en `oauth` ni en `lyrics`.**
+
+**Cuando la auth falla, el consejo impreso es la única salida del usuario: tiene que ser el
+correcto.** Ejemplos que ya fallaron: se anunciaba un `--token` que no existía, y una cuenta
+gratuita (`IneligibleError`) recibía "usa `--reset`", que no arregla nada porque las
+credenciales son correctas. La ruta de token propaga el error tal cual, sin consejo.
+
+### `lyrics`
+
+- LRCLIB: `GET /api/get?track_name&artist_name&album_name&duration`. Prefiere `syncedLyrics`
+  sobre `plainLyrics`; 404 = sin letra (no es un error); 429 = un reintento tras `retryDelay`;
+  `duration` se omite si es 0. 500 ms entre peticiones (`StepDelay`).
+- Duración MP3: `TLEN` → cabecera Xing/Info → estimación CBR.
+- `Run` → `runWithClient(dir, client)`: el cliente se inyecta por parámetro para los tests.
+- Salta ficheros que ya tienen `.lrc`.
+
+## Tests
+
+### Reglas
+
+- Stdlib solamente, offline, table-driven, subtests con `t.Run`.
+- Inyección por parámetro (`Run` → `runWithClient`), no con clientes globales.
+- Los fakes (`fakeFLAC`, `fakeMP3`) viven en `*_test.go`.
+- Antes de añadir un test: busca si ya hay uno y extiende su tabla.
+- `cmd/qobuz-dl` marca 0 % de cobertura porque sus tests son black-box: compilan el binario
+  y lo ejecutan como subproceso.
+
+### Técnicas que usamos
+
+- **Validar un test con mutaciones**: rompe la línea a propósito y comprueba que el test
+  falla. Un test que sigue verde con el código roto no prueba nada.
+- **Aserción sobre el efecto propio.** Ejemplo: que la DB salte un track no se prueba viendo
+  que no se re-descarga (el `os.Stat` de `downloadAndTag` ya lo impide), sino viendo que no
+  se llama a `track/getFileUrl`.
+- **Test diferencial desechable** para refactors con resultado silenciosamente rompible:
+  copia la versión vieja como `xxxOld` en un `zz_diff_test.go`, compara con entradas
+  aleatorias y **bórralo antes de commitear**.
+- **Integración** (`integration_test.go`): servidor Qobuz falso + `rewriteTransport`,
+  inyectado con `api.NewWithHTTP(appID, secrets, hc)` (el `baseURL` de `api` es const).
+
+### Trampas ya pisadas
+
+- **Codificaciones: usa siempre un carácter no ASCII.** `string(b)` reinterpreta los bytes
+  como UTF-8, no convierte desde Latin-1: `Café` salía como `"Caf\xe9"`. Lo correcto es
+  `rune(b)` byte a byte. Los tests en ASCII lo ocultaron.
+- **Alineaciones: recorre todos los desplazamientos.** Un único dato puede caer en frontera
+  por casualidad (120 runas de 3 bytes recortadas a 246 bytes, múltiplo de 3).
+- **Una tabla completa no cubre un sitio de render que no la consulta.** Compara salida real.
+- **`-race` en local.** CI corre `go test -race` y estuvo rojo cuatro pushes seguidos sin que
+  nadie lo viera: `stallConn.Read` leía la global `stallTimeout` desde la goroutine de
+  `net/http`, que sobrevive al subtest, mientras el `t.Cleanup` la restauraba. Una global que
+  un test ajusta no debe leerse desde goroutines que no son del test; captúrala al construir
+  el objeto. Tras cada push, `gh run list`.
+- **La documentación también se testea**: `TestAdvertisedFlagsExist` y
+  `TestREADMEPlaceholderParity` existen porque la doc anunció cosas que no existían.
+
+### CI (`.github/workflows/ci.yml`)
+
+`gofmt -l .` vacío → `go vet ./...` → `go test -race -cover ./...`.
+
+## Medido y descartado
+
+Para no volver a investigarlo:
+
+- El buffer de 32 KB de `io.Copy` por intento y los cierres de `mpb` por `Read`: basura
+  (~1 MB por álbum), no RSS.
+- El RSS de `--version` (8,4 MB) es casi todo páginas del binario. Para separar memoria
+  propia de compartida usa `RssAnon`/`RssFile` en `/proc/<pid>/status`, no `/usr/bin/time`.
+- "LRCLIB no reutiliza la conexión tras un 404": falso. Habla HTTP/2 y la conexión se
+  reutiliza (visto con `httptrace`).
+- Complejidad cognitiva: la penaliza el **anidamiento**, no el número de pasadas. Colapsar
+  pasadas no la bajó; sacar el trabajo interno a una función sí. Mayor valor hoy: `pickBest`
+  (14).
+- **Last.fm retirado** (2026-09-23): la API XSPF 1.0 devolvía 404 siempre. Si vuelve, que sea
+  con la API 2.0 y una `api_key` en `config.ini`.
