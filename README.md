@@ -108,7 +108,7 @@ work:
 ./qobuz-dl dl https://... -q 27
 ```
 
-This needs a build newer than v1.5.0. Up to and including that release only the
+This needs v1.6.0 or newer. Up to and including v1.5.0 only the
 first form worked and the other two were silently ignored, which tripped up
 everybody who tried them — if a setting seems to have no effect, that is why.
 
