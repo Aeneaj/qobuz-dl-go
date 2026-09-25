@@ -208,7 +208,7 @@ func (d *Downloader) downloadAndTag(
 	fileURL, _ := trackURLDict["url"].(string)
 	if fileURL == "" {
 		fmt.Fprintf(d.termOut(), "\033[90mTrack not available for download\033[0m\n")
-		return nil
+		return fmt.Errorf("Track not available for download")
 	}
 
 	// Read off the response, not Options.Quality: a fallback to 5 delivers MP3
