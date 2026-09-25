@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,19 +14,9 @@ import (
 func (d *Downloader) downloadTrackByID(ctx context.Context, trackID, baseDir string) error {
 	// The skip check is deferred until trackDir + trackFmt are known so it
 	// can look at the exact output path; see the alreadyHave call below.
-	trackURL, err := d.Client.GetTrackURL(ctx, trackID, d.Opts.Quality, "")
+	trackURL, err := d.fileURL(ctx, trackID)
 	if err != nil {
-		if d.Opts.QualityFallback {
-			trackURL, err = d.fallbackQuality(ctx, trackID)
-		}
-		if err != nil {
-			return fmt.Errorf("get track URL: %w", err)
-		}
-	}
-
-	if _, isSample := trackURL["sample"]; isSample {
-		fmt.Fprintf(d.termOut(), "\033[90mDemo track, skipping\033[0m\n")
-		return nil
+		return fmt.Errorf("get track URL: %w", err)
 	}
 
 	meta, err := d.Client.GetTrackMeta(ctx, trackID)
@@ -206,10 +197,6 @@ func (d *Downloader) downloadAndTag(
 	bar ProgressBar,
 ) error {
 	fileURL, _ := trackURLDict["url"].(string)
-	if fileURL == "" {
-		fmt.Fprintf(d.termOut(), "\033[90mTrack not available for download\033[0m\n")
-		return nil
-	}
 
 	// Read off the response, not Options.Quality: a fallback to 5 delivers MP3
 	// bytes for a lossless request, and the extension and the tagger have to
@@ -260,17 +247,51 @@ func (d *Downloader) downloadAndTag(
 	return nil
 }
 
-func (d *Downloader) fallbackQuality(ctx context.Context, trackID string) (map[string]interface{}, error) {
-	fallbacks := []int{27, 7, 6, 5}
-	for _, q := range fallbacks {
-		if q == d.Opts.Quality {
+// fileURL asks for the track at the requested quality and, when that cannot
+// be served in full, at each lower one — never higher, which would overrule
+// the cap the user set. Qobuz seldom says "not at this quality" with an HTTP
+// error: it answers 200 with a 30-second preview, a zero sampling rate or no
+// URL. Those used to skip the track silently without trying the quality below,
+// so a track that failed at 7 downloaded fine at 6 (issue #12).
+func (d *Downloader) fileURL(ctx context.Context, trackID string) (map[string]interface{}, error) {
+	info, err := d.Client.GetTrackURL(ctx, trackID, d.Opts.Quality, "")
+	if err == nil {
+		err = unservable(info)
+	}
+	if err == nil {
+		return info, nil
+	}
+	err = fmt.Errorf("at %s: %w", Qualities[d.Opts.Quality], err)
+	if !d.Opts.QualityFallback {
+		return nil, err
+	}
+	for _, q := range []int{27, 7, 6, 5} {
+		if q >= d.Opts.Quality {
 			continue
 		}
-		info, err := d.Client.GetTrackURL(ctx, trackID, q, "")
-		if err == nil {
+		info, qerr := d.Client.GetTrackURL(ctx, trackID, q, "")
+		if qerr == nil {
+			qerr = unservable(info)
+		}
+		if qerr == nil {
 			fmt.Fprintf(d.termOut(), "\033[33mQuality fallback to %s for track %s\033[0m\n", Qualities[q], trackID)
 			return info, nil
 		}
 	}
-	return nil, fmt.Errorf("no quality available for track %s", trackID)
+	return nil, fmt.Errorf("%w, and no lower quality is available", err)
+}
+
+// unservable says why a successful track/getFileUrl response still has no
+// full track to download, or returns nil.
+func unservable(info map[string]interface{}) error {
+	if _, isSample := info["sample"]; isSample {
+		return errors.New("only a 30-second preview is offered")
+	}
+	if sr, _ := info["sampling_rate"].(float64); sr == 0 {
+		return errors.New("no playable format is offered")
+	}
+	if u, _ := info["url"].(string); u == "" {
+		return errors.New("no download URL is offered")
+	}
+	return nil
 }

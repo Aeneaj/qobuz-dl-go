@@ -64,11 +64,17 @@ type fakeQobuz struct {
 	sampleOnly   map[int]bool // track IDs returned as unstreamable samples
 	onlyQuality  int          // when set, every other format_id fails (quality fallback path)
 	zeroRateFor  map[int]bool // track IDs served with sampling_rate 0 (nothing usable)
-	audioPad     int64        // extra audio bytes per file, for the memory benchmarks
+	// degraded answers 200 with a response that holds no full track — a
+	// "preview", a "zero-rate" or a "no-url" one — for format_ids above
+	// degradeAbove, and the normal response at or below it.
+	degraded     map[int]string
+	degradeAbove int
+	audioPad     int64 // extra audio bytes per file, for the memory benchmarks
 
 	fileHits atomic.Int64 // audio bytes actually served
 	mu       sync.Mutex
 	seenURLs []string
+	fileReqs []string // "trackID@format_id" of every track/getFileUrl request
 }
 
 func newFakeQobuz(t testing.TB, tracks []fakeTrack) *fakeQobuz {
@@ -78,6 +84,7 @@ func newFakeQobuz(t testing.TB, tracks []fakeTrack) *fakeQobuz {
 		noFileURLFor: map[int]bool{},
 		sampleOnly:   map[int]bool{},
 		zeroRateFor:  map[int]bool{},
+		degraded:     map[int]string{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api.json/0.2/album/get", q.handleAlbumGet)
@@ -153,6 +160,9 @@ func (q *fakeQobuz) handleFileURL(w http.ResponseWriter, r *http.Request) {
 
 	var fid int
 	fmt.Sscanf(r.URL.Query().Get("format_id"), "%d", &fid)
+	q.mu.Lock()
+	q.fileReqs = append(q.fileReqs, fmt.Sprintf("%d@%d", n, fid))
+	q.mu.Unlock()
 	if q.onlyQuality != 0 && fid != q.onlyQuality {
 		w.WriteHeader(http.StatusBadRequest)
 		writeJSON(w, map[string]interface{}{"message": "not available at this quality"})
@@ -183,6 +193,16 @@ func (q *fakeQobuz) handleFileURL(w http.ResponseWriter, r *http.Request) {
 		// the format off a sample gets the wrong answer, not just a useless one.
 		resp["sample"] = true
 		resp["bit_depth"], resp["sampling_rate"] = float64(16), float64(44.1)
+	}
+	if fid > q.degradeAbove {
+		switch q.degraded[n] {
+		case "preview":
+			resp["sample"] = true
+		case "zero-rate":
+			resp["bit_depth"], resp["sampling_rate"] = float64(0), float64(0)
+		case "no-url":
+			delete(resp, "url")
+		}
 	}
 	writeJSON(w, resp)
 }
@@ -347,6 +367,62 @@ func TestIntegration_SkipsUnavailableTracks(t *testing.T) {
 	want := []string{"Test Artist - Test Album/01. First Song.flac"}
 	if got := relFiles(t, dir); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("files = %v, want %v", got, want)
+	}
+}
+
+// Issue #12: a track that would not download at 7 came down fine at 6. Qobuz
+// rarely refuses a quality with an HTTP error; it answers 200 with something
+// that holds no full track, and each of those used to skip the track silently,
+// bypassing the fallback that only ran on errors.
+func TestIntegration_FallbackOnDegradedResponse(t *testing.T) {
+	all := []string{
+		"Test Artist - Test Album/01. First Song.flac",
+		"Test Artist - Test Album/02. Second Song.flac",
+		"Test Artist - Test Album/03. Third Song.flac",
+	}
+	cases := []struct {
+		how      string
+		fallback bool
+		want     []string
+	}{
+		{"preview", true, all},
+		{"zero-rate", true, all},
+		{"no-url", true, all},
+		// Without the fallback the track is still skipped, but as an error
+		// naming the reason, and nothing below 7 is asked for.
+		{"preview", false, []string{all[0], all[2]}},
+		// Issue #24: a 200 with no URL returned nil after its bar was made,
+		// so the bar never finished and p.Wait() hung the whole album.
+		{"no-url", false, []string{all[0], all[2]}},
+	}
+	for _, c := range cases {
+		t.Run(fmt.Sprintf("%s/fallback=%v", c.how, c.fallback), func(t *testing.T) {
+			q := newFakeQobuz(t, threeTracks())
+			q.degraded[102], q.degradeAbove = c.how, 6
+
+			d, dir := newTestDownloader(t, q, func(o *Options) {
+				o.Quality = 7
+				o.QualityFallback = c.fallback
+				o.NoCover = true
+			})
+			if err := d.downloadAlbum(context.Background(), "alb1", dir); err != nil {
+				t.Fatalf("downloadAlbum: %v", err)
+			}
+			if got := relFiles(t, dir); strings.Join(got, "\n") != strings.Join(c.want, "\n") {
+				t.Errorf("files = %v, want %v", got, c.want)
+			}
+
+			// The file on disk alone proves little: the fake serves full audio
+			// even for a preview URL. What matters is where the bytes came from.
+			reqs := strings.Join(q.fileReqs, " ")
+			if got := strings.Contains(reqs, "102@6"); got != c.fallback {
+				t.Errorf("asked for track 102 at quality 6: %v, want %v (requests: %s)", got, c.fallback, reqs)
+			}
+			// Falling back means going down: 27 is above the cap the user set.
+			if strings.Contains(reqs, "@27") {
+				t.Errorf("asked for quality 27 with 7 requested (requests: %s)", reqs)
+			}
+		})
 	}
 }
 

@@ -37,7 +37,7 @@ internal/downloader/
   downloader.go      Downloader, New, progreso (termOut/newBar/newProgress), HandleURL
   collection.go      artista/playlist/label, smartDiscogFilter
   album.go           downloadAlbum → collectTrackJobs → runTrackJobs
-  track.go           una pista: finalTrackPath, alreadyHave, downloadAndTag, fallbackQuality
+  track.go           una pista: finalTrackPath, alreadyHave, downloadAndTag, fileURL
   transfer.go        downloadWithProgress: reintentos, resume por Range, stall timeout
   metadata.go        escritura de tags FLAC (Vorbis) y MP3 (ID3v2.3)
   search.go          Search / SearchURLs

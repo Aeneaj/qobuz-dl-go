@@ -118,7 +118,7 @@ func expandPlaceholders(format string, attrs map[string]string) string {
 }
 
 // deliveredIsMP3 reports whether the file the API actually handed us is an MP3.
-// That is not the same question as "did the user ask for MP3": fallbackQuality
+// That is not the same question as "did the user ask for MP3": fileURL
 // walks down to 5 when a lossless request fails, so a request for quality 7 can
 // come back as a 320 kbps file. Deciding from Options.Quality wrote those bytes
 // to a .flac name and ran the FLAC tagger over them.

@@ -189,20 +189,9 @@ func (d *Downloader) collectTrackJobs(ctx context.Context, p *mpb.Progress, rawI
 			}
 		}
 
-		trackURL, err := d.Client.GetTrackURL(ctx, trackID, d.Opts.Quality, "")
+		trackURL, err := d.fileURL(ctx, trackID)
 		if err != nil {
-			if d.Opts.QualityFallback {
-				trackURL, err = d.fallbackQuality(ctx, trackID)
-			}
-			if err != nil {
-				fmt.Fprintf(d.termOut(), "\033[31mTrack %s: cannot get URL: %v. Skipping...\033[0m\n", trackID, err)
-				continue
-			}
-		}
-		if _, isSample := trackURL["sample"]; isSample {
-			continue
-		}
-		if sr, _ := trackURL["sampling_rate"].(float64); sr == 0 {
+			fmt.Fprintf(d.termOut(), "\033[31m%s (track %s): %v. Skipping...\033[0m\n", getTitle(track), trackID, err)
 			continue
 		}
 
@@ -282,20 +271,10 @@ func (d *Downloader) resolveFormat(ctx context.Context, albumMeta map[string]int
 			continue
 		}
 		trackID := idStr(track["id"])
-		info, err := d.Client.GetTrackURL(ctx, trackID, d.Opts.Quality, "")
-		if err != nil && d.Opts.QualityFallback {
-			info, err = d.fallbackQuality(ctx, trackID)
-		}
+		// The same lookup collectTrackJobs does: a preview or an unplayable
+		// response says nothing about the format the album is served in.
+		info, err := d.fileURL(ctx, trackID)
 		if err != nil {
-			continue
-		}
-		// The same gates collectTrackJobs applies: neither tells us anything
-		// about the format the album is served in.
-		if _, isSample := info["sample"]; isSample {
-			continue
-		}
-		sr, _ := info["sampling_rate"].(float64)
-		if sr == 0 {
 			continue
 		}
 
