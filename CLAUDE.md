@@ -106,7 +106,10 @@ Lo guarda `TestTrackHandleReadSendsNothing`.
 **Nada a stdout/stderr con barras vivas o TUI activa.** `mpb` repinta el cursor cada 150 ms y
 la alt-screen de bubbletea se traga todo. Cómo escribir:
 - En `downloader`, siempre `fmt.Fprintf(d.termOut(), ...)`. Devuelve el `*mpb.Progress` activo
-  (serializa contra el render), `io.Discard` con TUI, o `os.Stdout` si no hay nada. Las
+  (serializa contra el render), `io.Discard` con TUI, o `os.Stdout` si no hay nada. **Sin
+  terminal (`> log.txt`) devuelve `os.Stdout` aunque haya barras**: mpb no pinta nunca y lo
+  escrito en él se quedaba en un buffer que solo vacía el render; se perdía todo aviso
+  (`TestIntegration_FailureReachesRedirectedStdout`). Las
   funciones libres (`makeM3U`, `tagFLAC`, `cleanFormatStr`, `printBatchSummary`) reciben el
   `io.Writer` por parámetro.
 - Un resumen se acumula y se imprime después de `p.Wait()` (así lo hace `lyrics`).

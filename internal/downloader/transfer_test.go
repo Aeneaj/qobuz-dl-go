@@ -142,6 +142,10 @@ func TestDownloadWithProgress(t *testing.T) {
 			if !errors.Is(err, c.wantErr) {
 				t.Fatalf("err = %v, want %v", err, c.wantErr)
 			}
+			// The real URL is signed and carries the user id.
+			if err != nil && strings.Contains(err.Error(), srv.URL) {
+				t.Errorf("err names the URL: %v", err)
+			}
 			if got := reqs.Load(); got != c.wantReqs {
 				t.Errorf("server saw %d requests, want %d", got, c.wantReqs)
 			}

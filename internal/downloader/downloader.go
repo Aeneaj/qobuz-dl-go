@@ -15,6 +15,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/vbauerster/mpb/v8"
+	"github.com/vbauerster/mpb/v8/cwriter"
 	"github.com/vbauerster/mpb/v8/decor"
 
 	"github.com/Aeneaj/qobuz-dl-go/internal/api"
@@ -92,11 +93,17 @@ func (d *Downloader) SetUI(p *tea.Program) { d.tui = p }
 // goroutines make it worse by writing at once. Under the TUI nothing may reach
 // stdout at all; under mpb, mpb.Progress serialises writes against its own
 // render loop, so route through it whenever a container is active.
+//
+// Only when stdout is a terminal, though. Otherwise mpb never renders, and a
+// write to it sits in a buffer that only a render flushes: with the output
+// sent to a file, every "Track … failed" was lost. With nothing drawn there
+// is nothing to garble, so stdout is safe. cwriter.IsTerminal is mpb's own
+// test, so both sides agree on which case this is.
 func (d *Downloader) termOut() io.Writer {
 	if d.tui != nil {
 		return io.Discard
 	}
-	if p, ok := d.bars.Load().(*mpb.Progress); ok && p != nil {
+	if p, ok := d.bars.Load().(*mpb.Progress); ok && p != nil && cwriter.IsTerminal(int(os.Stdout.Fd())) {
 		return p
 	}
 	return os.Stdout

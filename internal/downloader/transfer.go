@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -43,6 +44,12 @@ func (d *Downloader) downloadWithProgress(ctx context.Context, rawURL, dest stri
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
+			}
+			// Without the URL: it is signed and names the user (uid, hmac),
+			// and this message ends up in logs pasted into issues.
+			var ue *url.Error
+			if errors.As(err, &ue) {
+				err = ue.Err
 			}
 			lastErr = err
 			continue // network error before response — retry

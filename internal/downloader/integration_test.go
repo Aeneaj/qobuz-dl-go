@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -437,6 +438,35 @@ func TestIntegration_FallbackOnDegradedResponse(t *testing.T) {
 				t.Errorf("asked for quality 27 with 7 requested (requests: %s)", reqs)
 			}
 		})
+	}
+}
+
+// TestIntegration_FailureReachesRedirectedStdout: with stdout sent to a file,
+// mpb never renders, and what went through it waited for a render that never
+// came. The failure notice was lost and the run looked clean.
+func TestIntegration_FailureReachesRedirectedStdout(t *testing.T) {
+	q := newFakeQobuz(t, threeTracks())
+	q.noFileURLFor[102] = true
+	d, dir := newTestDownloader(t, q, func(o *Options) { o.NoCover = true })
+
+	r, w, err := os.Pipe() // not a terminal, like "> log.txt"
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout := os.Stdout
+	os.Stdout = w
+	out := make(chan []byte)
+	go func() { b, _ := io.ReadAll(r); out <- b }()
+	err = d.downloadAlbum(context.Background(), "alb1", dir)
+	os.Stdout = stdout
+	w.Close()
+	got := string(<-out)
+
+	if err != nil {
+		t.Fatalf("downloadAlbum: %v", err)
+	}
+	if !strings.Contains(got, "(track 102)") {
+		t.Errorf("the failure of track 102 never reached stdout:\n%s", got)
 	}
 }
 
