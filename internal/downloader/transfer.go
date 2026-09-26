@@ -23,10 +23,11 @@ func (d *Downloader) downloadWithProgress(ctx context.Context, rawURL, dest stri
 	var (
 		totalSize   int64 = -1 // full file size, resolved from Content-Length or Content-Range
 		barCredited int64      // bytes already reflected in the bar across all attempts
+		lastErr     error      // why the latest attempt failed, for the final error
 	)
 
 	for attempt := 0; attempt < maxDownloadRetries; attempt++ {
-		if err := waitBeforeRetry(ctx, attempt); err != nil {
+		if err := waitBeforeRetry(ctx, attempt, d.retryDelay); err != nil {
 			return err
 		}
 
@@ -43,6 +44,7 @@ func (d *Downloader) downloadWithProgress(ctx context.Context, rawURL, dest stri
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
+			lastErr = err
 			continue // network error before response — retry
 		}
 
@@ -51,7 +53,11 @@ func (d *Downloader) downloadWithProgress(ctx context.Context, rawURL, dest stri
 		if offset > 0 && resp.StatusCode == http.StatusOK {
 			resp.Body.Close()
 			os.Remove(dest)
+			if bar != nil {
+				bar.SetCurrent(0)
+			}
 			barCredited = 0
+			lastErr = errors.New("server ignored the Range header")
 			continue
 		}
 
@@ -111,19 +117,23 @@ func (d *Downloader) downloadWithProgress(ctx context.Context, rawURL, dest stri
 			return copyErr
 		}
 		// Recoverable (EOF / network drop) — next iteration resumes via Range header.
+		lastErr = fmt.Errorf("%w after %d of %d bytes", copyErr, written, totalSize)
 	}
 
-	return fmt.Errorf("download failed after %d attempts", maxDownloadRetries)
+	// The cause goes with it: "failed after 5 attempts" alone left nothing to
+	// tell a dropped connection from a CDN that serves one byte and hangs up.
+	return fmt.Errorf("download failed after %d attempts: %w", maxDownloadRetries, lastErr)
 }
 
-// waitBeforeRetry sleeps with exponential backoff (1s, 2s, 4s, 8s) before a
-// retry attempt. attempt 0 is the first try and returns immediately. Returns
-// ctx.Err() if the context is cancelled while sleeping.
-func waitBeforeRetry(ctx context.Context, attempt int) error {
+// waitBeforeRetry sleeps with exponential backoff (base, 2×, 4×, 8×; base is
+// 1 s outside tests) before a retry attempt. attempt 0 is the first try and
+// returns immediately. Returns ctx.Err() if the context is cancelled while
+// sleeping.
+func waitBeforeRetry(ctx context.Context, attempt int, base time.Duration) error {
 	if attempt == 0 {
 		return nil
 	}
-	delay := time.Duration(1<<(attempt-1)) * time.Second
+	delay := time.Duration(1<<(attempt-1)) * base
 	select {
 	case <-ctx.Done():
 		return ctx.Err()

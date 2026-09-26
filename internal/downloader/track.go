@@ -196,41 +196,78 @@ func (d *Downloader) downloadAndTag(
 	trackFmt string,
 	bar ProgressBar,
 ) error {
-	fileURL, _ := trackURLDict["url"].(string)
+	tmpFile := filepath.Join(dir, fmt.Sprintf(".%02d.tmp", idx))
+	// Each fallback asks strictly below the last quality asked for, so the
+	// loop ends whatever format_id the responses claim.
+	ceiling := d.Opts.Quality
+	if fid, _ := trackURLDict["format_id"].(float64); fid != 0 {
+		ceiling = min(ceiling, int(fid))
+	}
+	for {
+		isMP3, finalFile, err := d.trackTarget(dir, trackURLDict, trackMeta, albumMeta, trackFmt)
+		if err != nil {
+			return err
+		}
+		if _, err := os.Stat(finalFile); err == nil {
+			if bar != nil {
+				bar.Abort(true) // hide already-downloaded bars
+			}
+			return nil
+		}
 
-	// Read off the response, not Options.Quality: a fallback to 5 delivers MP3
-	// bytes for a lossless request, and the extension and the tagger have to
-	// follow the bytes.
+		fileURL, _ := trackURLDict["url"].(string)
+		err = d.downloadWithProgress(ctx, fileURL, tmpFile, bar)
+		if err == nil {
+			d.tagAndRename(tmpFile, dir, finalFile, trackMeta, albumMeta, isTrack, isMP3)
+			return nil
+		}
+		os.Remove(tmpFile)
+		err = fmt.Errorf("download: %w", err)
+
+		// getFileUrl can answer fine for a file the CDN cannot serve: album
+		// 0060254736219, track 11 at 24 bit, sends 1 byte of 54 MB and hangs
+		// up every time, while its 16-bit file downloads. So a quality whose
+		// bytes never arrive is treated like one getFileUrl turns down.
+		if ctx.Err() != nil || !d.Opts.QualityFallback {
+			return err
+		}
+		lower, q, ferr := d.fileURLBelow(ctx, idStr(trackMeta["id"]), ceiling)
+		if ferr != nil {
+			return fmt.Errorf("%w, and no lower quality is available", err)
+		}
+		ceiling = q
+		if bar != nil {
+			bar.SetCurrent(0)
+		}
+		trackURLDict = lower
+	}
+}
+
+// trackTarget reports where a track goes and whether it is MP3. It reads the
+// format off the response, not Options.Quality: a fallback to 5 delivers MP3
+// bytes for a lossless request, and the extension and the tagger have to
+// follow the bytes.
+func (d *Downloader) trackTarget(dir string, trackURLDict, trackMeta, albumMeta map[string]interface{}, trackFmt string) (bool, string, error) {
 	isMP3 := deliveredIsMP3(trackURLDict, d.Opts.Quality)
-
 	finalFile, err := finalTrackPath(dir, trackMeta, albumMeta, trackFmt, isMP3)
 	if err != nil {
-		return err
+		return false, "", err
 	}
 
 	// Support subfolder templates in track_format (e.g. "{albumartist}/{album}/...").
 	// safeJoin (inside finalTrackPath) already guaranteed the parent is inside dir.
 	if parent := filepath.Dir(finalFile); parent != dir {
 		if err := os.MkdirAll(parent, 0755); err != nil {
-			return fmt.Errorf("create track parent directory %q: %w", parent, err)
+			return false, "", fmt.Errorf("create track parent directory %q: %w", parent, err)
 		}
 	}
 
-	if _, err := os.Stat(finalFile); err == nil {
-		if bar != nil {
-			bar.Abort(true) // hide already-downloaded bars
-		}
-		return nil
-	}
+	return isMP3, finalFile, nil
+}
 
-	// Download to .tmp file first
-	tmpFile := filepath.Join(dir, fmt.Sprintf(".%02d.tmp", idx))
-	if err := d.downloadWithProgress(ctx, fileURL, tmpFile, bar); err != nil {
-		os.Remove(tmpFile)
-		return fmt.Errorf("download: %w", err)
-	}
-
-	// Tag and rename
+// tagAndRename tags the downloaded tmpFile and moves it to finalFile. A
+// tagging failure is reported, and the untagged audio still kept.
+func (d *Downloader) tagAndRename(tmpFile, dir, finalFile string, trackMeta, albumMeta map[string]interface{}, isTrack, isMP3 bool) {
 	if isMP3 {
 		if err := tagMP3(tmpFile, dir, finalFile, trackMeta, albumMeta, isTrack, d.Opts.EmbedArt); err != nil {
 			fmt.Fprintf(d.termOut(), "\033[31mWarning: could not tag %s: %v\033[0m\n", filepath.Base(finalFile), err)
@@ -243,8 +280,6 @@ func (d *Downloader) downloadAndTag(
 			os.Rename(tmpFile, finalFile)
 		}
 	}
-
-	return nil
 }
 
 // fileURL asks for the track at the requested quality and, when that cannot
@@ -265,8 +300,19 @@ func (d *Downloader) fileURL(ctx context.Context, trackID string) (map[string]in
 	if !d.Opts.QualityFallback {
 		return nil, err
 	}
+	info, _, ferr := d.fileURLBelow(ctx, trackID, d.Opts.Quality)
+	if ferr != nil {
+		return nil, fmt.Errorf("%w, and no lower quality is available", err)
+	}
+	return info, nil
+}
+
+// fileURLBelow returns the track at the best quality under ceiling that
+// Qobuz serves in full, and the quality it asked for; it says so on the
+// terminal.
+func (d *Downloader) fileURLBelow(ctx context.Context, trackID string, ceiling int) (map[string]interface{}, int, error) {
 	for _, q := range []int{27, 7, 6, 5} {
-		if q >= d.Opts.Quality {
+		if q >= ceiling {
 			continue
 		}
 		info, qerr := d.Client.GetTrackURL(ctx, trackID, q, "")
@@ -275,10 +321,10 @@ func (d *Downloader) fileURL(ctx context.Context, trackID string) (map[string]in
 		}
 		if qerr == nil {
 			fmt.Fprintf(d.termOut(), "\033[33mQuality fallback to %s for track %s\033[0m\n", Qualities[q], trackID)
-			return info, nil
+			return info, q, nil
 		}
 	}
-	return nil, fmt.Errorf("%w, and no lower quality is available", err)
+	return nil, 0, errors.New("no lower quality is available")
 }
 
 // unservable says why a successful track/getFileUrl response still has no

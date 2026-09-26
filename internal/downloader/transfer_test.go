@@ -105,6 +105,14 @@ func TestDownloadWithProgress(t *testing.T) {
 			wantReqs: 2,
 		},
 		{
+			// "failed after 5 attempts" used to be the whole message; the
+			// cause of the last attempt has to come with it.
+			name:     "giving up keeps the cause",
+			pace:     func(_, off int) bool { return off < len(payload)/2 },
+			wantErr:  os.ErrDeadlineExceeded,
+			wantReqs: maxDownloadRetries,
+		},
+		{
 			name:     "cancel during a stall stops without retrying",
 			pace:     func(_, off int) bool { return off < len(payload)/2 },
 			cancelIn: 100 * time.Millisecond,

@@ -36,6 +36,9 @@ func (h *TrackHandle) IncrBy(n int) {
 	h.bytes.Add(int64(n))
 }
 
+// SetCurrent rewinds the counter when a download restarts from zero.
+func (h *TrackHandle) SetCurrent(n int64) { h.bytes.Store(n) }
+
 func (h *TrackHandle) ProxyReader(r io.Reader) io.ReadCloser {
 	rc, ok := r.(io.ReadCloser)
 	if !ok {

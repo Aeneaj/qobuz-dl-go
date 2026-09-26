@@ -210,6 +210,12 @@ escribió, por su ruta (`TestIntegration_DownloadURLsLeavesForeignFilesAlone`).
 
 `downloadWithProgress` reintenta hasta 5 veces con backoff (1/2/4/8 s) y reanuda con
 `Range: bytes=N-`. Si el servidor ignora el Range (responde 200), trunca y empieza de cero.
+Al rendirse, el error lleva la causa del último intento.
+
+**Que `getFileUrl` responda bien no garantiza los bytes**: el CDN sirvió 1 byte de 54 MB y
+cortó, siempre, para una pista en 24 bits cuya versión de 16 bits bajaba bien. Por eso,
+agotados los reintentos, `downloadAndTag` pide la calidad inferior con `fileURLBelow` (el
+mismo fallback de `fileURL`), salvo con `--no-fallback`.
 
 **No hay tope total por petición.** Un `http.Client.Timeout` de 10 min hacía fallar toda
 pista que tardara más, fuera cual fuera la velocidad. `newDownloadClient` pone un deadline de

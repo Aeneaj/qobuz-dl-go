@@ -60,6 +60,7 @@ type Options struct {
 type ProgressBar interface {
 	SetTotal(total int64, triggerComplete bool)
 	IncrBy(n int)
+	SetCurrent(n int64)
 	ProxyReader(r io.Reader) io.ReadCloser
 	Abort(drop bool)
 }
@@ -71,6 +72,7 @@ type Downloader struct {
 	Opts       Options
 	db         *downloadDB
 	httpClient *http.Client
+	retryDelay time.Duration // base of the retry backoff; tests shrink it
 
 	// bars holds the mpb container while it is rendering. See termOut.
 	bars atomic.Value
@@ -177,6 +179,7 @@ func New(client *api.Client, opts Options) (*Downloader, error) {
 		Client:     client,
 		Opts:       opts,
 		httpClient: newDownloadClient(),
+		retryDelay: time.Second,
 	}
 	if !opts.NoDB && opts.DBPath != "" {
 		db, err := openDB(opts.DBPath)

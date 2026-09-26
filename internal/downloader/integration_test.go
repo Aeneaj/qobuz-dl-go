@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Aeneaj/qobuz-dl-go/internal/api"
 )
@@ -66,7 +67,9 @@ type fakeQobuz struct {
 	zeroRateFor  map[int]bool // track IDs served with sampling_rate 0 (nothing usable)
 	// degraded answers 200 with a response that holds no full track — a
 	// "preview", a "zero-rate" or a "no-url" one — for format_ids above
-	// degradeAbove, and the normal response at or below it.
+	// degradeAbove, and the normal response at or below it. "cut" is a
+	// normal response whose audio sends 1 byte and hangs up, as the CDN did
+	// for album 0060254736219.
 	degraded     map[int]string
 	degradeAbove int
 	audioPad     int64 // extra audio bytes per file, for the memory benchmarks
@@ -202,6 +205,8 @@ func (q *fakeQobuz) handleFileURL(w http.ResponseWriter, r *http.Request) {
 			resp["bit_depth"], resp["sampling_rate"] = float64(0), float64(0)
 		case "no-url":
 			delete(resp, "url")
+		case "cut":
+			resp["url"] = fmt.Sprintf("%s/audio/cut/%d.%s", q.srv.URL, n, ext)
 		}
 	}
 	writeJSON(w, resp)
@@ -215,6 +220,10 @@ func (q *fakeQobuz) handleAudio(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", ctype)
 	w.Header().Set("Content-Length", fmt.Sprint(int64(len(body))+q.audioPad))
+	if strings.Contains(r.URL.Path, "/cut/") {
+		w.Write(body[:1]) // short of Content-Length: net/http drops the conn
+		return
+	}
 	w.Write(body)
 	// Streamed from one small buffer so the server's own allocations stay
 	// out of the client's memory numbers.
@@ -388,6 +397,10 @@ func TestIntegration_FallbackOnDegradedResponse(t *testing.T) {
 		{"preview", true, all},
 		{"zero-rate", true, all},
 		{"no-url", true, all},
+		// getFileUrl is fine but the bytes never arrive: the quality below
+		// is asked for after the retries run out, not the track dropped.
+		{"cut", true, all},
+		{"cut", false, []string{all[0], all[2]}},
 		// Without the fallback the track is still skipped, but as an error
 		// naming the reason, and nothing below 7 is asked for.
 		{"preview", false, []string{all[0], all[2]}},
@@ -405,6 +418,7 @@ func TestIntegration_FallbackOnDegradedResponse(t *testing.T) {
 				o.QualityFallback = c.fallback
 				o.NoCover = true
 			})
+			d.retryDelay = time.Millisecond
 			if err := d.downloadAlbum(context.Background(), "alb1", dir); err != nil {
 				t.Fatalf("downloadAlbum: %v", err)
 			}
