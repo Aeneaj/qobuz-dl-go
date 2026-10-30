@@ -38,19 +38,16 @@ func (d *Downloader) downloadAlbum(ctx context.Context, albumID, baseDir string)
 	artist := nestedStr(meta, "artist", "name")
 	year := releaseYear(meta)
 
-	trackCount := 0
-	if items, _ := meta["tracks"].(map[string]interface{}); items != nil {
-		if raw, _ := items["items"].([]interface{}); raw != nil {
-			trackCount = len(raw)
-		}
-	}
+	tracklist, _ := meta["tracks"].(map[string]interface{})
+	rawItems, _ := tracklist["items"].([]interface{})
+
 	// resolveFormat leaves bit depth / sampling rate nil for MP3 and for a
 	// format it could not resolve; %v would print them as "<nil>/<nil>".
 	quality := fileFormat
 	if bitDepth != nil && samplingRate != nil {
 		quality = fmt.Sprintf("%s %v/%v", fileFormat, bitDepth, samplingRate)
 	}
-	d.announceAlbum(title, artist, quality, trackCount)
+	d.announceAlbum(title, artist, quality, len(rawItems))
 
 	// Build folder name. Individual values are sanitised inside
 	// expandPlaceholders, so literal "/" written in FolderFormat survives as a
@@ -75,11 +72,9 @@ func (d *Downloader) downloadAlbum(ctx context.Context, albumID, baseDir string)
 	d.downloadAlbumExtras(ctx, meta, albumDir)
 
 	// Tracks
-	tracklist, _ := meta["tracks"].(map[string]interface{})
 	if tracklist == nil {
 		return fmt.Errorf("no tracks in album %s", albumID)
 	}
-	rawItems, _ := tracklist["items"].([]interface{})
 
 	isMultiDisc := detectMultiDisc(rawItems)
 	trackFmt := cleanFormatStr(d.termOut(), d.Opts.TrackFormat, fileFormat)
@@ -124,14 +119,7 @@ func (d *Downloader) shouldSkipAlbum(meta map[string]interface{}, albumID string
 // downloadAlbumExtras fetches the cover image and booklet PDF when present and
 // not disabled by Options.
 func (d *Downloader) downloadAlbumExtras(ctx context.Context, meta map[string]interface{}, albumDir string) {
-	if !d.Opts.NoCover {
-		if imgURL := nestedStr(meta, "image", "large"); imgURL != "" {
-			if d.Opts.OGCover {
-				imgURL = strings.Replace(imgURL, "_600.", "_org.", 1)
-			}
-			d.downloadExtra(ctx, imgURL, filepath.Join(albumDir, coverFile))
-		}
-	}
+	d.downloadCover(ctx, nestedStr(meta, "image", "large"), albumDir)
 	if goodies, ok := meta["goodies"].([]interface{}); ok && len(goodies) > 0 {
 		if g, ok := goodies[0].(map[string]interface{}); ok {
 			if pdfURL, _ := g["url"].(string); pdfURL != "" {
@@ -139,6 +127,18 @@ func (d *Downloader) downloadAlbumExtras(ctx context.Context, meta map[string]in
 			}
 		}
 	}
+}
+
+// downloadCover saves the image at imgURL as dir's cover, in its original size
+// with OGCover. It does nothing with NoCover or without an image.
+func (d *Downloader) downloadCover(ctx context.Context, imgURL, dir string) {
+	if d.Opts.NoCover || imgURL == "" {
+		return
+	}
+	if d.Opts.OGCover {
+		imgURL = strings.Replace(imgURL, "_600.", "_org.", 1)
+	}
+	d.downloadExtra(ctx, imgURL, filepath.Join(dir, coverFile))
 }
 
 // detectMultiDisc reports whether the tracklist spans more than one disc.
@@ -202,10 +202,7 @@ func (d *Downloader) collectTrackJobs(ctx context.Context, p *mpb.Progress, rawI
 			}
 		}
 
-		trackNum := 0
-		if tn, ok := track["track_number"].(float64); ok {
-			trackNum = int(tn)
-		}
+		trackNum := int(nestedFloat(track, "track_number"))
 		bar := d.newBar(p, idx, trackNum, getTitle(track), trackID)
 
 		jobs = append(jobs, trackJob{idx, trackURL, track, trackDir, trackID, bar})
@@ -235,11 +232,9 @@ jobLoop:
 			if err := d.downloadAndTag(ctx, j.trackDir, j.idx, j.trackURL, j.track, meta, false, trackFmt, j.bar); err != nil {
 				j.bar.Abort(false)
 				fmt.Fprintf(d.termOut(), "\033[31mTrack %s failed: %v. Skipping...\033[0m\n", j.trackID, err)
-			} else if d.db != nil {
-				if err := d.db.add(j.trackID); err != nil {
-					fmt.Fprintf(d.termOut(), "\033[33mWarning: could not record track in DB: %v\033[0m\n", err)
-				}
+				return
 			}
+			d.recordDownloaded(j.trackID)
 		}(job)
 	}
 

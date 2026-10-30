@@ -84,21 +84,16 @@ func (d *Downloader) captureOAuthRedirect(ctx context.Context, appID string) (ap
 			params := r.URL.Query()
 			result := parseQueryParams(params)
 
+			w.Header().Set("Content-Type", "text/html")
 			if result.Token != "" || result.Code != "" {
-				w.Header().Set("Content-Type", "text/html")
 				fmt.Fprint(w, successPage)
-				select {
-				case resultCh <- result:
-				default:
-				}
 			} else {
 				// Show all received params to help diagnose
-				w.Header().Set("Content-Type", "text/html")
 				fmt.Fprintf(w, failurePage, params.Encode())
-				select {
-				case resultCh <- api.OAuthResult{AllParams: params}:
-				default:
-				}
+			}
+			select {
+			case resultCh <- result:
+			default:
 			}
 		}),
 	}

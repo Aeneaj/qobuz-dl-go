@@ -126,6 +126,10 @@ type failedEntry struct {
 	Reason string
 }
 
+// reasonNotFound is the failedEntry.Reason of a track the search did not find.
+// printBatchSummary counts it apart from real errors.
+const reasonNotFound = "not found"
+
 // DownloadCSV parses the CSV at csvPath and downloads each track via Qobuz.
 // If failedPath is non-empty, writes a CSV report of skipped/failed tracks there.
 func (d *Downloader) DownloadCSV(ctx context.Context, csvPath, failedPath string) error {
@@ -160,7 +164,7 @@ func (d *Downloader) DownloadCSV(ctx context.Context, csvPath, failedPath string
 		}
 		if trackID == "" {
 			fmt.Fprintf(d.termOut(), "  \033[31m✗ Not found on Qobuz\033[0m\n")
-			failures = append(failures, failedEntry{t, "not found"})
+			failures = append(failures, failedEntry{t, reasonNotFound})
 			continue
 		}
 
@@ -188,7 +192,7 @@ func (d *Downloader) DownloadCSV(ctx context.Context, csvPath, failedPath string
 func printBatchSummary(w io.Writer, total, downloaded int, failures []failedEntry) {
 	notFound, errCount := 0, 0
 	for _, f := range failures {
-		if f.Reason == "not found" {
+		if f.Reason == reasonNotFound {
 			notFound++
 		} else {
 			errCount++

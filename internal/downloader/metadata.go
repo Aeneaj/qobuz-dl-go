@@ -320,8 +320,8 @@ func readCover(dir string) ([]byte, error) {
 
 func findCover(dir string) string {
 	candidates := []string{
-		filepath.Join(dir, "cover.jpg"),
-		filepath.Join(filepath.Dir(dir), "cover.jpg"),
+		filepath.Join(dir, coverFile),
+		filepath.Join(filepath.Dir(dir), coverFile),
 	}
 	for _, c := range candidates {
 		if _, err := os.Stat(c); err == nil {
@@ -381,11 +381,7 @@ func buildMP3Tags(track, album map[string]interface{}, isTrack bool) map[string]
 		t["TYER"] = t["TDRC"][:4]
 	}
 
-	tn := 0
-	if v, ok := track["track_number"].(float64); ok {
-		tn = int(v)
-	}
-	t["TRCK"] = fmt.Sprintf("%d/%s", tn, trackTotal)
+	t["TRCK"] = fmt.Sprintf("%d/%s", int(nestedFloat(track, "track_number")), trackTotal)
 
 	if mn, ok := track["media_number"].(float64); ok {
 		t["TPOS"] = fmt.Sprintf("%d", int(mn))

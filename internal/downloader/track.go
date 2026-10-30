@@ -74,19 +74,8 @@ func (d *Downloader) downloadTrackByID(ctx context.Context, trackID, baseDir str
 		}
 	}
 
-	if !d.Opts.NoCover {
-		if imgURL := nestedStr(meta, "album", "image", "large"); imgURL != "" {
-			if d.Opts.OGCover {
-				imgURL = strings.Replace(imgURL, "_600.", "_org.", 1)
-			}
-			d.downloadExtra(ctx, imgURL, filepath.Join(trackDir, coverFile))
-		}
-	}
+	d.downloadCover(ctx, nestedStr(meta, "album", "image", "large"), trackDir)
 
-	trackNum := 0
-	if tn, ok := meta["track_number"].(float64); ok {
-		trackNum = int(tn)
-	}
 	if d.tui != nil {
 		d.tui.Send(ui.MsgAlbum{Title: title, Artist: performer, Format: fileFormat, Tracks: 1})
 	} else {
@@ -95,28 +84,35 @@ func (d *Downloader) downloadTrackByID(ctx context.Context, trackID, baseDir str
 
 	p := d.newProgress(ctx)
 	restore := d.withBars(p)
-	bar := d.newBar(p, 0, trackNum, title, trackID)
+	bar := d.newBar(p, 0, int(nestedFloat(meta, "track_number")), title, trackID)
 
-	if err := d.downloadAndTag(ctx, trackDir, 1, trackURL, meta, meta, true, trackFmt, bar); err != nil {
+	err = d.downloadAndTag(ctx, trackDir, 1, trackURL, meta, meta, true, trackFmt, bar)
+	if err != nil {
 		bar.Abort(false)
-		if p != nil {
-			p.Wait()
-		}
-		restore()
-		return err
-	}
-	if d.db != nil {
-		if err := d.db.add(trackID); err != nil {
-			fmt.Fprintf(d.termOut(), "\033[33mWarning: could not record track in DB: %v\033[0m\n", err)
-		}
+	} else {
+		d.recordDownloaded(trackID)
 	}
 	if p != nil {
 		p.Wait()
 	}
 	restore()
+	if err != nil {
+		return err
+	}
 
 	fmt.Fprintf(d.termOut(), "\033[32m✓  Completed: %s\033[0m\n\n", title)
 	return nil
+}
+
+// recordDownloaded adds a finished track to the downloads DB, when there is
+// one. The file is already on disk, so a failure here is only a warning.
+func (d *Downloader) recordDownloaded(trackID string) {
+	if d.db == nil {
+		return
+	}
+	if err := d.db.add(trackID); err != nil {
+		fmt.Fprintf(d.termOut(), "\033[33mWarning: could not record track in DB: %v\033[0m\n", err)
+	}
 }
 
 // finalTrackPath computes the on-disk path a track will be written to. It is
@@ -136,13 +132,9 @@ func finalTrackPath(dir string, trackMeta, albumMeta map[string]interface{}, tra
 	if performer == "" {
 		performer = nestedStr(albumMeta, "artist", "name")
 	}
-	trackNum := 0
-	if tn, ok := trackMeta["track_number"].(float64); ok {
-		trackNum = int(tn)
-	}
 
 	filenameAttrs := map[string]string{
-		"{tracknumber}":   fmt.Sprintf("%02d", trackNum),
+		"{tracknumber}":   fmt.Sprintf("%02d", int(nestedFloat(trackMeta, "track_number"))),
 		"{tracktitle}":    trackTitle,
 		"{artist}":        performer,
 		"{albumartist}":   nestedStr(albumMeta, "artist", "name"),
@@ -268,17 +260,16 @@ func (d *Downloader) trackTarget(dir string, trackURLDict, trackMeta, albumMeta 
 // tagAndRename tags the downloaded tmpFile and moves it to finalFile. A
 // tagging failure is reported, and the untagged audio still kept.
 func (d *Downloader) tagAndRename(tmpFile, dir, finalFile string, trackMeta, albumMeta map[string]interface{}, isTrack, isMP3 bool) {
+	var err error
 	if isMP3 {
-		if err := tagMP3(tmpFile, dir, finalFile, trackMeta, albumMeta, isTrack, d.Opts.EmbedArt); err != nil {
-			fmt.Fprintf(d.termOut(), "\033[31mWarning: could not tag %s: %v\033[0m\n", filepath.Base(finalFile), err)
-			// Still rename even if tagging failed
-			os.Rename(tmpFile, finalFile)
-		}
+		err = tagMP3(tmpFile, dir, finalFile, trackMeta, albumMeta, isTrack, d.Opts.EmbedArt)
 	} else {
-		if err := tagFLAC(d.termOut(), tmpFile, dir, finalFile, trackMeta, albumMeta, isTrack, d.Opts.EmbedArt); err != nil {
-			fmt.Fprintf(d.termOut(), "\033[31mWarning: could not tag %s: %v\033[0m\n", filepath.Base(finalFile), err)
-			os.Rename(tmpFile, finalFile)
-		}
+		err = tagFLAC(d.termOut(), tmpFile, dir, finalFile, trackMeta, albumMeta, isTrack, d.Opts.EmbedArt)
+	}
+	if err != nil {
+		fmt.Fprintf(d.termOut(), "\033[31mWarning: could not tag %s: %v\033[0m\n", filepath.Base(finalFile), err)
+		// Still rename even if tagging failed
+		os.Rename(tmpFile, finalFile)
 	}
 }
 

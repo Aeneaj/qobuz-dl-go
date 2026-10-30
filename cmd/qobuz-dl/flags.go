@@ -17,6 +17,9 @@ import (
 // first-run config bootstrap, and the flag > config > default precedence
 // that produces downloader.Options.
 
+// defaultDownloadDir is used when neither -d nor download_dir sets a directory.
+const defaultDownloadDir = "./qobuz-downloader"
+
 func loadOrInitConfig(ctx context.Context, skipCredentials bool) (*config.Config, error) {
 	cfgDir := config.ConfigDir()
 	cfgFile := cfgDir + "/config.ini"
@@ -88,7 +91,7 @@ func initDownloader(ctx context.Context, f *cliFlags) (*downloader.Downloader, e
 		dir = cfg.DownloadDir
 	}
 	if dir == "" {
-		dir = "./qobuz-downloader"
+		dir = defaultDownloadDir
 	}
 	resolvedDir, err := config.ResolveDir(dir, true)
 	if err != nil {

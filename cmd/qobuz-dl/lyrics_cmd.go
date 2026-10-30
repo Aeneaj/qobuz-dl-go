@@ -23,7 +23,7 @@ func runLyrics(ctx context.Context, args []string, dir string) {
 		}
 	}
 	if scanDir == "" {
-		scanDir = "./qobuz-downloader"
+		scanDir = defaultDownloadDir
 	}
 
 	// create=false: lyrics scans an existing library, it never makes one.

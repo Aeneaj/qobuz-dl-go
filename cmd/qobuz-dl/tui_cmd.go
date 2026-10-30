@@ -132,7 +132,7 @@ func (b *tuiBackend) CSV(ctx context.Context, path string) (string, error) {
 	if _, err := os.Stat(path); err != nil {
 		return "", fmt.Errorf("CSV not found: %s", path)
 	}
-	if err := b.dl.DownloadCSV(ctx, path, "failed_downloads.csv"); err != nil {
+	if err := b.dl.DownloadCSV(ctx, path, defaultFailedCSV); err != nil {
 		return "", err
 	}
 	return ui.T("CSV import finished"), nil
@@ -192,5 +192,5 @@ func (b *tuiBackend) DefaultDir() string {
 	if cfg, err := config.Load(); err == nil && cfg.DownloadDir != "" {
 		return cfg.DownloadDir
 	}
-	return "./qobuz-downloader"
+	return defaultDownloadDir
 }

@@ -20,6 +20,9 @@ import (
 // version is set at build time via -ldflags "-X main.version=v1.x.x".
 var version = "v1.5.0"
 
+// defaultFailedCSV is where the csv command reports what it could not download.
+const defaultFailedCSV = "failed_downloads.csv"
+
 const usage = `Usage: qobuz-dl [options] <command> [args] [options]
 
 Options may be written before the command, after it, or after its arguments.
@@ -78,7 +81,7 @@ func main() {
 	flags := registerDownloadFlags(fs)
 	luckyType := fs.String("lucky-type", "album", "")
 	luckyN := fs.Int("lucky-n", 1, "")
-	failed := fs.String("failed", "failed_downloads.csv", "")
+	failed := fs.String("failed", defaultFailedCSV, "")
 
 	args := parseArgs(fs, os.Args[1:])
 

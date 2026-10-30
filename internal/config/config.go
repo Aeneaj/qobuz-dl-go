@@ -199,6 +199,27 @@ func setupPreferences(ctx context.Context, kv map[string]string) error {
 // Reset interactively creates a fresh config.ini including manual credentials.
 // Used by the --reset flag. ctx cancels the bundle.Fetch HTTP call.
 func Reset(ctx context.Context) error {
+	return createConfig(ctx, func(kv map[string]string) {
+		fmt.Println("\033[33mTo get your credentials: log in at https://play.qobuz.com,")
+		fmt.Println("open DevTools → Application → Local Storage → find 'localuser'\033[0m")
+		kv["user_id"] = prompt("Enter your Qobuz user_id:\n- ")
+		kv["user_auth_token"] = prompt("Enter your Qobuz user_auth_token:\n- ")
+	})
+}
+
+// InitConfig creates a fresh config.ini with preferences but no credentials.
+// Used on first run when the oauth command is invoked, since OAuth will
+// obtain and save the token itself moments later. ctx cancels bundle.Fetch.
+func InitConfig(ctx context.Context) error {
+	return createConfig(ctx, func(kv map[string]string) {
+		kv["user_id"] = ""
+		kv["user_auth_token"] = ""
+	})
+}
+
+// createConfig writes a fresh config.ini. credentials fills in the credential
+// keys, which is the only part Reset and InitConfig do differently.
+func createConfig(ctx context.Context, credentials func(kv map[string]string)) error {
 	dir := ConfigDir()
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
@@ -207,38 +228,7 @@ func Reset(ctx context.Context) error {
 	fmt.Printf("\033[33mCreating config file: %s\033[0m\n", cfgFile)
 
 	kv := map[string]string{}
-
-	fmt.Println("\033[33mTo get your credentials: log in at https://play.qobuz.com,")
-	fmt.Println("open DevTools → Application → Local Storage → find 'localuser'\033[0m")
-	kv["user_id"] = prompt("Enter your Qobuz user_id:\n- ")
-	kv["user_auth_token"] = prompt("Enter your Qobuz user_auth_token:\n- ")
-
-	if err := setupPreferences(ctx, kv); err != nil {
-		return err
-	}
-
-	if err := writeINI(cfgFile, kv); err != nil {
-		return err
-	}
-	fmt.Printf("\033[32mConfig saved to %s\033[0m\n", cfgFile)
-	return nil
-}
-
-// InitConfig creates a fresh config.ini with preferences but no credentials.
-// Used on first run when the oauth command is invoked, since OAuth will
-// obtain and save the token itself moments later. ctx cancels bundle.Fetch.
-func InitConfig(ctx context.Context) error {
-	dir := ConfigDir()
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
-	}
-	cfgFile := filepath.Join(dir, "config.ini")
-	fmt.Printf("\033[33mCreating config file: %s\033[0m\n", cfgFile)
-
-	kv := map[string]string{
-		"user_id":         "",
-		"user_auth_token": "",
-	}
+	credentials(kv)
 
 	if err := setupPreferences(ctx, kv); err != nil {
 		return err
