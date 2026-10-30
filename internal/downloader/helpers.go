@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -304,14 +305,7 @@ func validateFormats(folderFmt, trackFmt string) error {
 func unknownPlaceholders(format string, allowed []string) []string {
 	var bad []string
 	for _, tok := range placeholderRe.FindAllString(format, -1) {
-		known := false
-		for _, a := range allowed {
-			if tok == a {
-				known = true
-				break
-			}
-		}
-		if !known {
+		if !slices.Contains(allowed, tok) {
 			bad = append(bad, tok)
 		}
 	}

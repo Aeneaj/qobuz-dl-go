@@ -226,10 +226,7 @@ func (m Model) hasActive() bool {
 // ── view ─────────────────────────────────────────────────────────────────────
 
 func (m Model) View() string {
-	w := m.width
-	if w < 40 {
-		w = 40
-	}
+	w := max(40, m.width)
 
 	var b strings.Builder
 
@@ -347,10 +344,7 @@ func (m Model) viewGlobal(w int) string {
 	pct := sBlue.Bold(true).Render(fmt.Sprintf("%3.0f%%", float64(done)/float64(total)*100))
 
 	usedW := lipgloss.Width(label) + lipgloss.Width(counter) + lipgloss.Width(pct) + 6
-	barW := w - 2 - usedW
-	if barW < 10 {
-		barW = 10
-	}
+	barW := max(10, w-2-usedW)
 	bar := drawBar(int64(done), int64(total), barW, stateActive, 0)
 
 	return fmt.Sprintf("  %s  %s  %s  %s", label, bar, counter, pct)
@@ -393,10 +387,7 @@ func (m Model) viewTrack(e trackEntry, w int) string {
 
 	// Second line: bar or error message
 	indent := "     "
-	barW := w - len(indent) - 1
-	if barW < 10 {
-		barW = 10
-	}
+	barW := max(10, w-len(indent)-1)
 
 	switch e.state {
 	case stateActive:
@@ -469,10 +460,7 @@ func drawBar(current, total int64, width int, state trackState, shimmer int) str
 
 	var pct float64
 	if total > 0 {
-		pct = float64(current) / float64(total)
-		if pct > 1 {
-			pct = 1
-		}
+		pct = min(1, float64(current)/float64(total))
 	}
 	filled := int(pct * float64(width))
 	if filled == 0 {
@@ -520,10 +508,10 @@ func fmtETA(secs float64) string {
 	}
 	d := time.Duration(secs) * time.Second
 	h := int(d.Hours())
-	min := int(d.Minutes()) % 60
+	mins := int(d.Minutes()) % 60
 	sec := int(d.Seconds()) % 60
 	if h > 0 {
-		return fmt.Sprintf("%d:%02d:%02d", h, min, sec)
+		return fmt.Sprintf("%d:%02d:%02d", h, mins, sec)
 	}
-	return fmt.Sprintf("%d:%02d", min, sec)
+	return fmt.Sprintf("%d:%02d", mins, sec)
 }

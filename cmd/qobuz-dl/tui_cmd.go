@@ -174,7 +174,7 @@ func (b *tuiBackend) Config() string {
 }
 
 func (b *tuiBackend) Purge() error {
-	if err := os.Remove(filepath.Join(config.ConfigDir(), "qobuz_dl.db")); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(filepath.Join(config.ConfigDir(), "qobuz_dl.db")); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	return nil

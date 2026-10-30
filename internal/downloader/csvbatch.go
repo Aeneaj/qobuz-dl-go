@@ -95,9 +95,9 @@ func ParseCSV(w io.Writer, path string) ([]TrackRequest, error) {
 
 		// TuneMyMusic anomaly: artist empty → infer from "Artist - Title" format.
 		if artist == "" {
-			if parts := strings.SplitN(raw, " - ", 2); len(parts) == 2 {
-				artist = strings.TrimSpace(parts[0])
-				title = strings.TrimSpace(parts[1])
+			if a, t, ok := strings.Cut(raw, " - "); ok {
+				artist = strings.TrimSpace(a)
+				title = strings.TrimSpace(t)
 			}
 		}
 

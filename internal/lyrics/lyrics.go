@@ -232,16 +232,12 @@ func buildLabel(current, total int, title, artist string) string {
 	if artist != "" {
 		desc = title + " — " + artist
 	}
-	counterRunes := []rune(counter)
-	maxDesc := labelWidth - len(counterRunes)
-	if maxDesc < 8 {
-		maxDesc = 8
-	}
+	maxDesc := max(8, labelWidth-len(counter)) // counter is ASCII: bytes are runes
 	descRunes := []rune(desc)
 	if len(descRunes) > maxDesc {
 		desc = string(descRunes[:maxDesc-1]) + "…"
 	} else {
 		desc += strings.Repeat(" ", maxDesc-len(descRunes))
 	}
-	return string(counterRunes) + desc
+	return counter + desc
 }

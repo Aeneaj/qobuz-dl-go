@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -27,7 +28,7 @@ func openDB(path string) (*downloadDB, error) {
 		ids:  make(map[string]struct{}),
 	}
 	f, err := os.Open(path)
-	if os.IsNotExist(err) {
+	if errors.Is(err, os.ErrNotExist) {
 		return db, nil
 	}
 	if err != nil {

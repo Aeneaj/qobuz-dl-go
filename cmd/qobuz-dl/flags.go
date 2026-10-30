@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"maps"
@@ -23,7 +24,7 @@ const defaultDownloadDir = "./qobuz-downloader"
 func loadOrInitConfig(ctx context.Context, skipCredentials bool) (*config.Config, error) {
 	cfgDir := config.ConfigDir()
 	cfgFile := cfgDir + "/config.ini"
-	if _, err := os.Stat(cfgFile); os.IsNotExist(err) {
+	if _, err := os.Stat(cfgFile); errors.Is(err, os.ErrNotExist) {
 		if err := os.MkdirAll(cfgDir, 0755); err != nil {
 			return nil, err
 		}

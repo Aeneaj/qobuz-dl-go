@@ -445,9 +445,7 @@ func (s *Shell) View() string {
 		body = s.viewMenu(w)
 	case scInput:
 		body = s.field.view(w)
-	case scResults:
-		body = s.results.view(w)
-	case scQueue:
+	case scResults, scQueue:
 		body = s.results.view(w)
 	case scText:
 		body = sDim.Render(s.text)

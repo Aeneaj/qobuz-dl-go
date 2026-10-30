@@ -529,16 +529,10 @@ func formatGenres(genres []string) string {
 }
 
 func sliceStrings(m map[string]interface{}, subKey, key string) []string {
-	var src interface{} = m
 	if subKey != "" {
-		sub, _ := m[subKey].(map[string]interface{})
-		if sub == nil {
-			return nil
-		}
-		src = sub
+		m, _ = m[subKey].(map[string]interface{})
 	}
-	mm, _ := src.(map[string]interface{})
-	raw, _ := mm[key].([]interface{})
+	raw, _ := m[key].([]interface{})
 	var result []string
 	for _, r := range raw {
 		if s, ok := r.(string); ok {

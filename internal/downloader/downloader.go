@@ -272,7 +272,7 @@ func (d *Downloader) downloadFromFile(ctx context.Context, path string) {
 //	https://play.qobuz.com/{type}/{id}
 var reQobuzURL = regexp.MustCompile(
 	`(?:https?://(?:www|open|play)\.qobuz\.com)?(?:/[a-z]{2}-[a-z]{2})?` +
-		`/(album|artist|track|playlist|label)(?:/[-\w\d]+)?/([\w\d]+)`,
+		`/(album|artist|track|playlist|label)(?:/[-\w]+)?/(\w+)`,
 )
 
 func parseQobuzURL(rawURL string) (string, string, error) {

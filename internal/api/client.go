@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -379,10 +380,7 @@ func (c *Client) multiMeta(ctx context.Context, endpoint, countKey string, baseP
 	const pageSize = 500
 
 	fetchPage := func(offset int) (map[string]interface{}, error) {
-		params := make(url.Values, len(baseParams)+2)
-		for k, v := range baseParams {
-			params[k] = v
-		}
+		params := maps.Clone(baseParams)
 		params.Set("limit", strconv.Itoa(pageSize))
 		params.Set("offset", strconv.Itoa(offset))
 		return c.doGet(ctx, endpoint, params)

@@ -164,7 +164,7 @@ func smartDiscogFilter(requestedArtist string, items []map[string]interface{}) [
 // plus the keys in first-seen order so the output stays deterministic.
 func groupByEssence(items []map[string]interface{}) (map[string][]map[string]interface{}, []string) {
 	grouped := map[string][]map[string]interface{}{}
-	order := []string{}
+	var order []string
 	for _, item := range items {
 		title, _ := item["title"].(string)
 		key := essenceTitle(title)
