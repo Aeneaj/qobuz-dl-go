@@ -55,7 +55,7 @@ type Options struct {
 	Workers         int // concurrent track downloads per album (0 = default 3)
 }
 
-// ProgressBar is the per-track progress sink. ProgressBar satisfies it natively;
+// ProgressBar is the per-track progress sink. *mpb.Bar satisfies it natively;
 // ui.TrackHandle implements it explicitly, which is what lets the same
 // download code drive either the mpb bars or the bubbletea TUI.
 type ProgressBar interface {

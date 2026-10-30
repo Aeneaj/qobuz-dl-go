@@ -17,7 +17,7 @@ import (
 //  1. If codeOrURL is empty → opens a local HTTP server, prints the OAuth URL,
 //     waits for the redirect, captures ALL params Qobuz sends back.
 //  2. Exchanges the captured result for a user_auth_token and authenticates.
-//  3. The token is saved in c.Client.UAT / c.Client.UserID for the caller to persist.
+//  3. The token is saved in d.Client.UAT / d.Client.UserID for the caller to persist.
 func (d *Downloader) OAuthLogin(ctx context.Context, appID, privateKey string, codeOrURL string) error {
 	var result api.OAuthResult
 

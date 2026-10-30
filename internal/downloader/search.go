@@ -9,7 +9,7 @@ import (
 	"github.com/Aeneaj/qobuz-dl-go/internal/api"
 )
 
-// SearchResults holds items for CLI display.
+// SearchResult is one item for CLI display.
 type SearchResult struct {
 	Text string
 	URL  string

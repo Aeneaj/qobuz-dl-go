@@ -15,11 +15,11 @@ import (
 	"time"
 )
 
+const maxDownloadRetries = 5
+
 // downloadWithProgress downloads rawURL to dest, updating bar as bytes arrive.
 // It uses the Downloader's shared httpClient and respects the context for
 // cancellation (e.g. Ctrl+C).
-const maxDownloadRetries = 5
-
 func (d *Downloader) downloadWithProgress(ctx context.Context, rawURL, dest string, bar ProgressBar) error {
 	var (
 		totalSize   int64 = -1 // full file size, resolved from Content-Length or Content-Range
