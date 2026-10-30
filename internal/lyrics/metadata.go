@@ -166,10 +166,6 @@ func readMP3(path string, info AudioInfo) (AudioInfo, error) {
 		if tlenMs > 0 {
 			info.Duration = tlenMs / 1000
 		}
-	} else {
-		if _, err := f.Seek(0, io.SeekStart); err != nil {
-			return info, fmt.Errorf("seek to start: %w", err)
-		}
 	}
 
 	if info.Duration == 0 {

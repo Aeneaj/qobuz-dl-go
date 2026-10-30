@@ -108,7 +108,6 @@ type Shell struct {
 	ctx context.Context
 
 	screen  screen
-	prev    screen
 	menu    picker
 	results picker
 	queue   []Item

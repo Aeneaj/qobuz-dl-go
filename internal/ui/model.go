@@ -59,7 +59,6 @@ const (
 )
 
 type trackEntry struct {
-	id         string
 	num        int
 	name       string
 	state      trackState
@@ -129,7 +128,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case MsgRegisterTrack:
 		e := trackEntry{
-			id:        msg.ID,
 			num:       msg.Num,
 			name:      msg.Name,
 			state:     statePending,
@@ -465,11 +463,8 @@ func drawBar(current, total int64, width int, state trackState, shimmer int) str
 		return ""
 	}
 
-	switch state {
-	case stateDone:
+	if state == stateDone {
 		return sGreen.Render(strings.Repeat("█", width))
-	case stateFailed:
-		return sRed.Faint(true).Render(strings.Repeat("░", width))
 	}
 
 	var pct float64

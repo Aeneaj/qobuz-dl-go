@@ -90,10 +90,7 @@ func buildFLACTags(track, album map[string]interface{}, isTrack bool) map[string
 		t["GENRE"] = formatGenres(sliceStrings(album, "", "genres_list"))
 		t["ALBUMARTIST"] = nestedStr(album, "artist", "name")
 		t["TRACKTOTAL"] = fmt.Sprintf("%v", nestedFloat(album, "tracks_count"))
-		t["ALBUM"] = nestedStr(album, "", "title")
-		if t["ALBUM"] == "" {
-			t["ALBUM"], _ = album["title"].(string)
-		}
+		t["ALBUM"], _ = album["title"].(string)
 		if rd, _ := album["release_date_original"].(string); rd != "" {
 			t["DATE"] = rd
 		}
@@ -380,7 +377,7 @@ func buildMP3Tags(track, album map[string]interface{}, isTrack bool) map[string]
 		trackTotal = fmt.Sprintf("%v", nestedFloat(album, "tracks_count"))
 	}
 	t["TPE1"] = performer
-	if t["TDRC"] != "" && len(t["TDRC"]) >= 4 {
+	if len(t["TDRC"]) >= 4 {
 		t["TYER"] = t["TDRC"][:4]
 	}
 
