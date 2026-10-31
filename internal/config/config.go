@@ -177,7 +177,7 @@ func setupPreferences(ctx context.Context, kv map[string]string) error {
 	kv["folder_format"] = DefaultFolder
 	kv["track_format"] = DefaultTrack
 
-	fmt.Println("\033[33mFetching app tokens from Qobuz web player, please wait...\033[0m")
+	fmt.Println("\033[33mFetching app tokens from Qobuz web player (can take up to 30 seconds)...\033[0m")
 	b, err := bundle.Fetch(ctx)
 	if err != nil {
 		return fmt.Errorf("fetch bundle: %w", err)

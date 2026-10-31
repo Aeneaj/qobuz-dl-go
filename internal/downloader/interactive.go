@@ -59,13 +59,13 @@ func (d *Downloader) interactive(ctx context.Context, in io.Reader) {
 		switch strings.ToLower(cmd) {
 
 		case "sa":
-			queue = interactiveSearch(ctx, d, reader, "album", arg, queue)
+			queue = interactiveSearch(ctx, d, reader, "sa", "album", arg, queue)
 		case "st":
-			queue = interactiveSearch(ctx, d, reader, "track", arg, queue)
+			queue = interactiveSearch(ctx, d, reader, "st", "track", arg, queue)
 		case "sr":
-			queue = interactiveSearch(ctx, d, reader, "artist", arg, queue)
+			queue = interactiveSearch(ctx, d, reader, "sr", "artist", arg, queue)
 		case "sp":
-			queue = interactiveSearch(ctx, d, reader, "playlist", arg, queue)
+			queue = interactiveSearch(ctx, d, reader, "sp", "playlist", arg, queue)
 
 		case "dl":
 			if arg == "" {
@@ -95,7 +95,7 @@ func (d *Downloader) interactive(ctx context.Context, in io.Reader) {
 				urls[i] = r.URL
 			}
 			queue = nil
-			d.DownloadURLs(ctx, urls)
+			d.DownloadURLs(ctx, urls) //nolint:errcheck // already printed
 
 		case "help":
 			fmt.Print(interactiveHelp)
@@ -113,9 +113,9 @@ func (d *Downloader) interactive(ctx context.Context, in io.Reader) {
 // interactiveSearch runs a search, prints numbered results, and lets the user
 // pick items to add to the queue from reader — the REPL's own. Returns the
 // updated queue.
-func interactiveSearch(ctx context.Context, d *Downloader, reader *bufio.Reader, itemType, query string, queue []SearchResult) []SearchResult {
+func interactiveSearch(ctx context.Context, d *Downloader, reader *bufio.Reader, cmd, itemType, query string, queue []SearchResult) []SearchResult {
 	if query == "" {
-		fmt.Printf("\033[31m  Usage: s%s <query>\033[0m\n", string(itemType[0]))
+		fmt.Printf("\033[31m  Usage: %s <query>\033[0m\n", cmd)
 		return queue
 	}
 

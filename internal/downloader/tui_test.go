@@ -3,9 +3,11 @@ package downloader
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -65,6 +67,64 @@ func TestIntegration_TUIDownloadsSameFiles(t *testing.T) {
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("files on disk:\ngot:\n  %s\nwant:\n  %s",
 			strings.Join(got, "\n  "), strings.Join(want, "\n  "))
+	}
+}
+
+// termOut discards under the TUI, so a failed track's row is the only place its
+// cause can appear. It used to read "download aborted" whatever had happened,
+// and a track without a URL never got a row at all.
+func TestIntegration_TUIShowsWhyTrackFailed(t *testing.T) {
+	cases := []struct {
+		name string
+		prep func(t *testing.T, q *fakeQobuz, d *Downloader, dir string)
+		want string
+	}{
+		{"no file URL", func(_ *testing.T, q *fakeQobuz, _ *Downloader, _ string) {
+			q.noFileURLFor[101] = true
+		}, "at 7 - 24 bit"},
+		{"transfer", func(_ *testing.T, q *fakeQobuz, _ *Downloader, _ string) {
+			q.degraded[101], q.degradeAbove = "cut", 6
+		}, "download failed after 5 attempts"},
+		{"save", func(t *testing.T, _ *fakeQobuz, d *Downloader, dir string) {
+			if os.Geteuid() <= 0 {
+				t.Skip("needs a user that read-only permissions apply to")
+			}
+			d.Opts.TrackFormat = "locked/{tracktitle}"
+			locked := filepath.Join(dir, "Test Artist - Test Album", "locked")
+			if err := os.MkdirAll(locked, 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(locked, 0555); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { os.Chmod(locked, 0755) })
+		}, "save track"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			q := newFakeQobuz(t, threeTracks()[:1])
+			d, dir := newTestDownloader(t, q, func(o *Options) { o.NoCover = true })
+			d.retryDelay = time.Millisecond
+			c.prep(t, q, d, dir)
+
+			p := headlessTUI()
+			d.SetUI(p)
+			go func() {
+				d.downloadAlbum(context.Background(), "alb1", dir) //nolint:errcheck
+				p.Quit()
+			}()
+			m, err := p.Run()
+			if err != nil {
+				t.Fatalf("tui program: %v", err)
+			}
+
+			view := m.View()
+			for _, want := range []string{c.want, "1 failed", "0 done"} {
+				if !strings.Contains(view, want) {
+					t.Errorf("screen lacks %q:\n%s", want, view)
+				}
+			}
+		})
 	}
 }
 

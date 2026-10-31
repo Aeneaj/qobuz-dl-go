@@ -15,6 +15,7 @@ type fakeBackend struct {
 	hits      []Item
 	searchErr error
 	got       []string // urls handed to Download
+	dlErr     error
 	purged    bool
 	loggedIn  bool
 	loginErr  error
@@ -35,7 +36,7 @@ func (f *fakeBackend) Search(context.Context, string, string, int) ([]Item, erro
 }
 func (f *fakeBackend) Download(_ context.Context, urls []string) error {
 	f.got = append(f.got, urls...)
-	return nil
+	return f.dlErr
 }
 func (f *fakeBackend) Lyrics(context.Context, string) (string, error) { return "listo", nil }
 func (f *fakeBackend) CSV(context.Context, string) (string, error)    { return "listo", nil }
@@ -157,6 +158,37 @@ func TestShellDownloadsQueue(t *testing.T) {
 	s.Update(msg)
 	if s.busy {
 		t.Error("shell still busy after the run reported completion")
+	}
+}
+
+// Download failures used to end in "download finished". A run reports one line
+// per failure, and the footer has room for one.
+func TestShellDownloadFailureSurfaces(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"none", nil, ""},
+		{"one", errors.New("album 1: gone"), "album 1: gone"},
+		{
+			"several",
+			errors.Join(errors.New("album 1: gone"), errors.Join(errors.New("album 2: gone"), errors.New("album 3: gone"))),
+			"album 1: gone (and 2 more)",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := NewShell(context.Background(), &fakeBackend{dlErr: c.err})
+			s.queue = []Item{{Label: "a", URL: "u1"}}
+
+			_, cmd := s.run(actGo)
+			s.Update(cmd())
+
+			if s.errMsg != c.want {
+				t.Errorf("errMsg = %q, want %q", s.errMsg, c.want)
+			}
+		})
 	}
 }
 

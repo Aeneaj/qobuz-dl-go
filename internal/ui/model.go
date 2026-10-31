@@ -169,6 +169,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case MsgFailed:
 		if i, ok := m.index[msg.ID]; ok {
 			if m.tracks[i].state != stateFailed {
+				// The transfer ends in MsgDone, but saving the file can still fail.
+				if m.tracks[i].state == stateDone {
+					m.done--
+				}
 				m.tracks[i].state = stateFailed
 				if msg.Err != nil {
 					m.tracks[i].errMsg = msg.Err.Error()

@@ -107,11 +107,12 @@ var es = map[string]string{
 
 	// backend status messages (cmd/qobuz-dl/tui_cmd.go). Errors from the
 	// backend stay in English, like every other error in the program.
-	"signed in successfully":        "sesión iniciada",
-	"CSV import finished":           "importación CSV terminada",
-	"scanning %s…":                  "escaneando %s…",
-	"%d audio files found":          "%d archivos de audio encontrados",
-	"no audio found in that folder": "no se encontró audio en esa carpeta",
+	"signed in successfully":                                 "sesión iniciada",
+	"CSV import finished":                                    "importación CSV terminada",
+	"CSV import finished: %d failed, listed in %s":           "importación CSV terminada: %d fallidas, listadas en %s",
+	"scanning %s…":                                           "escaneando %s…",
+	"%d audio files found":                                   "%d archivos de audio encontrados",
+	"no audio found in that folder":                          "no se encontró audio en esa carpeta",
 	"lyrics: %d new · %d already there · %d without a match": "letras: %d nuevas · %d ya estaban · %d sin resultado",
 	"could not read the settings":                            "no se pudo leer la configuración",
 }

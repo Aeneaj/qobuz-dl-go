@@ -4,6 +4,7 @@ package downloader
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -233,26 +234,33 @@ func (d *Downloader) HandleURL(ctx context.Context, rawURL string) error {
 	}
 }
 
-func (d *Downloader) DownloadURLs(ctx context.Context, urls []string) {
+// DownloadURLs fetches every URL, carrying on past failures, and prints them as
+// it goes. They also come back joined, because the TUI discards what is printed.
+// The user stopping the run is not a failure.
+func (d *Downloader) DownloadURLs(ctx context.Context, urls []string) error {
+	var errs []error
 	for _, u := range urls {
 		if isLocalFile(u) {
-			d.downloadFromFile(ctx, u)
-		} else {
-			if err := d.HandleURL(ctx, u); err != nil {
-				fmt.Fprintf(d.termOut(), "\033[31mError: %v\033[0m\n", err)
-			}
+			errs = append(errs, d.downloadFromFile(ctx, u))
+			continue
+		}
+		if err := d.HandleURL(ctx, u); err != nil && !errors.Is(err, context.Canceled) {
+			fmt.Fprintf(d.termOut(), "\033[31mError: %v\033[0m\n", err)
+			errs = append(errs, err)
 		}
 	}
 	// No sweep for leftover .tmp files: downloadAndTag removes or renames its
 	// own, and Directory may be "." or "~" — a recursive delete there takes
 	// other programs' temp files with it.
+	return errors.Join(errs...)
 }
 
-func (d *Downloader) downloadFromFile(ctx context.Context, path string) {
+func (d *Downloader) downloadFromFile(ctx context.Context, path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Fprintf(d.termOut(), "\033[31mCannot read file %s: %v\033[0m\n", path, err)
-		return
+		err = fmt.Errorf("cannot read file %s: %w", path, err)
+		fmt.Fprintf(d.termOut(), "\033[31m%v\033[0m\n", err)
+		return err
 	}
 	var urls []string
 	for _, line := range strings.Split(string(data), "\n") {
@@ -262,7 +270,7 @@ func (d *Downloader) downloadFromFile(ctx context.Context, path string) {
 		}
 	}
 	fmt.Fprintf(d.termOut(), "\033[33mDownloading %d URLs from %s\033[0m\n", len(urls), path)
-	d.DownloadURLs(ctx, urls)
+	return d.DownloadURLs(ctx, urls)
 }
 
 // reQobuzURL matches Qobuz URLs in multiple formats:

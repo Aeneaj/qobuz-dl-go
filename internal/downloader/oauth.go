@@ -75,7 +75,6 @@ func (d *Downloader) captureOAuthRedirect(ctx context.Context, appID string) (ap
 	fmt.Printf("\033[33mOpen this URL in your browser to authenticate with Qobuz:\033[0m\n")
 	fmt.Printf("\033[36m%s\033[0m\n\n", oauthURL)
 	fmt.Printf("\033[33mA local server on port %d will capture the OAuth redirect automatically.\033[0m\n", port)
-	fmt.Printf("\033[33mPress Enter after completing login in your browser (or wait for auto-capture)...\033[0m\n")
 
 	resultCh := make(chan api.OAuthResult, 1)
 
@@ -100,13 +99,21 @@ func (d *Downloader) captureOAuthRedirect(ctx context.Context, appID string) (ap
 
 	go func() { srv.Serve(listener) }() //nolint:errcheck
 
-	// Wait for Enter OR for auto-capture (whichever comes first)
+	// Wait for Enter OR for auto-capture (whichever comes first). A TUI caller
+	// gets no Enter: nothing can interrupt a read on stdin, so after an
+	// auto-capture the reader would stay blocked and take keystrokes from
+	// bubbletea once it has the terminal back.
 	enterCh := make(chan struct{}, 1)
-	go func() {
-		var s string
-		fmt.Scanln(&s)
-		enterCh <- struct{}{}
-	}()
+	if d.tui == nil {
+		fmt.Printf("\033[33mPress Enter after completing login in your browser (or wait for auto-capture)...\033[0m\n")
+		go func() {
+			var s string
+			fmt.Scanln(&s)
+			enterCh <- struct{}{}
+		}()
+	} else {
+		fmt.Printf("\033[33mWaiting for the redirect (up to 5 minutes; Ctrl+C quits)...\033[0m\n")
+	}
 
 	shutdown := func() {
 		shutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

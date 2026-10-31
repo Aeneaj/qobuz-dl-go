@@ -191,13 +191,13 @@ func (d *Downloader) collectTrackJobs(ctx context.Context, p *mpb.Progress, rawI
 
 		trackURL, err := d.fileURL(ctx, trackID)
 		if err != nil {
-			fmt.Fprintf(d.termOut(), "\033[31m%s (track %s): %v. Skipping...\033[0m\n", getTitle(track), trackID, err)
+			d.skipTrack(track, trackID, err)
 			continue
 		}
 
 		if isMultiDisc {
 			if err := os.MkdirAll(trackDir, 0755); err != nil {
-				fmt.Fprintf(d.termOut(), "\033[31mTrack %s: cannot create disc directory %q: %v. Skipping...\033[0m\n", trackID, trackDir, err)
+				d.skipTrack(track, trackID, fmt.Errorf("cannot create disc directory %q: %w", trackDir, err))
 				continue
 			}
 		}
@@ -208,6 +208,18 @@ func (d *Downloader) collectTrackJobs(ctx context.Context, p *mpb.Progress, rawI
 		jobs = append(jobs, trackJob{idx, trackURL, track, trackDir, trackID, bar})
 	}
 	return jobs
+}
+
+// skipTrack reports a track that failed before it got a bar. Under the TUI it
+// gets a failed row: otherwise it would vanish from the list, with the batch
+// counter stuck below its total and nothing to say why.
+func (d *Downloader) skipTrack(track map[string]interface{}, trackID string, err error) {
+	title := getTitle(track)
+	fmt.Fprintf(d.termOut(), "\033[31m%s (track %s): %v. Skipping...\033[0m\n", title, trackID, err)
+	if d.tui != nil {
+		bar := d.newBar(nil, 0, int(nestedFloat(track, "track_number")), title, trackID)
+		d.failTrack(bar, trackID, err)
+	}
 }
 
 // runTrackJobs is Phase 2 of an album download: it dispatches the collected
@@ -230,7 +242,7 @@ jobLoop:
 			defer wg.Done()
 			defer func() { <-sem }()
 			if err := d.downloadAndTag(ctx, j.trackDir, j.idx, j.trackURL, j.track, meta, false, trackFmt, j.bar); err != nil {
-				j.bar.Abort(false)
+				d.failTrack(j.bar, j.trackID, err)
 				fmt.Fprintf(d.termOut(), "\033[31mTrack %s failed: %v. Skipping...\033[0m\n", j.trackID, err)
 				return
 			}

@@ -132,14 +132,15 @@ const reasonNotFound = "not found"
 
 // DownloadCSV parses the CSV at csvPath and downloads each track via Qobuz.
 // If failedPath is non-empty, writes a CSV report of skipped/failed tracks there.
-func (d *Downloader) DownloadCSV(ctx context.Context, csvPath, failedPath string) error {
+// It returns how many tracks failed: the printed summary never reaches the TUI.
+func (d *Downloader) DownloadCSV(ctx context.Context, csvPath, failedPath string) (int, error) {
 	tracks, err := ParseCSV(d.termOut(), csvPath)
 	if err != nil {
-		return fmt.Errorf("CSV parse error: %w", err)
+		return 0, fmt.Errorf("CSV parse error: %w", err)
 	}
 	if len(tracks) == 0 {
 		fmt.Fprintln(d.termOut(), "No tracks found in CSV.")
-		return nil
+		return 0, nil
 	}
 
 	fmt.Fprintf(d.termOut(), "\033[33mCSV loaded: %d tracks to process\033[0m\n\n", len(tracks))
@@ -181,12 +182,11 @@ func (d *Downloader) DownloadCSV(ctx context.Context, csvPath, failedPath string
 
 	if failedPath != "" && len(failures) > 0 {
 		if err := writeFailedCSV(failedPath, failures); err != nil {
-			fmt.Fprintf(d.termOut(), "  \033[31mCould not write failed report: %v\033[0m\n", err)
-		} else {
-			fmt.Fprintf(d.termOut(), "  Failed tracks saved to: %s\n", failedPath)
+			return len(failures), fmt.Errorf("could not write failed report: %w", err)
 		}
+		fmt.Fprintf(d.termOut(), "  Failed tracks saved to: %s\n", failedPath)
 	}
-	return nil
+	return len(failures), nil
 }
 
 func printBatchSummary(w io.Writer, total, downloaded int, failures []failedEntry) {

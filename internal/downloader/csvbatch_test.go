@@ -64,7 +64,7 @@ func TestDownloadCSVReturnsParseError(t *testing.T) {
 	d := &Downloader{}
 	missing := filepath.Join(t.TempDir(), "does-not-exist.csv")
 
-	err := d.DownloadCSV(context.Background(), missing, "")
+	_, err := d.DownloadCSV(context.Background(), missing, "")
 	if err == nil {
 		t.Fatal("DownloadCSV on a missing file returned nil, want an error")
 	}
@@ -77,7 +77,32 @@ func TestDownloadCSVReturnsParseError(t *testing.T) {
 func TestDownloadCSVEmptyIsNotAnError(t *testing.T) {
 	path := writeCSV(t, "Track name,Artist name\n")
 
-	if err := (&Downloader{}).DownloadCSV(context.Background(), path, ""); err != nil {
+	if _, err := (&Downloader{}).DownloadCSV(context.Background(), path, ""); err != nil {
 		t.Errorf("DownloadCSV on an empty CSV = %v, want nil", err)
 	}
+}
+
+// The printed summary never reaches the TUI, so what failed has to come back:
+// an import where nothing was found used to end in "CSV import finished".
+func TestDownloadCSVReportsFailures(t *testing.T) {
+	csv := writeCSV(t, "Track name,Artist name,Album\nKarma Police,Radiohead,OK Computer\n")
+	d, _ := newTestDownloader(t, newFakeQobuz(t, nil), nil)
+
+	t.Run("failures are counted and listed", func(t *testing.T) {
+		report := filepath.Join(t.TempDir(), "failed.csv")
+		failed, err := d.DownloadCSV(context.Background(), csv, report)
+		if err != nil || failed != 1 {
+			t.Fatalf("DownloadCSV = %d, %v; want 1, nil", failed, err)
+		}
+		if _, err := os.Stat(report); err != nil {
+			t.Error(err)
+		}
+	})
+
+	t.Run("a report that cannot be written is an error", func(t *testing.T) {
+		report := filepath.Join(t.TempDir(), "no", "such", "dir", "failed.csv")
+		if _, err := d.DownloadCSV(context.Background(), csv, report); err == nil {
+			t.Error("the report was not written and nothing said so")
+		}
+	})
 }

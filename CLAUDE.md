@@ -114,7 +114,12 @@ la alt-screen de bubbletea se traga todo. Cómo escribir:
   `io.Writer` por parámetro.
 - Un resumen se acumula y se imprime después de `p.Wait()` (así lo hace `lyrics`).
 - Un error que el usuario debe ver **se devuelve**, no se imprime. Bajo TUI sale en la
-  línea de estado; en CLI acaba en `fatalf`.
+  línea de estado; en CLI acaba en `fatalf`. `DownloadURLs` es la excepción a medias: imprime
+  y además devuelve los fallos unidos con `errors.Join`, porque sigue tras un fallo y `dl`/`lucky`
+  salen 0 aunque fallen (con `--tui` se imprimen al cerrar la pantalla). Las colecciones devuelven
+  sin imprimir, o saldría dos veces. Cancelar no es un fallo. El fallo de una pista no sube por
+  `downloadAlbum`: bajo TUI va en su fila con `failTrack`, y `skipTrack` da fila a la que falla
+  antes de tener barra.
 - Excepciones: `interactive.go` y `oauth.go` (tienen la terminal para ellos). Están en la
   allowlist de `TestNoDirectStdoutWrites`, que escanea el paquete. Esta regla se rompió ocho
   veces antes de que ese test existiera.
@@ -135,8 +140,9 @@ display de progreso de `dl`/`lucky`/`csv`. Los dos comparten `Model`.
   `downloader`. Por eso existe `ui.Backend`, implementada por `tuiBackend`. Una función nueva
   en el menú = método nuevo en `Backend` y en el adaptador.
 - **OAuth suspende la TUI**: `tuiBackend.Login` hace `p.ReleaseTerminal()`, corre el flujo
-  CLI y `RestoreTerminal()`. Hace falta porque `captureOAuthRedirect` lee con `fmt.Scanln` y
-  bubbletea tiene stdin en modo raw: dos lectores se roban bytes.
+  CLI y `RestoreTerminal()`. Bajo TUI `captureOAuthRedirect` **no lee stdin**: nada interrumpe un
+  `Scanln` en Go puro, y tras la captura automática se quedaba bloqueado robándole teclas a
+  bubbletea. Por eso ahí Enter no abandona la espera: se sale con Ctrl+C o a los 5 minutos.
 - **Arranca sin credenciales**: si `initDownloader` falla, `runTUI` guarda el error en
   `bootErr` y abre el menú igual, porque el login vive ahí.
 - Toda llamada bloqueante va en un `tea.Cmd`, nunca dentro de `Update`.
@@ -225,7 +231,19 @@ pista que tardara más, fuera cual fuera la velocidad. `newDownloadClient` pone 
 lectura que avanza con cada `Read` (`stallTimeout`, 60 s): corta una conexión muerta, nunca
 una lenta. Si el usuario paró se decide con `ctx.Err()`, no por el tipo del error.
 
+**Solo se reanuda lo que escribió la propia llamada.** `downloadWithProgress` borra lo que haya
+en `dest` antes del primer intento: un `kill -9` deja el `.tmp`, ese nombre lo comparten los
+tracks sueltos de un álbum, y reanudarlo empalmaba bytes de otro fichero con un tamaño que
+cuadraba. **Una pista que no llega a su nombre final es un fallo**, no un aviso: `tagAndRename`
+devuelve el error del `Rename`, o quedaría en la DB sin estar en disco. **`downloadExtra` escribe
+a `.tmp` y renombra**: un `cover.jpg` existente no se vuelve a pedir, así que una página de error
+o un corte se quedarían para siempre.
+
 ### Autenticación y config
+
+**Un error de red nunca lleva la URL.** `*url.Error` imprime la URL entera, y el login pone el
+token en la query: `doRequest` y `downloadWithProgress` se quedan solo con la causa
+(`TestRequestErrorsHideTheQuery`).
 
 La autenticación por contraseña está rota (401 desde abril de 2026). Dos vías:
 1. **OAuth** (`qobuz-dl oauth`): un servidor local captura el redirect con
@@ -290,6 +308,11 @@ credenciales son correctas. La ruta de token propaga el error tal cual, sin cons
   `net/http`, que sobrevive al subtest, mientras el `t.Cleanup` la restauraba. Una global que
   un test ajusta no debe leerse desde goroutines que no son del test; captúrala al construir
   el objeto. Tras cada push, `gh run list`.
+- **`defer cancel()` no sirve si antes esperas a quien lo necesita.** `runDisplay` esperaba
+  `<-errc` con el `cancel` diferido, así que salir de `--tui` no paraba la descarga. Por eso
+  `runUnderScreen` cancela en cuanto `show` devuelve.
+- **Un id numérico nunca con `%v`.** JSON decodifica a `float64` y `%v` da `1.2345678e+07`. En
+  `downloader` usa `idStr`; `extractUserInfo` lo convierte aparte (`api` no puede importarlo).
 - **La documentación también se testea**: `TestAdvertisedFlagsExist` y
   `TestREADMEPlaceholderParity` existen porque la doc anunció cosas que no existían.
 
@@ -315,5 +338,8 @@ Para no volver a investigarlo:
 - Complejidad cognitiva: la penaliza el **anidamiento**, no el número de pasadas. Colapsar
   pasadas no la bajó; sacar el trabajo interno a una función sí. Mayor valor hoy: `pickBest`
   (14).
+- `bundle.js` no se cuelga, es lento: 9,5 MB sin comprimir aunque se pida gzip, entre 2 y más de
+  35 s en 12 descargas, con las dos IPs de `play.qobuz.com`. `curl` y Go tardan igual. Por eso
+  `oauth` avisa de la espera, y un Ctrl+C ahí aborta en vez de caer al fallback de la config.
 - **Last.fm retirado** (2026-09-23): la API XSPF 1.0 devolvía 404 siempre. Si vuelve, que sea
   con la API 2.0 y una `api_key` en `config.ini`.

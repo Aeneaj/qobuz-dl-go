@@ -1,11 +1,15 @@
 package downloader
 
 import (
+	"bufio"
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Aeneaj/qobuz-dl-go/internal/api"
 )
@@ -81,5 +85,92 @@ func TestOAuthLogin_PaidAccountSucceeds(t *testing.T) {
 
 	if err := d.OAuthLogin(context.Background(), "appid", "", "?user_auth_token=tok"); err != nil {
 		t.Fatalf("paid account: %v", err)
+	}
+}
+
+// fakeTerminal points stdin and stdout at pipes for one test, and returns the
+// end to type into and the port captureOAuthRedirect announces once it is
+// listening.
+func fakeTerminal(t *testing.T) (stdin *os.File, stdinRead *os.File, port func() string) {
+	t.Helper()
+	inR, inW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldIn, oldOut := os.Stdin, os.Stdout
+	os.Stdin, os.Stdout = inR, outW
+	t.Cleanup(func() { os.Stdin, os.Stdout = oldIn, oldOut })
+
+	re := regexp.MustCompile(`on port (\d+)`)
+	return inW, inR, func() string {
+		lines := bufio.NewScanner(outR)
+		for lines.Scan() {
+			if m := re.FindStringSubmatch(lines.Text()); m != nil {
+				return m[1]
+			}
+		}
+		t.Fatal("no port announced")
+		return ""
+	}
+}
+
+// Under `tui` the redirect lands and the screen comes back. A reader still
+// blocked on stdin then takes the next keystrokes from bubbletea.
+func TestCaptureOAuthRedirectLeavesStdinToTheTUI(t *testing.T) {
+	stdin, stdinRead, port := fakeTerminal(t)
+	d := &Downloader{}
+	d.SetUI(headlessTUI())
+
+	token := make(chan string, 1)
+	go func() {
+		res, _ := d.captureOAuthRedirect(context.Background(), "appid")
+		token <- res.Token
+	}()
+
+	resp, err := http.Get("http://127.0.0.1:" + port() + "/?user_auth_token=tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if got := <-token; got != "tok" {
+		t.Fatalf("token = %q", got)
+	}
+
+	if _, err := stdin.WriteString("x\n"); err != nil {
+		t.Fatal(err)
+	}
+	stdinRead.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	buf := make([]byte, 8)
+	if n, err := stdinRead.Read(buf); err != nil || string(buf[:n]) != "x\n" {
+		t.Errorf("read %q, %v: something else took the keystrokes", buf[:n], err)
+	}
+}
+
+// Without a TUI, Enter is still how to give up on the wait.
+func TestCaptureOAuthRedirectEnterGivesUp(t *testing.T) {
+	stdin, _, port := fakeTerminal(t)
+	d := &Downloader{}
+
+	errc := make(chan error, 1)
+	go func() {
+		_, err := d.captureOAuthRedirect(context.Background(), "appid")
+		errc <- err
+	}()
+
+	port()
+	if _, err := stdin.WriteString("\n"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-errc:
+		if err == nil || !strings.Contains(err.Error(), "before Enter") {
+			t.Errorf("err = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Enter did not end the wait")
 	}
 }

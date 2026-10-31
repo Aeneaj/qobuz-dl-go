@@ -129,6 +129,10 @@ func (q *fakeQobuz) count(suffix string) int {
 
 func (q *fakeQobuz) handleAlbumGet(w http.ResponseWriter, r *http.Request) {
 	q.record(r.URL.Path)
+	if r.URL.Query().Get("album_id") == "gone" {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
 	items := make([]interface{}, 0, len(q.tracks))
 	for _, tr := range q.tracks {
 		items = append(items, map[string]interface{}{
@@ -267,6 +271,24 @@ func newTestDownloader(t testing.TB, q *fakeQobuz, tweak func(*Options)) (*Downl
 		t.Fatalf("New: %v", err)
 	}
 	return d, dir
+}
+
+// captureStdout returns what fn wrote to stdout. A pipe is not a terminal, so
+// this is also what running with "> log.txt" looks like.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout := os.Stdout
+	os.Stdout = w
+	out := make(chan []byte)
+	go func() { b, _ := io.ReadAll(r); out <- b }()
+	fn()
+	os.Stdout = stdout
+	w.Close()
+	return string(<-out)
 }
 
 // relFiles lists every file under root, as slash-separated relative paths.
@@ -449,18 +471,8 @@ func TestIntegration_FailureReachesRedirectedStdout(t *testing.T) {
 	q.noFileURLFor[102] = true
 	d, dir := newTestDownloader(t, q, func(o *Options) { o.NoCover = true })
 
-	r, w, err := os.Pipe() // not a terminal, like "> log.txt"
-	if err != nil {
-		t.Fatal(err)
-	}
-	stdout := os.Stdout
-	os.Stdout = w
-	out := make(chan []byte)
-	go func() { b, _ := io.ReadAll(r); out <- b }()
-	err = d.downloadAlbum(context.Background(), "alb1", dir)
-	os.Stdout = stdout
-	w.Close()
-	got := string(<-out)
+	var err error
+	got := captureStdout(t, func() { err = d.downloadAlbum(context.Background(), "alb1", dir) })
 
 	if err != nil {
 		t.Fatalf("downloadAlbum: %v", err)
@@ -647,6 +659,90 @@ func TestIntegration_DownloadURLsLeavesForeignFilesAlone(t *testing.T) {
 			t.Errorf("%s was removed: %v", f, err)
 		}
 	}
+}
+
+// Under the TUI what is printed is discarded, so a failure has to come back or
+// nobody hears of it. Past a failure the run carries on, and each one is printed
+// once: a list of URLs goes through DownloadURLs twice.
+func TestIntegration_DownloadURLsReturnsFailures(t *testing.T) {
+	q := newFakeQobuz(t, threeTracks()[:1])
+	d, dir := newTestDownloader(t, q, func(o *Options) { o.NoCover = true })
+	list := filepath.Join(t.TempDir(), "urls.txt")
+	if err := os.WriteFile(list, []byte("https://open.qobuz.com/album/gone\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var err error
+	out := captureStdout(t, func() {
+		err = d.DownloadURLs(context.Background(), []string{"not a url", list, "https://open.qobuz.com/album/alb1"})
+	})
+
+	for _, want := range []string{"not a url", "album metadata gone"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v, want it to name %q", err, want)
+		}
+		if n := strings.Count(out, want); n != 1 {
+			t.Errorf("%q printed %d times, want once:\n%s", want, n, out)
+		}
+	}
+	if len(relFiles(t, dir)) != 1 {
+		t.Errorf("the run stopped at the failures: %v", relFiles(t, dir))
+	}
+}
+
+func TestIntegration_CollectionsReturnFailures(t *testing.T) {
+	items := func(ids ...string) map[string]interface{} {
+		list := make([]interface{}, len(ids))
+		for i, id := range ids {
+			list[i] = map[string]interface{}{"id": id}
+		}
+		return map[string]interface{}{"items": list}
+	}
+	cases := []struct {
+		name string
+		run  func(context.Context, *Downloader) error
+		want string
+	}{
+		{"discography", func(ctx context.Context, d *Downloader) error {
+			pages := []map[string]interface{}{{"name": "A", "albums": items("gone", "alb1")}}
+			return d.downloadAlbumCollection(ctx, pages, "albums", "discography", false)
+		}, "album gone"},
+		{"playlist", func(ctx context.Context, d *Downloader) error {
+			// The fake serves no track/get, so the track fails.
+			return d.downloadPlaylist(ctx, []map[string]interface{}{{"name": "P", "tracks": items("101")}})
+		}, "track 101"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			q := newFakeQobuz(t, threeTracks()[:1])
+			d, _ := newTestDownloader(t, q, func(o *Options) { o.NoCover = true; o.NoM3U = true })
+
+			var err error
+			out := captureStdout(t, func() { err = c.run(context.Background(), d) })
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Errorf("err = %v, want it to name %q", err, c.want)
+			}
+			if strings.Contains(out, c.want) {
+				t.Errorf("DownloadURLs prints what comes back, so this prints it twice:\n%s", out)
+			}
+
+			// Ctrl+C makes everything left fail, and none of that is a failure.
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			if err := c.run(ctx, d); err != nil {
+				t.Errorf("after cancelling: %v", err)
+			}
+		})
+	}
+
+	t.Run("DownloadURLs", func(t *testing.T) {
+		d, _ := newTestDownloader(t, newFakeQobuz(t, nil), nil)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := d.DownloadURLs(ctx, []string{"https://open.qobuz.com/album/alb1"}); err != nil {
+			t.Errorf("after cancelling: %v", err)
+		}
+	})
 }
 
 // TestIntegration_FolderFormatSurvivesUnresolvableTrack is the regression test

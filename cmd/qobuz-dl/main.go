@@ -224,42 +224,60 @@ func mustDownloader(ctx context.Context, f *cliFlags) *downloader.Downloader {
 
 // runDisplay runs fn, wrapped in the bubbletea TUI when --tui is set, and
 // returns fn's error once the screen is down.
-//
-// The TUI runs in alt-screen raw mode, where Ctrl+C arrives as a key event
-// instead of SIGINT — so the signal context in main() never fires and the
-// download goroutine would keep running after the screen is gone. A derived
-// context cancelled on exit is what actually stops it.
-//
-// The error comes back rather than being printed inside fn for the same
-// reason: bubbletea owns the terminal until p.Run() returns, so reporting it
-// any earlier would land on the alt screen.
 func runDisplay(ctx context.Context, dl *downloader.Downloader, f *cliFlags, fn func(context.Context) error) error {
 	if !f.TUI {
 		return fn(ctx)
 	}
 
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
 	p := tea.NewProgram(ui.NewModel(), tea.WithAltScreen(), tea.WithContext(ctx))
 	dl.SetUI(p)
+
+	return runUnderScreen(ctx, func() error { _, err := p.Run(); return err }, p.Quit, fn)
+}
+
+// runUnderScreen runs fn while show holds the terminal, calls quit when fn
+// ends, and returns fn's error once show has returned.
+//
+// The TUI runs in alt-screen raw mode, where Ctrl+C arrives as a key event
+// instead of SIGINT — so the signal context in main() never fires and the
+// download goroutine would keep running after the screen is gone, with nothing
+// on the terminal and every message discarded. Cancelling a derived context as
+// soon as show returns is what actually stops it, and that has to happen before
+// waiting for fn: a deferred cancel only runs after the wait, too late.
+//
+// The error comes back rather than being printed inside fn for the same
+// reason: bubbletea owns the terminal until show returns, so reporting it any
+// earlier would land on the alt screen.
+func runUnderScreen(ctx context.Context, show func() error, quit func(), fn func(context.Context) error) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	errc := make(chan error, 1)
 	go func() {
 		errc <- fn(ctx)
-		p.Quit()
+		quit()
 	}()
 
-	if _, err := p.Run(); err != nil {
+	if err := show(); err != nil {
 		fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
 	}
+	cancel()
 	return <-errc
+}
+
+// runDownloads fetches urls. Failures do not change the exit status. Without
+// --tui they are already printed; with it they were discarded, so they are
+// reported once the screen is down.
+func runDownloads(ctx context.Context, dl *downloader.Downloader, f *cliFlags, urls []string) {
+	err := runDisplay(ctx, dl, f, func(ctx context.Context) error { return dl.DownloadURLs(ctx, urls) })
+	if err != nil && f.TUI {
+		fmt.Fprintf(os.Stderr, "\033[31m%v\033[0m\n", err)
+	}
 }
 
 func runDL(ctx context.Context, args []string, f *cliFlags) {
 	requireArgs(args, "dl", "provide at least one URL")
-	dl := mustDownloader(ctx, f)
-	runDisplay(ctx, dl, f, func(ctx context.Context) error { dl.DownloadURLs(ctx, args); return nil })
+	runDownloads(ctx, mustDownloader(ctx, f), f, args)
 }
 
 func runLucky(ctx context.Context, args []string, f *cliFlags, itemType string, n int) {
@@ -274,17 +292,23 @@ func runLucky(ctx context.Context, args []string, f *cliFlags, itemType string, 
 	if err != nil {
 		fatalf("%v", err)
 	}
-	runDisplay(ctx, dl, f, func(ctx context.Context) error { dl.DownloadURLs(ctx, urls); return nil })
+	runDownloads(ctx, dl, f, urls)
 }
 
 func runCSV(ctx context.Context, args []string, f *cliFlags, failedCSV string) {
 	requireArgs(args, "csv", "provide path to a TuneMyMusic CSV file")
 	dl := mustDownloader(ctx, f)
+	var failed int
 	err := runDisplay(ctx, dl, f, func(ctx context.Context) error {
-		return dl.DownloadCSV(ctx, args[0], failedCSV)
+		var err error
+		failed, err = dl.DownloadCSV(ctx, args[0], failedCSV)
+		return err
 	})
 	if err != nil {
 		fatalf("csv: %v", err)
+	}
+	if f.TUI && failed > 0 { // the printed summary was discarded
+		fmt.Fprintf(os.Stderr, "\033[31m%d tracks failed, listed in %s\033[0m\n", failed, failedCSV)
 	}
 }
 

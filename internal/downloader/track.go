@@ -88,7 +88,7 @@ func (d *Downloader) downloadTrackByID(ctx context.Context, trackID, baseDir str
 
 	err = d.downloadAndTag(ctx, trackDir, 1, trackURL, meta, meta, true, trackFmt, bar)
 	if err != nil {
-		bar.Abort(false)
+		d.failTrack(bar, trackID, err)
 	} else {
 		d.recordDownloaded(trackID)
 	}
@@ -102,6 +102,16 @@ func (d *Downloader) downloadTrackByID(ctx context.Context, trackID, baseDir str
 
 	fmt.Fprintf(d.termOut(), "\033[32m✓  Completed: %s\033[0m\n\n", title)
 	return nil
+}
+
+// failTrack closes a failed track's bar. The TUI row shows the cause: termOut
+// discards there, so the row is the only place it can appear.
+func (d *Downloader) failTrack(bar ProgressBar, trackID string, err error) {
+	if d.tui != nil {
+		d.tui.Send(ui.MsgFailed{ID: trackID, Err: err})
+		return
+	}
+	bar.Abort(false)
 }
 
 // recordDownloaded adds a finished track to the downloads DB, when there is

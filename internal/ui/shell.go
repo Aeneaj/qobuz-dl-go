@@ -322,7 +322,7 @@ func (s *Shell) run(a action) (tea.Model, tea.Cmd) {
 		}
 		s.queue = nil
 		return s.start(runDownload, func(ctx context.Context) (string, error) {
-			return T("download finished"), s.be.Download(ctx, urls)
+			return T("download finished"), firstFailure(s.be.Download(ctx, urls))
 		})
 
 	case actLogin:
@@ -405,6 +405,18 @@ func (s *Shell) start(k runKind, fn func(context.Context) (string, error)) (tea.
 		summary, err := fn(ctx)
 		return msgRunDone{summary: summary, err: err}
 	}
+}
+
+// firstFailure fits a run's failures, one per line, on the footer's single line.
+func firstFailure(err error) error {
+	if err == nil {
+		return nil
+	}
+	first, rest, several := strings.Cut(err.Error(), "\n")
+	if !several {
+		return err
+	}
+	return fmt.Errorf("%s (and %d more)", first, strings.Count(rest, "\n")+1)
 }
 
 func (s *Shell) refreshQueue() {

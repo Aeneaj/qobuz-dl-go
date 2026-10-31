@@ -295,6 +295,13 @@ func TestModelAccumulatesAcrossAnnouncements(t *testing.T) {
 			},
 			wantTotal: 2, wantN: 2, wantBad: 1,
 		},
+		{
+			name: "a track that fails after its transfer is not also done",
+			msgs: []tea.Msg{
+				MsgAlbum{Title: "a", Tracks: 1}, MsgRegisterTrack{ID: "1"}, MsgDone{ID: "1"}, MsgFailed{ID: "1"},
+			},
+			wantTotal: 1, wantN: 1, wantBad: 1,
+		},
 	}
 
 	for _, c := range cases {

@@ -1,6 +1,9 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -8,6 +11,9 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/Aeneaj/qobuz-dl-go/internal/downloader"
 )
 
 // binaryPath builds the binary once and returns its path.
@@ -325,5 +331,90 @@ func TestAdvertisedFlagsExist(t *testing.T) {
 			t.Errorf("%s tells the user to run \"qobuz-dl --%s\" but no flag %q is registered",
 				file, flag, flag)
 		}
+	}
+}
+
+func TestRunUnderScreen(t *testing.T) {
+	t.Run("leaving the screen cancels the work", func(t *testing.T) {
+		done := make(chan error, 1)
+		go func() {
+			done <- runUnderScreen(context.Background(),
+				func() error { return nil }, // Ctrl+C: the screen goes first
+				func() {},
+				func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() })
+		}()
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("err = %v, want context.Canceled", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("the work kept running with no screen")
+		}
+	})
+
+	t.Run("finished work closes the screen and returns its error", func(t *testing.T) {
+		quit := make(chan struct{})
+		boom := errors.New("boom")
+		err := runUnderScreen(context.Background(),
+			func() error { <-quit; return nil },
+			func() { close(quit) },
+			func(context.Context) error { return boom })
+		if !errors.Is(err, boom) {
+			t.Errorf("err = %v, want boom", err)
+		}
+	})
+}
+
+// Login publishes the session from a tea.Cmd while View reads it on every
+// frame. Only -race sees this one fail.
+func TestTUIBackendSessionDuringLogin(t *testing.T) {
+	b := &tuiBackend{}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range 1000 {
+			b.LoggedIn()
+		}
+	}()
+	b.setSession(&downloader.Downloader{})
+	<-done
+	if !b.LoggedIn() {
+		t.Error("the session was not published")
+	}
+}
+
+// bundle.js can take 30 seconds, so people press Ctrl+C during it. That read as
+// a failed download: the flow fell back to the cached values and went on to
+// print the login URL for a run that was already over.
+func TestOAuthLoginStopsWhenCancelledDuringBundleFetch(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	cfg := filepath.Join(dir, "qobuz-dl", "config.ini")
+	if err := os.MkdirAll(filepath.Dir(cfg), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg, []byte("[DEFAULT]\napp_id = 1\nprivate_key = k\nsecrets = s\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout := os.Stdout
+	os.Stdout = w
+	err = oauthLogin(ctx, "", nil)
+	os.Stdout = stdout
+	w.Close()
+	out, _ := io.ReadAll(r)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled", err)
+	}
+	if strings.Contains(string(out), "Open this URL") {
+		t.Errorf("the flow went on after Ctrl+C:\n%s", out)
 	}
 }

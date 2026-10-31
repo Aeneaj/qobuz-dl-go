@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -88,7 +89,8 @@ func collectionIDs(pages []map[string]interface{}, key string, filter func([]map
 // the console output. smartDiscog applies the discography filter, which only
 // makes sense when the albums all belong to the collection's own artist — for
 // a label it would compare each album's artist against the label name and
-// discard everything.
+// discard everything. It carries on past an album that fails and returns the
+// failures joined; DownloadURLs prints them.
 func (d *Downloader) downloadAlbumCollection(ctx context.Context, pages []map[string]interface{}, itemKey, kind string, smartDiscog bool) error {
 	if len(pages) == 0 {
 		return nil
@@ -108,12 +110,13 @@ func (d *Downloader) downloadAlbumCollection(ctx context.Context, pages []map[st
 	}
 	fmt.Fprintf(d.termOut(), "\033[33mDownloading %s: %s (%d albums)\033[0m\n", kind, name, len(ids))
 
+	var errs []error
 	for _, id := range ids {
-		if err := d.downloadAlbum(ctx, id, dir); err != nil {
-			fmt.Fprintf(d.termOut(), "\033[31mError on album %s: %v. Skipping...\033[0m\n", id, err)
+		if err := d.downloadAlbum(ctx, id, dir); err != nil && !errors.Is(err, context.Canceled) {
+			errs = append(errs, fmt.Errorf("album %s: %w", id, err))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func (d *Downloader) downloadPlaylist(ctx context.Context, pages []map[string]interface{}) error {
@@ -128,16 +131,17 @@ func (d *Downloader) downloadPlaylist(ctx context.Context, pages []map[string]in
 
 	ids := collectionIDs(pages, "tracks", nil)
 	fmt.Fprintf(d.termOut(), "\033[33mDownloading playlist: %s (%d tracks)\033[0m\n", name, len(ids))
+	var errs []error
 	for _, id := range ids {
-		if err := d.downloadTrackByID(ctx, id, dir); err != nil {
-			fmt.Fprintf(d.termOut(), "\033[31mError on track %s: %v. Skipping...\033[0m\n", id, err)
+		if err := d.downloadTrackByID(ctx, id, dir); err != nil && !errors.Is(err, context.Canceled) {
+			errs = append(errs, fmt.Errorf("track %s: %w", id, err))
 		}
 	}
 
 	if !d.Opts.NoM3U {
 		makeM3U(d.termOut(), dir)
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 var (
