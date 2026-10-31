@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -44,6 +45,38 @@ func TestExtractUserInfo_Valid(t *testing.T) {
 	}
 	if c.Label != "Studio" {
 		t.Errorf("Label = %q, want %q", c.Label, "Studio")
+	}
+}
+
+// JSON numbers decode to float64, and %v prints a large one as 1.2345678e+07:
+// that is what OAuth used to save as user_id.
+func TestExtractUserInfo_UserID(t *testing.T) {
+	cases := []struct {
+		name  string
+		id    interface{}
+		start string // UserID already on the client
+		want  string
+	}{
+		{name: "large number stays an integer", id: float64(12345678), want: "12345678"},
+		{name: "number past 32 bits", id: float64(123456789012), want: "123456789012"},
+		{name: "string", id: "42", want: "42"},
+		{name: "null sets nothing", id: nil, want: ""},
+		{name: "an id already known is kept", id: float64(7), start: "42", want: "42"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cl := &Client{UserID: c.start}
+			err := cl.extractUserInfo(map[string]interface{}{"user": map[string]interface{}{
+				"id":         c.id,
+				"credential": map[string]interface{}{"parameters": map[string]interface{}{}},
+			}})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if cl.UserID != c.want {
+				t.Errorf("UserID = %q, want %q", cl.UserID, c.want)
+			}
+		})
 	}
 }
 
@@ -361,6 +394,43 @@ func TestHTTP500_ReturnsError(t *testing.T) {
 	_, err := c.GetAlbumMeta(context.Background(), "any")
 	if err == nil {
 		t.Fatal("expected error for 500")
+	}
+}
+
+// failingTransport fails every request, the way a dead network does.
+type failingTransport struct{ err error }
+
+func (f failingTransport) RoundTrip(*http.Request) (*http.Response, error) { return nil, f.err }
+
+// net/http reports a failed request as a *url.Error, whose text is the whole
+// URL. The login puts the token in the query, and these errors reach the
+// terminal and the logs people paste into issues.
+func TestRequestErrorsHideTheQuery(t *testing.T) {
+	cases := []struct {
+		name string
+		call func(*Client) error
+	}{
+		{"token login", func(c *Client) error {
+			return c.AuthWithToken(context.Background(), "42", "SECRET")
+		}},
+		{"signed track url", func(c *Client) error {
+			_, err := c.GetTrackURL(context.Background(), "1", 5, "SECRET")
+			return err
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cause := errors.New("connection refused")
+			cl := NewWithHTTP("123", nil, &http.Client{Transport: failingTransport{cause}})
+
+			err := c.call(cl)
+			if !errors.Is(err, cause) {
+				t.Fatalf("err = %v, want it to wrap the cause", err)
+			}
+			if strings.ContainsAny(err.Error(), "?=") || strings.Contains(err.Error(), "SECRET") {
+				t.Errorf("error exposes the query: %v", err)
+			}
+		})
 	}
 }
 

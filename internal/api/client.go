@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -89,7 +90,13 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, params 
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, err
+		// Without the URL: the query carries the token on login and this
+		// message ends up in logs pasted into issues.
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err
+		}
+		return nil, fmt.Errorf("%s: %w", endpoint, err)
 	}
 	defer resp.Body.Close()
 	respBody, err := io.ReadAll(resp.Body)
@@ -155,8 +162,11 @@ func (c *Client) extractUserInfo(info map[string]interface{}) error {
 		}
 	}
 	if c.UserID == "" {
-		if uid, ok := user["id"]; ok {
-			c.UserID = fmt.Sprintf("%v", uid)
+		switch uid := user["id"].(type) {
+		case float64: // %v would print a large id as 1.2345678e+07
+			c.UserID = strconv.FormatInt(int64(uid), 10)
+		case string:
+			c.UserID = uid
 		}
 	}
 	if label, ok := params["short_label"].(string); ok {
