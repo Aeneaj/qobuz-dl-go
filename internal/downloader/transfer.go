@@ -27,6 +27,14 @@ func (d *Downloader) downloadWithProgress(ctx context.Context, rawURL, dest stri
 		lastErr     error      // why the latest attempt failed, for the final error
 	)
 
+	// Only bytes from this call are resumed. A file already here was left by a
+	// run that died, and the name says nothing about its content: loose tracks
+	// of one album share it, and the quality may differ. Resuming from it spliced
+	// another file's bytes in, with a size that still added up.
+	if err := os.Remove(dest); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
 	for attempt := 0; attempt < maxDownloadRetries; attempt++ {
 		if err := waitBeforeRetry(ctx, attempt, d.retryDelay); err != nil {
 			return err
@@ -287,7 +295,8 @@ func isRecoverableErr(err error) bool {
 
 // downloadExtra fetches a supplementary file (cover art, booklet PDF).
 // Uses the shared httpClient and context; logs errors instead of silently
-// ignoring them.
+// ignoring them. The file only takes its name once complete: a dest that exists
+// is never fetched again, so an error page or a cut transfer would stay for good.
 func (d *Downloader) downloadExtra(ctx context.Context, rawURL, dest string) {
 	if _, err := os.Stat(dest); err == nil {
 		fmt.Fprintf(d.termOut(), "\033[90m%s already downloaded\033[0m\n", filepath.Base(dest))
@@ -305,13 +314,25 @@ func (d *Downloader) downloadExtra(ctx context.Context, rawURL, dest string) {
 		return
 	}
 	defer resp.Body.Close()
-	f, err := os.Create(dest)
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(d.termOut(), "\033[31mCould not download %s: HTTP %d\033[0m\n", filepath.Base(dest), resp.StatusCode)
+		return
+	}
+	tmp := dest + ".tmp"
+	f, err := os.Create(tmp)
 	if err != nil {
 		fmt.Fprintf(d.termOut(), "\033[31mCould not create file %s: %v\033[0m\n", filepath.Base(dest), err)
 		return
 	}
-	defer f.Close()
-	if _, err := io.Copy(f, resp.Body); err != nil {
+	_, err = io.Copy(f, resp.Body)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp, dest)
+	}
+	if err != nil {
+		os.Remove(tmp)
 		fmt.Fprintf(d.termOut(), "\033[31mError writing %s: %v\033[0m\n", filepath.Base(dest), err)
 	}
 }

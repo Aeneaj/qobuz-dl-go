@@ -781,3 +781,39 @@ func TestIntegration_QualityFallbackToMP3WritesMP3(t *testing.T) {
 		}
 	}
 }
+
+// A track that never reached its final name must not count as downloaded:
+// tagAndRename used to swallow that failure and the album finished as if
+// nothing had happened.
+func TestIntegration_RenameFailureIsNotRecorded(t *testing.T) {
+	if os.Geteuid() <= 0 {
+		t.Skip("needs a user that read-only permissions apply to")
+	}
+	q := newFakeQobuz(t, threeTracks()[:1])
+	d, dir := newTestDownloader(t, q, func(o *Options) {
+		o.NoDB = false
+		o.DBPath = filepath.Join(t.TempDir(), "db")
+		o.TrackFormat = "locked/{tracktitle}"
+	})
+	locked := filepath.Join(dir, "Test Artist - Test Album", "locked")
+	if err := os.MkdirAll(locked, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(locked, 0755) })
+
+	if err := d.downloadAlbum(context.Background(), "alb1", dir); err != nil {
+		t.Fatalf("downloadAlbum: %v", err)
+	}
+
+	if d.db.has("101") {
+		t.Error("the track was recorded as downloaded")
+	}
+	for _, f := range relFiles(t, dir) {
+		if strings.Contains(f, ".tmp") {
+			t.Errorf("temporary file left behind: %s", f)
+		}
+	}
+}

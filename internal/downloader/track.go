@@ -210,7 +210,11 @@ func (d *Downloader) downloadAndTag(
 		fileURL, _ := trackURLDict["url"].(string)
 		err = d.downloadWithProgress(ctx, fileURL, tmpFile, bar)
 		if err == nil {
-			d.tagAndRename(tmpFile, dir, finalFile, trackMeta, albumMeta, isTrack, isMP3)
+			err = d.tagAndRename(tmpFile, dir, finalFile, trackMeta, albumMeta, isTrack, isMP3)
+			if err != nil {
+				os.Remove(tmpFile)
+				return fmt.Errorf("save track: %w", err)
+			}
 			return nil
 		}
 		os.Remove(tmpFile)
@@ -258,8 +262,9 @@ func (d *Downloader) trackTarget(dir string, trackURLDict, trackMeta, albumMeta 
 }
 
 // tagAndRename tags the downloaded tmpFile and moves it to finalFile. A
-// tagging failure is reported, and the untagged audio still kept.
-func (d *Downloader) tagAndRename(tmpFile, dir, finalFile string, trackMeta, albumMeta map[string]interface{}, isTrack, isMP3 bool) {
+// tagging failure is reported, and the untagged audio still kept. The error
+// says the track did not reach finalFile, so it must not count as downloaded.
+func (d *Downloader) tagAndRename(tmpFile, dir, finalFile string, trackMeta, albumMeta map[string]interface{}, isTrack, isMP3 bool) error {
 	var err error
 	if isMP3 {
 		err = tagMP3(tmpFile, dir, finalFile, trackMeta, albumMeta, isTrack, d.Opts.EmbedArt)
@@ -269,8 +274,9 @@ func (d *Downloader) tagAndRename(tmpFile, dir, finalFile string, trackMeta, alb
 	if err != nil {
 		fmt.Fprintf(d.termOut(), "\033[31mWarning: could not tag %s: %v\033[0m\n", filepath.Base(finalFile), err)
 		// Still rename even if tagging failed
-		os.Rename(tmpFile, finalFile)
+		return os.Rename(tmpFile, finalFile)
 	}
+	return nil
 }
 
 // fileURL asks for the track at the requested quality and, when that cannot

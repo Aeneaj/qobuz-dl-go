@@ -68,9 +68,18 @@ func TestDownloadWithProgress(t *testing.T) {
 		pace     func(req, off int) bool
 		cancelIn time.Duration // cancel the context after this long; 0 = never
 		client   *http.Client  // overrides newDownloadClient
+		leftover []byte        // already at dest when the download starts
 		wantErr  error
 		wantReqs int32
 	}{
+		{
+			// A kill -9 leaves the temp file behind, and the name is not unique
+			// to a track: resuming from it splices another file's bytes in.
+			name:     "a leftover file is not resumed",
+			pace:     func(_, _ int) bool { return true },
+			leftover: bytes.Repeat([]byte("X"), 4<<10),
+			wantReqs: 1,
+		},
 		{
 			// The reported bug: a download that takes longer than any fixed
 			// limit, but never stops moving, must finish in one request.
@@ -137,6 +146,11 @@ func TestDownloadWithProgress(t *testing.T) {
 				d.httpClient = c.client
 			}
 			dest := filepath.Join(t.TempDir(), ".01.tmp")
+			if c.leftover != nil {
+				if err := os.WriteFile(dest, c.leftover, 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
 
 			err := d.downloadWithProgress(ctx, srv.URL+"/a.flac", dest, nil)
 			if !errors.Is(err, c.wantErr) {
@@ -157,5 +171,86 @@ func TestDownloadWithProgress(t *testing.T) {
 				t.Errorf("file differs from payload: %d bytes, want %d", len(got), len(payload))
 			}
 		})
+	}
+}
+
+// A cover that exists counts as downloaded on every later run and gets embedded
+// with --embed-art, so only a complete image may end up under its name.
+func TestDownloadExtra(t *testing.T) {
+	image := []byte("real image")
+	cases := []struct {
+		name    string
+		handler http.HandlerFunc
+		want    []byte // content of dest; nil = must not exist
+	}{
+		{
+			name:    "saves the file",
+			handler: func(w http.ResponseWriter, r *http.Request) { w.Write(image) },
+			want:    image,
+		},
+		{
+			name: "an error page is not the file",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				http.Error(w, "<html>Not Found</html>", http.StatusNotFound)
+			},
+		},
+		{
+			name: "a cut transfer leaves nothing",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Length", strconv.Itoa(len(image)*2))
+				w.Write(image) // short of Content-Length: net/http drops the conn
+			},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			srv := httptest.NewServer(c.handler)
+			defer srv.Close()
+			dir := t.TempDir()
+			dest := filepath.Join(dir, coverFile)
+
+			(&Downloader{httpClient: newDownloadClient()}).downloadExtra(context.Background(), srv.URL, dest)
+
+			got, err := os.ReadFile(dest)
+			if c.want == nil {
+				if err == nil {
+					t.Errorf("%s exists with %q", coverFile, got)
+				}
+			} else if !bytes.Equal(got, c.want) {
+				t.Errorf("content = %q (%v), want %q", got, err, c.want)
+			}
+			entries, _ := os.ReadDir(dir)
+			if len(entries) > 1 || (len(entries) == 1 && c.want == nil) {
+				t.Errorf("leftovers in the directory: %v", entries)
+			}
+		})
+	}
+}
+
+// downloadExtra cleans up after a failed copy, but a process that dies mid-copy
+// runs no cleanup: what is on disk at that moment must not carry the real name.
+func TestDownloadExtraHidesThePartialFile(t *testing.T) {
+	dir := t.TempDir()
+	dest := filepath.Join(dir, coverFile)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("half"))
+		w.(http.Flusher).Flush()
+		for i := 0; i < 200; i++ { // until the client has created its file
+			if entries, _ := os.ReadDir(dir); len(entries) > 0 {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		if _, err := os.Stat(dest); err == nil {
+			t.Errorf("%s exists while the transfer is running", coverFile)
+		}
+		w.Write([]byte(" and the rest"))
+	}))
+	defer srv.Close()
+
+	(&Downloader{httpClient: newDownloadClient()}).downloadExtra(context.Background(), srv.URL, dest)
+
+	if got, _ := os.ReadFile(dest); string(got) != "half and the rest" {
+		t.Errorf("content = %q", got)
 	}
 }
