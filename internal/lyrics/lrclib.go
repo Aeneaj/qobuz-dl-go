@@ -3,14 +3,16 @@ package lyrics
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 )
 
 const lrclibBase = "https://lrclib.net/api/get"
+
+var errRateLimited = errors.New("rate limited (HTTP 429)")
 
 type lrclibResponse struct {
 	SyncedLyrics string `json:"syncedLyrics"`
@@ -69,7 +71,7 @@ func (c *Client) Fetch(ctx context.Context, info AudioInfo) (string, error) {
 	case http.StatusNotFound:
 		return "", nil
 	case http.StatusTooManyRequests:
-		return "", fmt.Errorf("rate limited (HTTP 429)")
+		return "", errRateLimited
 	default:
 		return "", fmt.Errorf("lrclib HTTP %d", resp.StatusCode)
 	}
@@ -89,7 +91,7 @@ func (c *Client) Fetch(ctx context.Context, info AudioInfo) (string, error) {
 // via ctx, so Ctrl+C aborts immediately instead of sleeping the full backoff.
 func (c *Client) FetchWithRetry(ctx context.Context, info AudioInfo) (string, error) {
 	content, err := c.Fetch(ctx, info)
-	if err != nil && strings.Contains(err.Error(), "429") {
+	if errors.Is(err, errRateLimited) {
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()

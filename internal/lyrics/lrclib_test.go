@@ -3,6 +3,7 @@ package lyrics
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -181,6 +182,30 @@ func TestFetchWithRetry_RetriesOn429(t *testing.T) {
 	}
 	if call != 2 {
 		t.Errorf("expected 2 HTTP calls, got %d", call)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// A network error quotes the URL, and a 7:09 track has "duration=429" in it. The
+// retry looked for "429" in the error text, so that track waited out the
+// rate-limit backoff for a limit nobody had hit.
+func TestFetchWithRetry_NoRetryOnErrorThatQuotes429(t *testing.T) {
+	call := 0
+	client := testClient("http://lrclib.test/api/get")
+	client.http.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		call++
+		return nil, errors.New("connection reset")
+	})
+
+	_, err := client.FetchWithRetry(context.Background(), AudioInfo{Title: "T", Artist: "A", Duration: 429})
+	if err == nil || !strings.Contains(err.Error(), "429") {
+		t.Fatalf("err = %v, want the URL quoted, or this test proves nothing", err)
+	}
+	if call != 1 {
+		t.Errorf("expected 1 HTTP call, got %d", call)
 	}
 }
 
