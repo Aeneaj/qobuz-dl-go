@@ -435,7 +435,7 @@ func TestRequestErrorsHideTheQuery(t *testing.T) {
 }
 
 // clientForServer creates a Client whose HTTP calls go to the given test server.
-func clientForServer(t *testing.T, srv *httptest.Server) *Client {
+func clientForServer(t testing.TB, srv *httptest.Server) *Client {
 	t.Helper()
 	c := &Client{
 		AppID:   "123456789",
