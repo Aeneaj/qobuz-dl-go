@@ -274,6 +274,7 @@ func (q *fakeQobuz) handleAudio(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Gone", http.StatusGone)
 		return
 	}
+	q.record(r.URL.Path)
 	q.fileHits.Add(1)
 	q.firstAudio.CompareAndSwap(0, time.Now().UnixNano())
 	body, ctype := makeFakeFLAC(), "audio/flac"
@@ -642,11 +643,19 @@ func TestIntegration_DBSkipsSecondRun(t *testing.T) {
 
 // TestIntegration_WorkerCounts runs the same album at several pool sizes. All
 // must produce identical output; serial (1) is the control.
+//
+// It also checks that links are asked for in a pipeline, not all before the
+// first download: they expire, and asking for every one first kept each
+// download waiting on all of them. The resolver can be at most 2W+1 jobs
+// ahead of the downloads that have started — W wait in the channel, one is
+// in its hands, and W more may be held by workers yet to request audio — so
+// link k comes after at least k-(2W+1) audio requests.
 func TestIntegration_WorkerCounts(t *testing.T) {
+	const tracks = 12
 	var reference []string
 	for _, workers := range []int{1, 2, 3, 8} {
 		t.Run(fmt.Sprintf("workers=%d", workers), func(t *testing.T) {
-			q := newFakeQobuz(t, threeTracks())
+			q := newFakeQobuz(t, benchTracks(tracks))
 			d, dir := newTestDownloader(t, q, func(o *Options) {
 				o.Workers = workers
 				o.NoCover = true
@@ -660,8 +669,24 @@ func TestIntegration_WorkerCounts(t *testing.T) {
 			} else if strings.Join(got, "\n") != strings.Join(reference, "\n") {
 				t.Errorf("workers=%d produced %v, want %v", workers, got, reference)
 			}
-			if n := q.fileHits.Load(); n != 3 {
-				t.Errorf("served %d audio files, want 3", n)
+			if n := q.fileHits.Load(); n != tracks {
+				t.Errorf("served %d audio files, want %d", n, tracks)
+			}
+
+			q.mu.Lock()
+			defer q.mu.Unlock()
+			links, audio := 0, 0
+			for _, u := range q.seenURLs {
+				switch {
+				case strings.HasSuffix(u, "/track/getFileUrl"):
+					links++
+					if audio < links-(2*workers+1) {
+						t.Fatalf("link %d asked for after only %d downloads began, want at least %d: %v",
+							links, audio, links-(2*workers+1), q.seenURLs)
+					}
+				case strings.HasPrefix(u, "/audio/"):
+					audio++
+				}
 			}
 		})
 	}
