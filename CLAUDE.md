@@ -36,8 +36,9 @@ internal/config/     config.ini (INI propio, sin deps)
 internal/downloader/
   downloader.go      Downloader, New, progreso (termOut/newBar/newProgress), HandleURL
   collection.go      artista/playlist/label, smartDiscogFilter
-  album.go           downloadAlbum → collectTrackJobs → runTrackJobs
-  track.go           una pista: finalTrackPath, alreadyHave, downloadAndTag, fileURL
+  album.go           downloadAlbum → collectTrackJobs (sin red) → runTrackJobs (pipeline)
+  batch.go           downloadTrackBatch: playlist y CSV por el mismo pipeline
+  track.go           una pista: prepareTrack/fetchTrack, finalTrackPath, downloadAndTag, fileURL
   transfer.go        downloadWithProgress: reintentos, resume por Range, stall timeout
   metadata.go        escritura de tags FLAC (Vorbis) y MP3 (ID3v2.3)
   search.go          Search / SearchURLs
@@ -226,15 +227,40 @@ cortó, siempre, para una pista en 24 bits cuya versión de 16 bits bajaba bien.
 agotados los reintentos, `downloadAndTag` pide la calidad inferior con `fileURLBelow` (el
 mismo fallback de `fileURL`), salvo con `--no-fallback`.
 
+**Los enlaces caducan** (`etsp=`, ~1 h según terceros; Akamai responde 410). Un 403/410 es
+`errLinkExpired` y `downloadAndTag` pide un enlace nuevo **en la misma calidad, una vez por
+pista**, antes de bajar de calidad: antes un 24 bits caducado se guardaba en 16. Esa "una
+vez" es lo que hace terminar el bucle: sin ella, un CDN que respondiera siempre 410 lo
+mantendría vivo. Si tocas el bucle, mantén una medida que decrezca en cada `continue`: la
+calidad baja o la renovación se gasta (`TestIntegration_ExpiredLinkIsRenewedAtSameQuality`).
+
+### Pipeline: enlaces por delante, descargas detrás
+
+Álbum (`runTrackJobs`), playlist y CSV (`downloadTrackBatch`) son el mismo pipeline: **un**
+resolver, en orden, pide enlace (y metadatos, portada y carpeta en las sueltas) y pasa el
+trabajo por un canal de capacidad `Workers`; los workers solo descargan, etiquetan y
+registran. Pedir todos los enlaces antes era el 39 % de un álbum con la latencia real de la
+API (~180 ms por llamada), y los enlaces envejecían esperando.
+
+- **El resolver es único a propósito**: dos pistas sueltas de un álbum comparten `cover.jpg`,
+  y tiene que estar en disco antes de etiquetar cualquiera.
+- **Va como mucho 2W+1 enlaces por delante** de las descargas empezadas: W esperan en el
+  canal, uno lo tiene el resolver y W los tienen workers que aún no han pedido el audio. La
+  cota se alcanza, así que el umbral de `TestIntegration_WorkerCounts` es exacto.
+- **Cada pista en vuelo necesita su propio `.tmp`**: las sueltas usaban todas `.01.tmp` y en
+  paralelo se pisaban. El índice es la posición en el álbum o en el lote.
+- Cada resultado lo escribe una sola goroutine en su propio hueco (`results[i]`); se leen
+  tras `wg.Wait()`.
+
 **No hay tope total por petición.** Un `http.Client.Timeout` de 10 min hacía fallar toda
 pista que tardara más, fuera cual fuera la velocidad. `newDownloadClient` pone un deadline de
 lectura que avanza con cada `Read` (`stallTimeout`, 60 s): corta una conexión muerta, nunca
 una lenta. Si el usuario paró se decide con `ctx.Err()`, no por el tipo del error.
 
 **Solo se reanuda lo que escribió la propia llamada.** `downloadWithProgress` borra lo que haya
-en `dest` antes del primer intento: un `kill -9` deja el `.tmp`, ese nombre lo comparten los
-tracks sueltos de un álbum, y reanudarlo empalmaba bytes de otro fichero con un tamaño que
-cuadraba. **Una pista que no llega a su nombre final es un fallo**, no un aviso: `tagAndRename`
+en `dest` antes del primer intento: un `kill -9` deja el `.tmp`, el nombre se repite de una
+ejecución a otra (`.NN.tmp` por posición), y reanudarlo empalmaba bytes de otro fichero con un
+tamaño que cuadraba. **Una pista que no llega a su nombre final es un fallo**, no un aviso: `tagAndRename`
 devuelve el error del `Rename`, o quedaría en la DB sin estar en disco. **`downloadExtra` escribe
 a `.tmp` y renombra**: un `cover.jpg` existente no se vuelve a pedir, así que una página de error
 o un corte se quedarían para siempre.
@@ -325,10 +351,22 @@ parche fijo instala exactamente ese (así se estuvo compilando con 1.24.0, con 3
 vulnerabilidades de stdlib); sin parche instala la última 1.26.x. La línea `toolchain`
 es para local: sin ella `GOTOOLCHAIN=auto` busca un `go1.26` que no existe.
 
+### Benchmarks
+
+- `go test ./internal/downloader -run '^$' -bench E2E -benchtime 1x -count 6`: álbum y playlist
+  contra el Qobuz falso con `apiDelay` (180 ms, medido) y `audioRate`. Compara con `benchstat`
+  contra una ejecución anterior. `t.TempDir()` cae en tmpfs: para medir disco, `TMPDIR`.
+
 ## Medido y descartado
 
 Para no volver a investigarlo:
 
+- **CPU propia** (JSON a `map`, nombres, tags, barras, DB, el deadline por `Read` de `stallConn`,
+  locks): todo el trabajo de un álbum suma < 1 ms frente a segundos de red (nombres 5,5 µs,
+  tags 3,5 µs, decode de un álbum de 12 pistas 151 µs). El cuello de botella es cómo se
+  espera a la red.
+- **`lyrics` en paralelo**: no. Va en serie a 75–92 req/min y LRCLIB pide peticiones
+  secuenciales, ~90/min con User-Agent propio (`lrclib.net/docs.txt`).
 - El buffer de 32 KB de `io.Copy` por intento y los cierres de `mpb` por `Read`: basura
   (~1 MB por álbum), no RSS.
 - El RSS de `--version` (8,4 MB) es casi todo páginas del binario. Para separar memoria
