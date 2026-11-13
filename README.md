@@ -14,9 +14,76 @@ browse and search, but Qobuz will not let them download tracks.
 
 ## Quick start
 
-### 1. Build it
+### 1. Install it
 
-You need [Go 1.26+](https://go.dev/dl/) installed. Then:
+The easiest way is to download the ready-made program: no Go, no compiling.
+Open the [latest release](https://github.com/Aeneaj/qobuz-dl-go/releases/latest)
+and download the file for your system:
+
+| Your system | File to download |
+|---|---|
+| Windows (64-bit) | `qobuz-dl-windows-amd64.exe` |
+| macOS, Apple Silicon (M1 and newer) | `qobuz-dl-darwin-arm64` |
+| macOS, Intel | `qobuz-dl-darwin-amd64` |
+| Linux, x86-64 (most PCs) | `qobuz-dl-linux-amd64` |
+| Linux, ARM 64-bit (e.g. Raspberry Pi 4/5 with a 64-bit OS) | `qobuz-dl-linux-arm64` |
+
+Put it in a folder of its own, then follow the steps for your system.
+
+#### Windows
+
+1. Rename the file to `qobuz-dl.exe`. File Explorer hides the `.exe` by
+   default, so there it shows as `qobuz-dl-windows-amd64`: rename that to
+   `qobuz-dl` and the `.exe` stays.
+2. Open a terminal in that folder: click the File Explorer address bar, type
+   `powershell` and press Enter.
+3. Check that it runs:
+
+   ```powershell
+   .\qobuz-dl.exe --version
+   ```
+
+> [!IMPORTANT]
+> Every command in this README is written as `./qobuz-dl ...`. On Windows,
+> type `.\qobuz-dl.exe ...` instead — for example `.\qobuz-dl.exe oauth`.
+
+#### macOS
+
+Not sure which Mac you have? Apple menu → **About This Mac**: "Chip Apple M…"
+is Apple Silicon, "Processor … Intel" is Intel. Then, in Terminal:
+
+```bash
+cd ~/Downloads                        # or wherever you put the file
+mv qobuz-dl-darwin-arm64 qobuz-dl     # qobuz-dl-darwin-amd64 on an Intel Mac
+chmod +x qobuz-dl
+xattr -d com.apple.quarantine qobuz-dl
+./qobuz-dl --version
+```
+
+`chmod +x` makes the file runnable (downloads lose that permission). The
+`xattr` line removes the "downloaded from the internet" mark, without which
+macOS refuses to open a program from an unregistered developer. If it answers
+`No such xattr`, the mark wasn't there and nothing needs doing.
+
+#### Linux
+
+Not sure which file? `uname -m` prints `x86_64` for amd64 and `aarch64` for
+arm64. Then:
+
+```bash
+mv qobuz-dl-linux-amd64 qobuz-dl      # qobuz-dl-linux-arm64 on ARM
+chmod +x qobuz-dl
+./qobuz-dl --version
+```
+
+<details>
+<summary>Or build it from source</summary>
+
+You need [Go 1.26+](https://go.dev/dl/). Get the code with `git clone` as
+below, or without Git: **Code → Download ZIP** on the GitHub page, then unzip
+it (the folder is called `qobuz-dl-go-main`) and open a terminal inside it.
+
+Linux and macOS:
 
 ```bash
 git clone https://github.com/Aeneaj/qobuz-dl-go.git
@@ -24,8 +91,20 @@ cd qobuz-dl-go
 go build -o qobuz-dl ./cmd/qobuz-dl/
 ```
 
-That leaves a single file called `qobuz-dl` in the folder. Every command below
-is run from there as `./qobuz-dl ...`.
+Windows, in PowerShell — note the `.exe`, without it Windows won't recognise
+the file as a program:
+
+```powershell
+git clone https://github.com/Aeneaj/qobuz-dl-go.git
+cd qobuz-dl-go
+go build -o qobuz-dl.exe ./cmd/qobuz-dl/
+```
+
+This adds one new file, `qobuz-dl` (`qobuz-dl.exe` on Windows), next to the
+source code. The source files stay where they are; the program doesn't need
+them, so you can move that one file wherever you like.
+
+</details>
 
 ### 2. Log in
 
@@ -34,9 +113,10 @@ is run from there as `./qobuz-dl ...`.
 ```
 
 The first run asks three simple questions (where to save music, folder name,
-audio quality — pressing Enter accepts the defaults), then opens Qobuz in your
-browser. Log in there and you're done: the token is saved automatically and you
-never have to do this again.
+audio quality — pressing Enter accepts the defaults). Then it prints a Qobuz
+login link and waits. Copy that link into your browser and log in, leaving the
+terminal open: the program catches the login by itself and saves the token, so
+you don't have to do this again.
 
 <details>
 <summary>If the browser login doesn't work</summary>
@@ -234,7 +314,7 @@ keys move, Enter chooses, Esc goes back, `q` quits:
 ### Language
 
 The interface is in English. For Spanish, add one line to your config file
-(`~/.config/qobuz-dl/config.ini`):
+([where it is](#settings)):
 
 ```ini
 lang = es
@@ -347,6 +427,14 @@ up by hand.
 
 ## Troubleshooting
 
+**Windows asks which program to open `qobuz-dl` with, or the browser tries to download it**
+The file is missing its `.exe` ending, so Windows doesn't see it as a program.
+Rename it to `qobuz-dl.exe` and run `.\qobuz-dl.exe oauth`. When building from
+source, use `go build -o qobuz-dl.exe ./cmd/qobuz-dl/`.
+
+**macOS says the program can't be opened or its developer can't be verified**
+Run `xattr -d com.apple.quarantine qobuz-dl` in its folder, then try again.
+
 **"Free accounts are not eligible to download tracks"**
 Your Qobuz plan doesn't include downloads. A paid subscription is required —
 this isn't something the tool can work around.
@@ -355,7 +443,9 @@ this isn't something the tool can work around.
 Tokens expire. Run `./qobuz-dl oauth` again.
 
 **A flag seems to do nothing**
-It's probably placed after the command. See [the rule above](#one-rule-about-options).
+Check your version with `./qobuz-dl --version`. Up to v1.5.0, options only
+worked before the command and anything after it was silently ignored. Update,
+or put the options first. See [Options go anywhere](#options-go-anywhere).
 
 **Nothing downloads, everything is "skipped"**
 qobuz-dl remembers what it already downloaded and won't fetch it twice. To
@@ -381,8 +471,12 @@ force it:
 
 Your answers from the first run are saved in a config file you can edit by hand:
 
-- **Linux / macOS**: `~/.config/qobuz-dl/config.ini`
+- **Linux**: `~/.config/qobuz-dl/config.ini`
+- **macOS**: `~/Library/Application Support/qobuz-dl/config.ini`
 - **Windows**: `%APPDATA%\qobuz-dl\config.ini`
+
+If the `XDG_CONFIG_HOME` environment variable is set, it wins on all three:
+`$XDG_CONFIG_HOME/qobuz-dl/config.ini`.
 
 Run `./qobuz-dl --show-config` to see where it is and what's in it, or
 `./qobuz-dl --reset` to answer the setup questions again.
@@ -435,7 +529,8 @@ the current folder too.
 
 ## All options
 
-Remember: these go **before** the command.
+They can go before the command, after it or after its arguments (see
+[Options go anywhere](#options-go-anywhere)).
 
 | Flag | What it does |
 |---|---|
@@ -479,8 +574,9 @@ Remember: these go **before** the command.
 
 Pure Go, no cgo, no external tools like ffmpeg. FLAC (Vorbis Comment) and MP3
 (ID3v2.3) tagging are implemented in-repo; audio parsing dependencies are
-deliberately avoided. The dependency list is stdlib plus progress bars
-(`mpb`) and its Unicode/ANSI helpers.
+deliberately avoided. The dependency list is stdlib plus `mpb` (progress
+bars), `bubbletea` and `lipgloss` (the full-screen interface) and their
+Unicode/ANSI helpers.
 
 ```
 cmd/qobuz-dl/        CLI entry point
@@ -489,12 +585,13 @@ internal/bundle/     Scraper for app_id / secrets / private_key from bundle.js
 internal/config/     INI config reader/writer
 internal/downloader/ Download logic, FLAC/MP3 tagging, collections, OAuth
 internal/lyrics/     .lrc fetcher: audio metadata reader (FLAC/MP3), LRCLIB client
+internal/ui/         Full-screen interface (bubbletea): tui command and --tui view
 ```
 
 ```bash
 go build ./...
 go vet ./...
-go test -cover ./...
+go test -race -cover ./...   # as CI runs it
 ```
 
 See [CLAUDE.md](CLAUDE.md) for architecture notes and testing conventions.
