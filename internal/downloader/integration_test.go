@@ -75,10 +75,18 @@ type fakeQobuz struct {
 	degradeAbove int
 	audioPad     int64 // extra audio bytes per file, for the memory benchmarks
 
-	fileHits atomic.Int64 // audio bytes actually served
-	mu       sync.Mutex
-	seenURLs []string
-	fileReqs []string // "trackID@format_id" of every track/getFileUrl request
+	// knobs for the latency benchmarks (bench_test.go). apiDelay is added to
+	// every API answer — a warm call to www.qobuz.com measured 145–320 ms,
+	// median ~180 ms. audioRate caps each audio response in bytes/s, the
+	// per-connection CDN limit the worker pool exists to work around.
+	apiDelay  time.Duration
+	audioRate int64
+
+	firstAudio atomic.Int64 // UnixNano of the first audio request; 0 until then
+	fileHits   atomic.Int64 // audio bytes actually served
+	mu         sync.Mutex
+	seenURLs   []string
+	fileReqs   []string // "trackID@format_id" of every track/getFileUrl request
 }
 
 func newFakeQobuz(t testing.TB, tracks []fakeTrack) *fakeQobuz {
@@ -93,6 +101,7 @@ func newFakeQobuz(t testing.TB, tracks []fakeTrack) *fakeQobuz {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api.json/0.2/album/get", q.handleAlbumGet)
 	mux.HandleFunc("/api.json/0.2/track/getFileUrl", q.handleFileURL)
+	mux.HandleFunc("/api.json/0.2/track/get", q.handleTrackGet)
 	mux.HandleFunc("/api.json/0.2/album/search", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]interface{}{"albums": map[string]interface{}{"items": []interface{}{
 			map[string]interface{}{"id": "alb1", "title": "Test Album", "duration": float64(60), "artist": map[string]interface{}{"name": "Test Artist"}},
@@ -129,6 +138,7 @@ func (q *fakeQobuz) count(suffix string) int {
 
 func (q *fakeQobuz) handleAlbumGet(w http.ResponseWriter, r *http.Request) {
 	q.record(r.URL.Path)
+	time.Sleep(q.apiDelay)
 	if r.URL.Query().Get("album_id") == "gone" {
 		w.WriteHeader(http.StatusNotFound)
 		return
@@ -160,8 +170,38 @@ func (q *fakeQobuz) handleAlbumGet(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleTrackGet serves track/get: one track with its album, the shape
+// downloadTrackByID reads for playlists and the CSV import.
+func (q *fakeQobuz) handleTrackGet(w http.ResponseWriter, r *http.Request) {
+	q.record(r.URL.Path)
+	time.Sleep(q.apiDelay)
+	var n int
+	fmt.Sscanf(r.URL.Query().Get("track_id"), "%d", &n)
+	for _, tr := range q.tracks {
+		if tr.ID != n {
+			continue
+		}
+		writeJSON(w, map[string]interface{}{
+			"id":           float64(tr.ID),
+			"title":        tr.Title,
+			"track_number": float64(tr.Number),
+			"performer":    map[string]interface{}{"name": tr.Performer},
+			"album": map[string]interface{}{
+				"title":                 "Test Album",
+				"release_date_original": "2021-05-04",
+				"tracks_count":          float64(len(q.tracks)),
+				"artist":                map[string]interface{}{"name": "Test Artist"},
+				"image":                 map[string]interface{}{"large": q.srv.URL + "/img/cover.jpg"},
+			},
+		})
+		return
+	}
+	w.WriteHeader(http.StatusNotFound)
+}
+
 func (q *fakeQobuz) handleFileURL(w http.ResponseWriter, r *http.Request) {
 	q.record(r.URL.Path)
+	time.Sleep(q.apiDelay)
 	id := r.URL.Query().Get("track_id")
 	var n int
 	fmt.Sscanf(id, "%d", &n)
@@ -219,6 +259,7 @@ func (q *fakeQobuz) handleFileURL(w http.ResponseWriter, r *http.Request) {
 
 func (q *fakeQobuz) handleAudio(w http.ResponseWriter, r *http.Request) {
 	q.fileHits.Add(1)
+	q.firstAudio.CompareAndSwap(0, time.Now().UnixNano())
 	body, ctype := makeFakeFLAC(), "audio/flac"
 	if strings.HasSuffix(r.URL.Path, ".mp3") {
 		body, ctype = makeFakeMP3(), "audio/mpeg"
@@ -233,8 +274,16 @@ func (q *fakeQobuz) handleAudio(w http.ResponseWriter, r *http.Request) {
 	// Streamed from one small buffer so the server's own allocations stay
 	// out of the client's memory numbers.
 	pad := make([]byte, 32<<10)
+	start, sent := time.Now(), int64(0)
 	for n := q.audioPad; n > 0; n -= int64(len(pad)) {
-		w.Write(pad[:min(n, int64(len(pad)))])
+		k := min(n, int64(len(pad)))
+		w.Write(pad[:k])
+		if q.audioRate > 0 {
+			// Paced against the start, not chunk by chunk, so sleep
+			// granularity does not drift the rate.
+			sent += k
+			time.Sleep(time.Until(start.Add(time.Duration(sent * int64(time.Second) / q.audioRate))))
+		}
 	}
 }
 
@@ -708,9 +757,9 @@ func TestIntegration_CollectionsReturnFailures(t *testing.T) {
 			return d.downloadAlbumCollection(ctx, pages, "albums", "discography", false)
 		}, "album gone"},
 		{"playlist", func(ctx context.Context, d *Downloader) error {
-			// The fake serves no track/get, so the track fails.
-			return d.downloadPlaylist(ctx, []map[string]interface{}{{"name": "P", "tracks": items("101")}})
-		}, "track 101"},
+			// track/get answers 404 for a track the fake does not list.
+			return d.downloadPlaylist(ctx, []map[string]interface{}{{"name": "P", "tracks": items("999")}})
+		}, "track 999"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
