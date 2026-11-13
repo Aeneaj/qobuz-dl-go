@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"syscall"
@@ -17,8 +18,32 @@ import (
 	"github.com/Aeneaj/qobuz-dl-go/internal/ui"
 )
 
-// version is set at build time via -ldflags "-X main.version=v1.x.x".
-var version = "v1.5.0"
+// version is set at build time via -ldflags "-X main.version=v1.x.x" (the
+// release workflow and the Makefile do). A plain `go build` leaves it empty:
+// a literal here went stale, and builds from source reported v1.5.0 long
+// after v1.6.1 was out.
+var version = ""
+
+// resolveVersion picks what --version prints: the -ldflags value, else the
+// version the go command stamped from git (a tag, or a pseudo-version with
+// +dirty), else "dev" — a build from a ZIP has no .git to read.
+func resolveVersion(injected, stamped string) string {
+	if injected != "" {
+		return injected
+	}
+	if stamped != "" && stamped != "(devel)" {
+		return stamped
+	}
+	return "dev"
+}
+
+func buildVersion() string {
+	var stamped string
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		stamped = bi.Main.Version
+	}
+	return resolveVersion(version, stamped)
+}
 
 // defaultFailedCSV is where the csv command reports what it could not download.
 const defaultFailedCSV = "failed_downloads.csv"
@@ -86,7 +111,7 @@ func main() {
 	args := parseArgs(fs, os.Args[1:])
 
 	if showVer {
-		fmt.Println("qobuz-dl", version)
+		fmt.Println("qobuz-dl", buildVersion())
 		return
 	}
 

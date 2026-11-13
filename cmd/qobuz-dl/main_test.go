@@ -82,6 +82,39 @@ func TestNoArgs_PrintsUsage(t *testing.T) {
 	}
 }
 
+func TestResolveVersion(t *testing.T) {
+	cases := []struct {
+		name, injected, stamped, want string
+	}{
+		{"ldflags wins over git", "v1.6.1", "v1.6.2-0.20261112221120-0a244a8b1c2d", "v1.6.1"},
+		{"git tag", "", "v1.6.1", "v1.6.1"},
+		{"git pseudo-version", "", "v1.6.2-0.20261112221120-0a244a8b1c2d+dirty", "v1.6.2-0.20261112221120-0a244a8b1c2d+dirty"},
+		{"no git (ZIP download)", "", "(devel)", "dev"},
+		{"no build info", "", "", "dev"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := resolveVersion(c.injected, c.stamped); got != c.want {
+				t.Errorf("resolveVersion(%q, %q) = %q, want %q", c.injected, c.stamped, got, c.want)
+			}
+		})
+	}
+}
+
+// TestVersionFlagPrintsAVersion runs the binary TestMain built with a plain
+// `go build`, no -ldflags: the case that used to print a hardcoded, stale
+// v1.5.0.
+func TestVersionFlagPrintsAVersion(t *testing.T) {
+	out, _, code := run("--version")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	got := strings.TrimSpace(strings.TrimPrefix(out, "qobuz-dl"))
+	if got == "" || got == "(devel)" {
+		t.Errorf("--version printed %q, want a version", out)
+	}
+}
+
 func TestUnknownCommand_ExitsNonZero(t *testing.T) {
 	_, _, code := run("notacommand")
 	if code == 0 {
