@@ -8,20 +8,56 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/vbauerster/mpb/v8"
+
 	"github.com/Aeneaj/qobuz-dl-go/internal/ui"
 )
 
+// downloadTrackByID downloads one track on its own, into its album's folder.
 func (d *Downloader) downloadTrackByID(ctx context.Context, trackID, baseDir string) error {
+	t, err := d.prepareTrack(ctx, trackID, baseDir, 1)
+	if err != nil || t == nil {
+		return err
+	}
+	p := d.newProgress(ctx)
+	restore := d.withBars(p)
+	err = d.fetchTrack(ctx, t, p)
+	if p != nil {
+		p.Wait()
+	}
+	restore()
+	return err
+}
+
+// looseTrack is a track fetched on its own — a track URL, a playlist entry or
+// a CSV row — with everything ready but its bytes.
+type looseTrack struct {
+	trackID  string
+	meta     map[string]interface{}
+	trackURL map[string]interface{}
+	dir      string
+	trackFmt string
+	title    string
+	idx      int // names its temporary file: unique within a batch
+}
+
+// prepareTrack does everything for a loose track short of downloading it: the
+// link and the metadata, the folder, the skip check, the cover and the header.
+// It returns nil, nil for a track already downloaded.
+//
+// idx names the temporary file, and must differ between tracks downloading at
+// once: loose tracks of one album share a folder.
+func (d *Downloader) prepareTrack(ctx context.Context, trackID, baseDir string, idx int) (*looseTrack, error) {
 	// The skip check is deferred until trackDir + trackFmt are known so it
 	// can look at the exact output path; see the alreadyHave call below.
 	trackURL, err := d.fileURL(ctx, trackID)
 	if err != nil {
-		return fmt.Errorf("get track URL: %w", err)
+		return nil, fmt.Errorf("get track URL: %w", err)
 	}
 
 	meta, err := d.Client.GetTrackMeta(ctx, trackID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	title := getTitle(meta)
@@ -56,10 +92,10 @@ func (d *Downloader) downloadTrackByID(ctx context.Context, trackID, baseDir str
 	})
 	trackDir, err := safeJoin(baseDir, filepath.FromSlash(folderName))
 	if err != nil {
-		return fmt.Errorf("resolve track directory: %w", err)
+		return nil, fmt.Errorf("resolve track directory: %w", err)
 	}
 	if err := os.MkdirAll(trackDir, 0755); err != nil {
-		return fmt.Errorf("create track directory %q: %w", trackDir, err)
+		return nil, fmt.Errorf("create track directory %q: %w", trackDir, err)
 	}
 
 	trackFmt := cleanFormatStr(d.termOut(), d.Opts.TrackFormat, fileFormat)
@@ -70,10 +106,11 @@ func (d *Downloader) downloadTrackByID(ctx context.Context, trackID, baseDir str
 	if finalPath, err := finalTrackPath(trackDir, meta, meta, trackFmt, isMP3); err == nil {
 		if d.alreadyHave(trackID, finalPath) {
 			fmt.Fprintf(d.termOut(), "\033[90mTrack %s already downloaded, skipping\033[0m\n", trackID)
-			return nil
+			return nil, nil
 		}
 	}
 
+	// Before the download, not alongside it: the tagger reads it to embed.
 	d.downloadCover(ctx, nestedStr(meta, "album", "image", "large"), trackDir)
 
 	if d.tui != nil {
@@ -82,25 +119,19 @@ func (d *Downloader) downloadTrackByID(ctx context.Context, trackID, baseDir str
 		fmt.Fprintf(d.termOut(), "\n\033[1m♫  %s\033[0m  ·  \033[33m%s — %s\033[0m\n\n", title, performer, fileFormat)
 	}
 
-	p := d.newProgress(ctx)
-	restore := d.withBars(p)
-	bar := d.newBar(p, 0, int(nestedFloat(meta, "track_number")), title, trackID)
+	return &looseTrack{trackID, meta, trackURL, trackDir, trackFmt, title, idx}, nil
+}
 
-	err = d.downloadAndTag(ctx, trackDir, 1, trackURL, meta, meta, true, trackFmt, bar)
-	if err != nil {
-		d.failTrack(bar, trackID, err)
-	} else {
-		d.recordDownloaded(trackID)
-	}
-	if p != nil {
-		p.Wait()
-	}
-	restore()
-	if err != nil {
+// fetchTrack downloads a prepared track with its bar on p, which is nil
+// under the TUI.
+func (d *Downloader) fetchTrack(ctx context.Context, t *looseTrack, p *mpb.Progress) error {
+	bar := d.newBar(p, t.idx, int(nestedFloat(t.meta, "track_number")), t.title, t.trackID)
+	if err := d.downloadAndTag(ctx, t.dir, t.idx, t.trackURL, t.meta, t.meta, true, t.trackFmt, bar); err != nil {
+		d.failTrack(bar, t.trackID, err)
 		return err
 	}
-
-	fmt.Fprintf(d.termOut(), "\033[32m✓  Completed: %s\033[0m\n\n", title)
+	d.recordDownloaded(t.trackID)
+	fmt.Fprintf(d.termOut(), "\033[32m✓  Completed: %s\033[0m\n\n", t.title)
 	return nil
 }
 

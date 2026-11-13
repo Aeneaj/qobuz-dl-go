@@ -86,6 +86,8 @@ type fakeQobuz struct {
 
 	firstAudio atomic.Int64 // UnixNano of the first audio request; 0 until then
 	fileHits   atomic.Int64 // audio files actually served
+	inFlight   atomic.Int64 // audio responses being written right now
+	peakFlight atomic.Int64 // the most there ever were at once
 	mu         sync.Mutex
 	seenURLs   []string
 	fileReqs   []string    // "trackID@format_id" of every track/getFileUrl request
@@ -111,8 +113,21 @@ func newFakeQobuz(t testing.TB, tracks []fakeTrack) *fakeQobuz {
 			map[string]interface{}{"id": "alb1", "title": "Test Album", "duration": float64(60), "artist": map[string]interface{}{"name": "Test Artist"}},
 		}}})
 	})
+	// track/search finds the first track whose title the query contains.
+	mux.HandleFunc("/api.json/0.2/track/search", func(w http.ResponseWriter, r *http.Request) {
+		q.record(r.URL.Path)
+		items := []interface{}{}
+		for _, tr := range q.tracks {
+			if strings.Contains(r.URL.Query().Get("query"), tr.Title) {
+				items = append(items, map[string]interface{}{"id": float64(tr.ID), "title": tr.Title})
+				break
+			}
+		}
+		writeJSON(w, map[string]interface{}{"tracks": map[string]interface{}{"items": items}})
+	})
 	mux.HandleFunc("/audio/", q.handleAudio)
 	mux.HandleFunc("/img/cover.jpg", func(w http.ResponseWriter, r *http.Request) {
+		q.record(r.URL.Path)
 		w.Header().Set("Content-Type", "image/jpeg")
 		w.Write([]byte{0xFF, 0xD8, 0xFF, 0xE0, 'J', 'F', 'I', 'F', 0xFF, 0xD9})
 	})
@@ -277,6 +292,10 @@ func (q *fakeQobuz) handleAudio(w http.ResponseWriter, r *http.Request) {
 	q.record(r.URL.Path)
 	q.fileHits.Add(1)
 	q.firstAudio.CompareAndSwap(0, time.Now().UnixNano())
+	now := q.inFlight.Add(1)
+	defer q.inFlight.Add(-1)
+	for peak := q.peakFlight.Load(); now > peak && !q.peakFlight.CompareAndSwap(peak, now); peak = q.peakFlight.Load() {
+	}
 	body, ctype := makeFakeFLAC(), "audio/flac"
 	if strings.HasSuffix(r.URL.Path, ".mp3") {
 		body, ctype = makeFakeMP3(), "audio/mpeg"
@@ -783,6 +802,74 @@ func TestIntegration_DownloadURLsReturnsFailures(t *testing.T) {
 	}
 	if len(relFiles(t, dir)) != 1 {
 		t.Errorf("the run stopped at the failures: %v", relFiles(t, dir))
+	}
+}
+
+// Playlists and CSV imports used to download one track at a time, whatever
+// --workers said. They go through the worker pool now, and their tracks — all
+// from one album here — share a folder: each must arrive whole under its own
+// temporary name, and the shared cover must be fetched once.
+func TestIntegration_LooseTracksUseThePool(t *testing.T) {
+	const tracks = 6
+	cases := []struct {
+		name string
+		run  func(*testing.T, *Downloader)
+	}{
+		{"playlist", func(t *testing.T, d *Downloader) {
+			items := make([]interface{}, tracks)
+			for i := range items {
+				items[i] = map[string]interface{}{"id": float64(101 + i)}
+			}
+			pages := []map[string]interface{}{{"name": "P", "tracks": map[string]interface{}{"items": items}}}
+			if err := d.downloadPlaylist(context.Background(), pages); err != nil {
+				t.Fatalf("downloadPlaylist: %v", err)
+			}
+		}},
+		{"csv", func(t *testing.T, d *Downloader) {
+			body := "Track name,Artist name\n"
+			for i := range tracks {
+				body += fmt.Sprintf("Song %d,A\n", i+1)
+			}
+			body += "Nothing Like This,A\n"
+			failed, err := d.DownloadCSV(context.Background(), writeCSV(t, body), "")
+			if err != nil || failed != 1 {
+				t.Fatalf("DownloadCSV = %d, %v; want 1 (the row Qobuz does not have), nil", failed, err)
+			}
+		}},
+	}
+	for _, c := range cases {
+		for _, workers := range []int{1, 3} {
+			t.Run(fmt.Sprintf("%s/workers=%d", c.name, workers), func(t *testing.T) {
+				q := newFakeQobuz(t, benchTracks(tracks))
+				q.audioPad, q.audioRate = 64<<10, 512<<10 // 1/8 s per track, so they overlap
+				d, dir := newTestDownloader(t, q, func(o *Options) { o.Workers = workers; o.NoM3U = true })
+				captureStdout(t, func() { c.run(t, d) })
+
+				if got := q.peakFlight.Load(); got != int64(workers) {
+					t.Errorf("at most %d tracks downloaded at once, want %d", got, workers)
+				}
+				if got := q.count("/img/cover.jpg"); got != 1 {
+					t.Errorf("the shared cover was fetched %d times, want 1", got)
+				}
+				var audio int
+				for _, f := range relFiles(t, dir) {
+					if strings.Contains(f, ".tmp") {
+						t.Errorf("temporary file left behind: %s", f)
+					}
+					if !strings.HasSuffix(f, ".flac") {
+						continue
+					}
+					audio++
+					data, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(f)))
+					if err != nil || len(data) < 64<<10 || string(data[:4]) != "fLaC" {
+						t.Errorf("%s: not a whole tagged FLAC (%d bytes, err %v)", f, len(data), err)
+					}
+				}
+				if audio != tracks {
+					t.Errorf("%d tracks on disk, want %d: %v", audio, tracks, relFiles(t, dir))
+				}
+			})
+		}
 	}
 }
 

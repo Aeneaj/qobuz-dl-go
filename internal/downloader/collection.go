@@ -131,10 +131,13 @@ func (d *Downloader) downloadPlaylist(ctx context.Context, pages []map[string]in
 
 	ids := collectionIDs(pages, "tracks", nil)
 	fmt.Fprintf(d.termOut(), "\033[33mDownloading playlist: %s (%d tracks)\033[0m\n", name, len(ids))
+	results := d.downloadTrackBatch(ctx, len(ids), func(_ context.Context, i int) (string, error) {
+		return ids[i], nil
+	}, dir)
 	var errs []error
-	for _, id := range ids {
-		if err := d.downloadTrackByID(ctx, id, dir); err != nil && !errors.Is(err, context.Canceled) {
-			errs = append(errs, fmt.Errorf("track %s: %w", id, err))
+	for i, r := range results {
+		if r.outcome == failed {
+			errs = append(errs, fmt.Errorf("track %s: %w", ids[i], r.err))
 		}
 	}
 

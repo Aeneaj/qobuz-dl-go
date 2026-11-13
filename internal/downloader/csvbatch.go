@@ -148,34 +148,45 @@ func (d *Downloader) DownloadCSV(ctx context.Context, csvPath, failedPath string
 	total := len(tracks)
 	downloaded := 0
 	var failures []failedEntry
-	dir := d.Opts.Directory
 
-	for i, t := range tracks {
-		if err := ctx.Err(); err != nil {
-			fmt.Fprintf(d.termOut(), "\033[33m\nInterrupted at row %d/%d.\033[0m\n", i, total)
-			break
-		}
+	// Rows are searched in order, ahead of the downloads, which run in the
+	// worker pool: a failed download is no longer next to its row's line, so
+	// those are listed together, with the row, once the batch ends.
+	results := d.downloadTrackBatch(ctx, total, func(ctx context.Context, i int) (string, error) {
+		t := tracks[i]
 		fmt.Fprintf(d.termOut(), "\033[33m[%d/%d] %s\033[0m\n", i+1, total, t.Query)
-
 		trackID, err := d.searchFirstTrackID(ctx, t.Query)
-		if err != nil {
+		switch {
+		case err != nil:
 			fmt.Fprintf(d.termOut(), "  \033[31m✗ Search error: %v\033[0m\n", err)
-			failures = append(failures, failedEntry{t, fmt.Sprintf("search error: %v", err)})
-			continue
-		}
-		if trackID == "" {
+		case trackID == "":
 			fmt.Fprintf(d.termOut(), "  \033[31m✗ Not found on Qobuz\033[0m\n")
-			failures = append(failures, failedEntry{t, reasonNotFound})
-			continue
+		default:
+			fmt.Fprintf(d.termOut(), "  \033[32m→ id=%s, queued\033[0m\n", trackID)
 		}
+		return trackID, err
+	}, d.Opts.Directory)
 
-		fmt.Fprintf(d.termOut(), "  \033[32m→ id=%s, downloading...\033[0m\n", trackID)
-		if err := d.downloadTrackByID(ctx, trackID, dir); err != nil {
-			fmt.Fprintf(d.termOut(), "  \033[31m✗ Download error: %v\033[0m\n", err)
-			failures = append(failures, failedEntry{t, fmt.Sprintf("download error: %v", err)})
+	reached := 0
+	for i, r := range results {
+		t := tracks[i]
+		switch r.outcome {
+		case notReached:
 			continue
+		case fetched:
+			downloaded++
+		case lookupError:
+			failures = append(failures, failedEntry{t, fmt.Sprintf("search error: %v", r.err)})
+		case notFound:
+			failures = append(failures, failedEntry{t, reasonNotFound})
+		case failed:
+			fmt.Fprintf(d.termOut(), "  \033[31m✗ [row %d] %s — download error: %v\033[0m\n", t.RowNum, t.Query, r.err)
+			failures = append(failures, failedEntry{t, fmt.Sprintf("download error: %v", r.err)})
 		}
-		downloaded++
+		reached++
+	}
+	if ctx.Err() != nil {
+		fmt.Fprintf(d.termOut(), "\033[33m\nInterrupted after %d/%d rows.\033[0m\n", reached, total)
 	}
 
 	printBatchSummary(d.termOut(), total, downloaded, failures)
