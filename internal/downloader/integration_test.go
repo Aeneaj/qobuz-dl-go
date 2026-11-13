@@ -417,6 +417,12 @@ func TestIntegration_DownloadAlbum(t *testing.T) {
 			t.Errorf("temporary file left behind: %s", f)
 		}
 	}
+
+	// One link per track: each call costs ~180 ms against the real API, and
+	// resolveFormat's answer for the first track used to be asked for again.
+	if want := []string{"101@7", "102@7", "103@7"}; !slices.Equal(q.fileReqs, want) {
+		t.Errorf("getFileUrl requests = %v, want %v", q.fileReqs, want)
+	}
 }
 
 // TestIntegration_TracksAreTagged checks the downloaded file really went
@@ -616,9 +622,9 @@ func TestIntegration_DBSkipsSecondRun(t *testing.T) {
 	if got := q.fileHits.Load(); got != 3 {
 		t.Fatalf("first run served %d audio files, want 3", got)
 	}
-	// 1 from resolveFormat + 3 from collectTrackJobs.
-	if got := q.count("/track/getFileUrl"); got != 4 {
-		t.Fatalf("first run made %d getFileUrl calls, want 4", got)
+	// One per track: collectTrackJobs reuses resolveFormat's answer.
+	if got := q.count("/track/getFileUrl"); got != 3 {
+		t.Fatalf("first run made %d getFileUrl calls, want 3", got)
 	}
 
 	before := q.count("/track/getFileUrl")

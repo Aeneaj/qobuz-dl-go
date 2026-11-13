@@ -33,7 +33,7 @@ func (d *Downloader) downloadAlbum(ctx context.Context, albumID, baseDir string)
 	}
 
 	// Resolve format info from first track
-	fileFormat, bitDepth, samplingRate := d.resolveFormat(ctx, meta)
+	fileFormat, bitDepth, samplingRate, asked := d.resolveFormat(ctx, meta)
 	title := getTitle(meta)
 	artist := nestedStr(meta, "artist", "name")
 	year := releaseYear(meta)
@@ -85,7 +85,7 @@ func (d *Downloader) downloadAlbum(ctx context.Context, albumID, baseDir string)
 
 	p := d.newProgress(ctx)
 	restore := d.withBars(p)
-	jobs := d.collectTrackJobs(ctx, p, rawItems, albumDir, isMultiDisc, meta, trackFmt, isMP3)
+	jobs := d.collectTrackJobs(ctx, p, rawItems, albumDir, isMultiDisc, meta, trackFmt, isMP3, asked)
 	d.runTrackJobs(ctx, jobs, meta, trackFmt)
 	if p != nil {
 		p.Wait()
@@ -163,7 +163,7 @@ func detectMultiDisc(rawItems []interface{}) bool {
 // The skip check requires BOTH a DB entry and the file present on disk — this
 // way, deleting an album from disk causes it to be re-downloaded on the next
 // run instead of silently skipped (only the cover would end up recreated).
-func (d *Downloader) collectTrackJobs(ctx context.Context, p *mpb.Progress, rawItems []interface{}, albumDir string, isMultiDisc bool, albumMeta map[string]interface{}, trackFmt string, isMP3 bool) []trackJob {
+func (d *Downloader) collectTrackJobs(ctx context.Context, p *mpb.Progress, rawItems []interface{}, albumDir string, isMultiDisc bool, albumMeta map[string]interface{}, trackFmt string, isMP3 bool, asked urlAnswers) []trackJob {
 	var jobs []trackJob
 	for idx, t := range rawItems {
 		track, ok := t.(map[string]interface{})
@@ -189,7 +189,7 @@ func (d *Downloader) collectTrackJobs(ctx context.Context, p *mpb.Progress, rawI
 			}
 		}
 
-		trackURL, err := d.fileURL(ctx, trackID)
+		trackURL, err := asked.fileURL(ctx, d, trackID)
 		if err != nil {
 			d.skipTrack(track, trackID, err)
 			continue
@@ -262,16 +262,20 @@ jobLoop:
 // One track that cannot be resolved — unavailable in the region, a sample, or
 // simply not offered at the requested quality while the rest are — used to
 // rename the entire album.
-func (d *Downloader) resolveFormat(ctx context.Context, albumMeta map[string]interface{}) (fileFormat string, bitDepth, samplingRate interface{}) {
+//
+// Every answer it got comes back in asked, so the tracks it looked at are not
+// asked for again.
+func (d *Downloader) resolveFormat(ctx context.Context, albumMeta map[string]interface{}) (fileFormat string, bitDepth, samplingRate interface{}, asked urlAnswers) {
 	if d.Opts.Quality == 5 {
-		return "MP3", nil, nil
+		return "MP3", nil, nil, nil
 	}
 	tracks, _ := albumMeta["tracks"].(map[string]interface{})
 	if tracks == nil {
-		return "Unknown", nil, nil
+		return "Unknown", nil, nil, nil
 	}
 	items, _ := tracks["items"].([]interface{})
 
+	asked = urlAnswers{}
 	for _, it := range items {
 		track, _ := it.(map[string]interface{})
 		if track == nil {
@@ -281,6 +285,7 @@ func (d *Downloader) resolveFormat(ctx context.Context, albumMeta map[string]int
 		// The same lookup collectTrackJobs does: a preview or an unplayable
 		// response says nothing about the format the album is served in.
 		info, err := d.fileURL(ctx, trackID)
+		asked[trackID] = urlAnswer{info, err}
 		if err != nil {
 			continue
 		}
@@ -294,9 +299,29 @@ func (d *Downloader) resolveFormat(ctx context.Context, albumMeta map[string]int
 			}
 		}
 		if deliveredIsMP3(info, d.Opts.Quality) {
-			return "MP3", nil, nil
+			return "MP3", nil, nil, asked
 		}
-		return "FLAC", info["bit_depth"], info["sampling_rate"]
+		return "FLAC", info["bit_depth"], info["sampling_rate"], asked
 	}
-	return "Unknown", nil, nil
+	return "Unknown", nil, nil, asked
+}
+
+// urlAnswer is the outcome of Downloader.fileURL for one track.
+type urlAnswer struct {
+	info map[string]interface{}
+	err  error
+}
+
+// urlAnswers holds the fileURL answers an album already has, by track id.
+type urlAnswers map[string]urlAnswer
+
+// fileURL returns the answer already held for trackID, and asks d for it
+// otherwise. Each answer is handed out once: a link kept for later only
+// grows older.
+func (a urlAnswers) fileURL(ctx context.Context, d *Downloader, trackID string) (map[string]interface{}, error) {
+	if ans, ok := a[trackID]; ok {
+		delete(a, trackID)
+		return ans.info, ans.err
+	}
+	return d.fileURL(ctx, trackID)
 }
