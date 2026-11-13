@@ -199,12 +199,14 @@ func (d *Downloader) downloadAndTag(
 	bar ProgressBar,
 ) error {
 	tmpFile := filepath.Join(dir, fmt.Sprintf(".%02d.tmp", idx))
-	// Each fallback asks strictly below the last quality asked for, so the
-	// loop ends whatever format_id the responses claim.
+	// Each fallback asks strictly below the last quality asked for, and a
+	// link is renewed at most once per track, so the loop ends whatever the
+	// responses claim.
 	ceiling := d.Opts.Quality
 	if fid, _ := trackURLDict["format_id"].(float64); fid != 0 {
 		ceiling = min(ceiling, int(fid))
 	}
+	renewed := false
 	for {
 		isMP3, finalFile, err := d.trackTarget(dir, trackURLDict, trackMeta, albumMeta, trackFmt)
 		if err != nil {
@@ -229,12 +231,30 @@ func (d *Downloader) downloadAndTag(
 		}
 		os.Remove(tmpFile)
 		err = fmt.Errorf("download: %w", err)
+		if ctx.Err() != nil {
+			return err
+		}
+
+		// An expired link says nothing about the quality: renew it at the
+		// same one. Going straight to the fallback saved a 24-bit track as
+		// 16-bit — or failed it with --no-fallback — on any album that took
+		// longer to download than the links last.
+		if errors.Is(err, errLinkExpired) && !renewed {
+			renewed = true
+			if fresh, ferr := d.fileURLAt(ctx, idStr(trackMeta["id"]), ceiling); ferr == nil {
+				if bar != nil {
+					bar.SetCurrent(0)
+				}
+				trackURLDict = fresh
+				continue
+			}
+		}
 
 		// getFileUrl can answer fine for a file the CDN cannot serve: album
 		// 0060254736219, track 11 at 24 bit, sends 1 byte of 54 MB and hangs
 		// up every time, while its 16-bit file downloads. So a quality whose
 		// bytes never arrive is treated like one getFileUrl turns down.
-		if ctx.Err() != nil || !d.Opts.QualityFallback {
+		if !d.Opts.QualityFallback {
 			return err
 		}
 		lower, q, ferr := d.fileURLBelow(ctx, idStr(trackMeta["id"]), ceiling)
@@ -322,16 +342,25 @@ func (d *Downloader) fileURLBelow(ctx context.Context, trackID string, ceiling i
 		if q >= ceiling {
 			continue
 		}
-		info, qerr := d.Client.GetTrackURL(ctx, trackID, q, "")
-		if qerr == nil {
-			qerr = unservable(info)
-		}
-		if qerr == nil {
+		if info, qerr := d.fileURLAt(ctx, trackID, q); qerr == nil {
 			fmt.Fprintf(d.termOut(), "\033[33mQuality fallback to %s for track %s\033[0m\n", Qualities[q], trackID)
 			return info, q, nil
 		}
 	}
 	return nil, 0, errors.New("no lower quality is available")
+}
+
+// fileURLAt asks for the track at exactly quality q and returns the answer
+// only if it holds a full track to download.
+func (d *Downloader) fileURLAt(ctx context.Context, trackID string, q int) (map[string]interface{}, error) {
+	info, err := d.Client.GetTrackURL(ctx, trackID, q, "")
+	if err == nil {
+		err = unservable(info)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return info, nil
 }
 
 // unservable says why a successful track/getFileUrl response still has no

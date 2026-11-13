@@ -9,7 +9,9 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -83,10 +85,11 @@ type fakeQobuz struct {
 	audioRate int64
 
 	firstAudio atomic.Int64 // UnixNano of the first audio request; 0 until then
-	fileHits   atomic.Int64 // audio bytes actually served
+	fileHits   atomic.Int64 // audio files actually served
 	mu         sync.Mutex
 	seenURLs   []string
-	fileReqs   []string // "trackID@format_id" of every track/getFileUrl request
+	fileReqs   []string    // "trackID@format_id" of every track/getFileUrl request
+	gone       map[int]int // track ID → audio requests still to answer 410 Gone, as for an expired link
 }
 
 func newFakeQobuz(t testing.TB, tracks []fakeTrack) *fakeQobuz {
@@ -97,6 +100,7 @@ func newFakeQobuz(t testing.TB, tracks []fakeTrack) *fakeQobuz {
 		sampleOnly:   map[int]bool{},
 		zeroRateFor:  map[int]bool{},
 		degraded:     map[int]string{},
+		gone:         map[int]int{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api.json/0.2/album/get", q.handleAlbumGet)
@@ -258,6 +262,18 @@ func (q *fakeQobuz) handleFileURL(w http.ResponseWriter, r *http.Request) {
 }
 
 func (q *fakeQobuz) handleAudio(w http.ResponseWriter, r *http.Request) {
+	var n int
+	fmt.Sscanf(strings.TrimSuffix(path.Base(r.URL.Path), path.Ext(r.URL.Path)), "%d", &n)
+	q.mu.Lock()
+	expired := q.gone[n] > 0
+	if expired {
+		q.gone[n]--
+	}
+	q.mu.Unlock()
+	if expired {
+		http.Error(w, "Gone", http.StatusGone)
+		return
+	}
 	q.fileHits.Add(1)
 	q.firstAudio.CompareAndSwap(0, time.Now().UnixNano())
 	body, ctype := makeFakeFLAC(), "audio/flac"
@@ -924,6 +940,62 @@ func TestIntegration_QualityFallbackToMP3WritesMP3(t *testing.T) {
 		if len(head) < 3 || string(head[:3]) != "ID3" {
 			t.Errorf("%q does not start with an ID3 header: % x", f, head[:min(8, len(head))])
 		}
+	}
+}
+
+// The CDN answers 410 Gone once a signed link expires. That says nothing about
+// the quality, but it used to trigger the quality fallback: a 24-bit track was
+// saved at 16 bits, or failed with --no-fallback. The link is renewed at the
+// same quality first — once, so a link that keeps failing still ends.
+func TestIntegration_ExpiredLinkIsRenewedAtSameQuality(t *testing.T) {
+	cases := []struct {
+		name     string
+		gone     int // audio requests for track 103 answered 410
+		fallback bool
+		wantReqs []string // track/getFileUrl requests for track 103, in order
+		wantFile string   // the track's file afterwards; "" = none
+	}{
+		{"renewed", 1, true, []string{"103@7", "103@7"}, "03. Song 3.flac"},
+		{"renewed without fallback", 1, false, []string{"103@7", "103@7"}, "03. Song 3.flac"},
+		{"renewed once, then the fallback", 2, true, []string{"103@7", "103@7", "103@6"}, "03. Song 3.flac"},
+		{"renewed once, then it fails", 2, false, []string{"103@7", "103@7"}, ""},
+		{"never served: the ladder still ends", 100, true, []string{"103@7", "103@7", "103@6", "103@5"}, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			q := newFakeQobuz(t, benchTracks(3))
+			q.gone[103] = c.gone
+			d, dir := newTestDownloader(t, q, func(o *Options) {
+				o.Quality = 7
+				o.QualityFallback = c.fallback
+				o.NoCover = true
+			})
+			captureStdout(t, func() {
+				if err := d.downloadAlbum(context.Background(), "alb1", dir); err != nil {
+					t.Fatalf("downloadAlbum: %v", err)
+				}
+			})
+
+			var reqs []string
+			for _, r := range q.fileReqs {
+				if strings.HasPrefix(r, "103@") {
+					reqs = append(reqs, r)
+				}
+			}
+			if !slices.Equal(reqs, c.wantReqs) {
+				t.Errorf("getFileUrl for track 103 = %v, want %v", reqs, c.wantReqs)
+			}
+
+			var got string
+			for _, f := range relFiles(t, dir) {
+				if base := path.Base(f); strings.HasPrefix(base, "03.") {
+					got = base
+				}
+			}
+			if got != c.wantFile {
+				t.Errorf("track 103 on disk = %q, want %q", got, c.wantFile)
+			}
+		})
 	}
 }
 

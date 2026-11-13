@@ -17,6 +17,12 @@ import (
 
 const maxDownloadRetries = 5
 
+// errLinkExpired is a CDN refusing the signed URL itself (410 Gone, or 403
+// for a token it no longer accepts), not the file. The links carry an expiry
+// (etsp=) — about an hour, by third-party accounts — so it says to ask for a
+// new link at the same quality, not that the quality cannot be served.
+var errLinkExpired = errors.New("the download link has expired")
+
 // downloadWithProgress downloads rawURL to dest, updating bar as bytes arrive.
 // It uses the Downloader's shared httpClient and respects the context for
 // cancellation (e.g. Ctrl+C).
@@ -76,7 +82,12 @@ func (d *Downloader) downloadWithProgress(ctx context.Context, rawURL, dest stri
 			continue
 		}
 
-		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+		switch resp.StatusCode {
+		case http.StatusOK, http.StatusPartialContent:
+		case http.StatusGone, http.StatusForbidden:
+			resp.Body.Close()
+			return fmt.Errorf("HTTP %d: %w", resp.StatusCode, errLinkExpired)
+		default:
 			resp.Body.Close()
 			return fmt.Errorf("unexpected HTTP status %d", resp.StatusCode)
 		}
